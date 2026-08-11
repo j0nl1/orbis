@@ -102,6 +102,19 @@ Or produce one app containing both Mac architectures:
 ORBIS_MACOS_ARCH=universal scripts/build-orbis-macos.sh
 ```
 
+## Tests
+
+Run the native suite with one command:
+
+```sh
+scripts/test-orbis.sh
+```
+
+CTest coordinates pure C tests, XCTest bundles, AppKit integration tests, and
+the remaining repository contracts. Tests can be selected by label, for
+example `scripts/test-orbis.sh -L unit`. The suite structure and migration
+rules are documented in [docs/testing.md](docs/testing.md).
+
 [ORBIS.md](ORBIS.md) covers device installation, all build options, keyboard
 details, and private-network access through Cloudflare Tunnel.
 

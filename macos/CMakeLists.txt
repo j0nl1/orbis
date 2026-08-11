@@ -23,6 +23,8 @@ set(ORBIS_MACOS_SOURCES
     Sources/OrbisProfileEditorController.m
 	Sources/OrbisConnectionRetryPolicy.h
 	Sources/OrbisConnectionRetryPolicy.c
+    Sources/OrbisSessionEndPolicy.h
+    Sources/OrbisSessionEndPolicy.c
     Sources/OrbisSessionController.h
     Sources/OrbisSessionController.m
     ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.h

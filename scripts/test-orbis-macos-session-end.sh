@@ -14,22 +14,8 @@ fail() {
 	exit 1
 }
 
-error_handler="$(sed -n \
-	'/^static void OrbisErrorInfoHandler/,/^}/p' "$session_controller")"
-
-grep -Fq 'event->code == ERRINFO_NONE' <<<"$error_handler" || \
-	fail 'the session handler no longer ignores the no-error sentinel'
-
-grep -Fq 'event->code == ERRINFO_LOGOFF_BY_USER' <<<"$error_handler" || \
-	fail 'a user logoff is still classified as a connection failure'
-
-grep -Fq '@selector(handleSessionEnded)' <<<"$error_handler" || \
-	fail 'a user logoff does not follow the normal session-ended path'
-
-if grep -Fq 'ERRINFO_LOGOFF_BY_USER' <<<"$error_handler" && \
-	grep -F 'ERRINFO_LOGOFF_BY_USER' <<<"$error_handler" | grep -Fq '@selector(handleSessionError:)'; then
-	fail 'a user logoff still opens the error path'
-fi
+grep -Fq 'OrbisSessionEndDispositionForErrorInfo(event->code)' "$session_controller" || \
+	fail 'the FreeRDP error handler bypasses the tested session-end policy'
 
 grep -Fq -- '- (void)handleSessionEnded' "$session_controller" || \
 	fail 'the normal session-ended handler is missing'
@@ -62,4 +48,4 @@ grep -Fq 'action:@selector(disconnectSession:)' "$app_delegate" || \
 grep -Fq -- '- (void)disconnectSession:' "$app_delegate" || \
 	fail 'the macOS Disconnect menu item has no implementation'
 
-printf 'PASS: Orbis macOS treats a user logoff as a normal session end\n'
+printf 'PASS: Orbis macOS session teardown contract\n'

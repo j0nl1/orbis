@@ -14,11 +14,16 @@
 #import "mfreerdp.h"
 #import "OrbisConnectionRetryPolicy.h"
 #import "OrbisProfile.h"
+#import "OrbisSessionEndPolicy.h"
 
 static NSString *const OrbisSessionErrorDomain = @"com.dnexus.orbis.session";
 
 _Static_assert(FREERDP_ERROR_CONNECT_FAILED == ORBIS_FREERDP_CONNECT_FAILED,
                "Orbis retry policy must match FreeRDP's connection-failed code");
+_Static_assert(ERRINFO_NONE == ORBIS_ERRINFO_NONE,
+               "Orbis session policy must match FreeRDP's no-error sentinel");
+_Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
+               "Orbis session policy must match FreeRDP's user-logoff code");
 
 @interface OrbisSessionController ()
 - (BOOL)beginConnection;
@@ -62,12 +67,14 @@ static void OrbisConnectionResultHandler(void *context, const ConnectionResultEv
 
 static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event)
 {
-	if (event->code == ERRINFO_NONE)
+	OrbisSessionEndDisposition disposition =
+	    OrbisSessionEndDispositionForErrorInfo(event->code);
+	if (disposition == OrbisSessionEndDispositionIgnore)
 		return;
 	OrbisSessionController *controller = OrbisControllerForContext(context);
 	if (!controller)
 		return;
-	if (event->code == ERRINFO_LOGOFF_BY_USER)
+	if (disposition == OrbisSessionEndDispositionEnded)
 	{
 		[controller performSelectorOnMainThread:@selector(handleSessionEnded)
 		                            withObject:nil
