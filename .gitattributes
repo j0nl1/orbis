@@ -1,0 +1,2 @@
+# Unified diff syntax uses leading spaces and space-only context lines by design.
+*.patch -whitespace

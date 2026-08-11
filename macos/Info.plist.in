@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Orbis</string>
+	<key>CFBundleExecutable</key>
+	<string>Orbis</string>
+	<key>CFBundleIconFile</key>
+	<string>OrbisMacIcon.png</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.dnexus.orbis</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Orbis</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@ORBIS_VERSION_DATE@</string>
+	<key>CFBundleVersion</key>
+	<string>@ORBIS_BUILD_NUMBER@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Orbis contributors.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Orbis connects to Remote Desktop computers on your local or private network.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>
