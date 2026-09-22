@@ -258,7 +258,16 @@ index e82f50b9c..5e69fc1fe 100644
  
  	WINPR_ASSERT(rdp_context);
  	context = rdp_context;
-@@ -203,7 +230,7 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -147,7 +174,8 @@ DWORD WINAPI mac_client_thread(void *param)
+ 			return 0;
+ 		}
+ 
+ 		[view setIs_connected:1];
++		[view resume];
+ 		nCount = 0;
+ 		events[nCount++] = mfc->stopEvent;
+ 
+@@ -203,7 +231,7 @@ DWORD WINAPI mac_client_thread(void *param)
  		}
  
  	disconnect:
@@ -487,6 +496,15 @@ index e82f50b9c..5e69fc1fe 100644
  	graphics_register_pointer(instance->context->graphics, &rdp_pointer);
  	/* setup pasteboard (aka clipboard) for copy operations (write only) */
  	view->pasteboard_wr = [NSPasteboard generalPasteboard];
+@@ -940,8 +1112,7 @@ BOOL mac_post_connect(freerdp *instance)
+ 		view->pasteboard_rd = [NSPasteboard generalPasteboard];
+ 		view->pasteboard_changecount = -1;
+ 	});
+-	[view resume];
+ 	mfc->appleKeyboardType = mac_detect_keyboard_type();
+ 	return TRUE;
+ }
+ 
 @@ -962,7 +1133,18 @@ void mac_post_disconnect(freerdp *instance)
  	                                   mac_OnChannelConnectedEventHandler);
  	PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub,
