@@ -9,13 +9,14 @@ if [[ "$identity" != - ]]; then
   options+=(--options runtime --timestamp)
 fi
 
-# Sign nested code before its containing bundle. Sparkle's helpers retain
-# their original entitlements when re-signed with the distribution identity.
+# Sign frameworks and helpers before the app. Signing the bundle signs its
+# main executable last; signing it first can fail on unsigned Intel libraries.
+# Sparkle's helpers retain their original entitlements when re-signed.
 while IFS= read -r -d '' binary; do
   if file -b "$binary" | grep -q 'Mach-O'; then
     codesign "${options[@]}" --preserve-metadata=entitlements "$binary"
   fi
-done < <(find "${app_path}/Contents" -type f -print0)
+done < <(find "${app_path}/Contents/Frameworks" -type f -print0)
 while IFS= read -r -d '' bundle; do
   codesign "${options[@]}" --preserve-metadata=entitlements "$bundle"
 done < <(find "${app_path}/Contents" -depth -type d \

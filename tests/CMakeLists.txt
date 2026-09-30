@@ -14,6 +14,9 @@ add_test(NAME unit.release-version
 set_tests_properties(unit.release-version PROPERTIES LABELS "unit;release")
 add_test(NAME unit.appcast COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_appcast.py)
 set_tests_properties(unit.appcast PROPERTIES LABELS "unit;release")
+add_test(NAME integration.macos-signing
+  COMMAND ${PROJECT_SOURCE_DIR}/scripts/test-orbis-macos-signing.sh)
+set_tests_properties(integration.macos-signing PROPERTIES LABELS "integration;release")
 set(ORBIS_TEST_SPARKLE_ROOT "$ENV{ORBIS_TEST_SPARKLE_ROOT}" CACHE PATH "Sparkle distribution for updater tests")
 
 add_library(
