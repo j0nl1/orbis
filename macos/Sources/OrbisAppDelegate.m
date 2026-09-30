@@ -34,6 +34,10 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
 	(void)notification;
+#if ORBIS_ENABLE_UPDATES
+	_updaterController = [[SPUStandardUpdaterController alloc]
+	    initWithStartingUpdater:NO updaterDelegate:self userDriverDelegate:nil];
+#endif
 	[self buildMainMenu];
 
 	_libraryViewController = [[OrbisLibraryViewController alloc] init];
@@ -61,6 +65,9 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	OrbisProfile *automatic = [[_libraryViewController profileStore] automaticProfile];
 	if (automatic)
 		[self libraryViewController:_libraryViewController connectToProfile:automatic];
+#if ORBIS_ENABLE_UPDATES
+	[_updaterController startUpdater];
+#endif
 }
 
 - (void)buildMainMenu
@@ -70,6 +77,12 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSMenuItem *applicationItem = [[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""] autorelease];
 	NSMenu *applicationMenu = [[[NSMenu alloc] initWithTitle:@"Orbis"] autorelease];
 	[applicationMenu addItemWithTitle:@"About Orbis" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+#if ORBIS_ENABLE_UPDATES
+	NSMenuItem *updatesItem = [applicationMenu addItemWithTitle:@"Check for Updates…"
+	                                                  action:@selector(checkForUpdates:)
+	                                           keyEquivalent:@""];
+	[updatesItem setTarget:_updaterController];
+#endif
 	[applicationMenu addItem:[NSMenuItem separatorItem]];
 	[applicationMenu addItemWithTitle:@"Hide Orbis" action:@selector(hide:) keyEquivalent:@"h"];
 	[applicationMenu addItemWithTitle:@"Quit Orbis" action:@selector(terminate:) keyEquivalent:@"q"];
@@ -165,6 +178,15 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[_sessionController setDelegate:nil];
 	[_sessionController autorelease];
 	_sessionController = nil;
+#if ORBIS_ENABLE_UPDATES
+	if (_pendingUpdateInstall)
+	{
+		void (^install)(void) = [_pendingUpdateInstall autorelease];
+		_pendingUpdateInstall = nil;
+		install();
+		return;
+	}
+#endif
 	[_libraryViewController reloadProfiles];
 	[self showLibraryWindow];
 
@@ -199,8 +221,50 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[_sessionController stop];
 }
 
+#if ORBIS_ENABLE_UPDATES
+- (BOOL)updater:(SPUUpdater *)updater
+    mayPerformUpdateCheck:(SPUUpdateCheck)updateCheck
+                    error:(NSError **)error
+{
+	(void)updater;
+	(void)updateCheck;
+	if (!_sessionController)
+		return YES;
+	if (error)
+		*error = [NSError errorWithDomain:@"com.dnexus.orbis.updates" code:1
+		    userInfo:@{ NSLocalizedDescriptionKey : @"Disconnect the remote session before checking for updates." }];
+	return NO;
+}
+
+- (BOOL)updater:(SPUUpdater *)updater
+    shouldProceedWithUpdate:(SUAppcastItem *)item
+                updateCheck:(SPUUpdateCheck)updateCheck
+                      error:(NSError **)error
+{
+	(void)item;
+	return [self updater:updater mayPerformUpdateCheck:updateCheck error:error];
+}
+
+- (BOOL)updater:(SPUUpdater *)updater
+    shouldPostponeRelaunchForUpdate:(SUAppcastItem *)item
+                untilInvokingBlock:(void (^)(void))installHandler
+{
+	(void)updater;
+	(void)item;
+	if (!_sessionController)
+		return NO;
+	[_pendingUpdateInstall release];
+	_pendingUpdateInstall = [installHandler copy];
+	return YES;
+}
+#endif
+
 - (void)dealloc
 {
+#if ORBIS_ENABLE_UPDATES
+	[_pendingUpdateInstall release];
+	[_updaterController release];
+#endif
 	[_sessionController setDelegate:nil];
 	[_sessionController release];
 	[_libraryViewController release];

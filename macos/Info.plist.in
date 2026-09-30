@@ -34,5 +34,6 @@
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+@ORBIS_UPDATER_PLIST@
 </dict>
 </plist>
