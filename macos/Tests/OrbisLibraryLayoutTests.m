@@ -223,7 +223,12 @@ static void DrainSheetCompletion(void)
 		XCTAssertEqualWithAccuracy([(NSBox *)card contentViewMargins].width, 5.0, 0.01);
 		XCTAssertEqualWithAccuracy([(NSBox *)card contentViewMargins].height, 5.0, 0.01);
 		NSRect actionFrame = [delete convertRect:[delete bounds] toView:content];
-		XCTAssertEqualWithAccuracy(NSMaxX(actionFrame), NSWidth([content bounds]) - 42.0, 1.0);
+		XCTAssertEqualWithAccuracy(NSMaxX(actionFrame), NSWidth([content bounds]) - 42.0, 1.0,
+		    @"Card: %@; content: %@; actions: %@; button: %@; button alignment insets: %@",
+		    NSStringFromRect([card convertRect:[card bounds] toView:content]),
+		    NSStringFromRect([[(NSBox *)card contentView] convertRect:[[(NSBox *)card contentView] bounds] toView:content]),
+		    NSStringFromRect([[delete superview] convertRect:[[delete superview] bounds] toView:content]),
+		    NSStringFromRect(actionFrame), NSStringFromNSEdgeInsets([delete alignmentRectInsets]));
 		NSTextField *name = (NSTextField *)FindViewWithAccessibilityIdentifier(card, @"connection-name-label");
 		if ([[name stringValue] isEqualToString:@"Studio Mac"])
 			XCTAssertGreaterThanOrEqual(NSWidth([name frame]), [[name cell] cellSize].width);
