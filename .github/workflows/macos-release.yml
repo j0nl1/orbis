@@ -2,6 +2,8 @@ name: Publish macOS release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -11,6 +13,7 @@ permissions:
 concurrency:
   group: macos-release
   cancel-in-progress: false
+  queue: max
 
 jobs:
   version:
@@ -18,20 +21,41 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.ORBIS_VERSION }}
       build: ${{ steps.version.outputs.ORBIS_BUILD_NUMBER }}
+      tag: ${{ steps.version.outputs.RELEASE_TAG }}
+      commit: ${{ steps.version.outputs.RELEASE_COMMIT }}
+      publish: ${{ steps.version.outputs.PUBLISH_RELEASE }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Validate release version and signing configuration
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
           UPDATE_PUBLIC_KEY: ${{ vars.ORBIS_UPDATE_PUBLIC_KEY }}
           UPDATE_PRIVATE_KEY: ${{ secrets.ORBIS_SPARKLE_PRIVATE_KEY }}
         run: |
           test -n "$UPDATE_PUBLIC_KEY" || { echo 'Set the ORBIS_UPDATE_PUBLIC_KEY repository variable.' >&2; exit 1; }
           test -n "$UPDATE_PRIVATE_KEY" || { echo 'Set the ORBIS_SPARKLE_PRIVATE_KEY repository secret.' >&2; exit 1; }
-          previous="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // ""')"
-          python3 scripts/orbis-release-version.py "$RELEASE_TAG" --previous-tag "$previous" >> "$GITHUB_OUTPUT"
+          previous="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '[.[][] | select(.draft == false and .prerelease == false)][0].tag_name // ""')"
+          release_commit="$(git rev-parse HEAD)"
+          if [[ "$RELEASE_REF_TYPE" == branch && -n "$previous" ]] && git merge-base --is-ancestor "$release_commit" "${previous}^{commit}"; then
+            echo 'This commit is already included in a published release.'
+            printf 'PUBLISH_RELEASE=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$RELEASE_REF_TYPE" == branch ]]; then
+            tags_file="${RUNNER_TEMP}/orbis-release-tags.txt"
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/tags?per_page=100" --jq '.[].name' > "$tags_file"
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[].tag_name' >> "$tags_file"
+            python3 scripts/orbis-release-version.py --next-tag --existing-tags-file "$tags_file" --previous-tag "$previous" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/orbis-release-version.py "$RELEASE_TAG" --previous-tag "$previous" >> "$GITHUB_OUTPUT"
+            printf 'RELEASE_TAG=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          fi
+          printf 'RELEASE_COMMIT=%s\nPUBLISH_RELEASE=true\n' "$release_commit" >> "$GITHUB_OUTPUT"
       - name: Test release version policy
         run: |
           python3 tests/test_release_version.py
@@ -39,6 +63,7 @@ jobs:
 
   build:
     needs: version
+    if: needs.version.outputs.publish == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.version.outputs.commit }}
           submodules: true
       - name: Install build tools
         run: brew install cmake ninja openssl@3 ripgrep
@@ -80,6 +106,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
           pattern: macos-*
@@ -97,7 +125,7 @@ jobs:
         env:
           PRIVATE_KEY: ${{ secrets.ORBIS_SPARKLE_PRIVATE_KEY }}
           ORBIS_GITHUB_REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
           umask 077
           key_file="$(mktemp "${RUNNER_TEMP}/orbis-update-key.XXXXXX")"
@@ -107,10 +135,16 @@ jobs:
       - name: Publish completed release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.version.outputs.commit }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
         run: |
-          previous="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // ""')"
+          previous="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '[.[][] | select(.draft == false and .prerelease == false)][0].tag_name // ""')"
           python3 scripts/orbis-release-version.py "$RELEASE_TAG" --previous-tag "$previous"
+          if [[ "$RELEASE_REF_TYPE" == branch ]]; then
+            # Atomically reserve a new tag on the exact commit that was built.
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${RELEASE_TAG}" -f "sha=${RELEASE_COMMIT}" > /dev/null
+          fi
           gh release create "$RELEASE_TAG" artifacts/update/*.zip artifacts/update/appcast.xml artifacts/update/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Orbis ${RELEASE_TAG#v}" --generate-notes
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

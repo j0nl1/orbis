@@ -59,10 +59,16 @@ The macOS client includes a **Cloudflare Tunnel** connection mode:
 2. Protect that hostname with an Access application and a **Service Auth** policy
    allowing the intended service token.
 3. Select **Cloudflare Tunnel** in the Orbis connection editor. Enter the published
-   hostname in **Tunnel hostname**, **CF-Access-Client-Id**, **CF-Access-Client-Secret**, and
-   the usual RDP account. **Host** identifies the logical RDP server for certificate
-   verification and may differ from the public tunnel hostname. Leaving **Tunnel
-   hostname** empty uses **Host**.
+   address in **Tunnel URL** (for example, `https://rdp.example.com`), then enter
+   **CF-Access-Client-Id**, **CF-Access-Client-Secret**, and the usual RDP account.
+   A hostname without `https://` is also accepted. Paths, queries, credentials,
+   and explicit ports are rejected. **Native RDP** instead shows **IP address or
+   hostname** and **Port**.
+
+Existing profiles retain their logical RDP server identity and port when edited
+in Cloudflare mode. New tunnel profiles use the published hostname as their
+initial RDP identity. The editor shows only the address fields for the selected
+connection mode.
 
 Orbis stores the service token in Keychain, separately from the RDP password,
 and binds it to the tunnel hostname. Leaving the secret field empty preserves

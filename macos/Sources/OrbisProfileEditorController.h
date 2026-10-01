@@ -12,15 +12,18 @@
                        password:(NSString *)password
                 cloudflareToken:(NSDictionary *)cloudflareToken;
 
+- (void)profileEditorControllerDidFinish:(OrbisProfileEditorController *)controller;
+
 @end
 
-@interface OrbisProfileEditorController : NSWindowController
+@interface OrbisProfileEditorController : NSWindowController <NSWindowDelegate>
 {
 	id<OrbisProfileEditorControllerDelegate> _delegate;
 	OrbisProfile *_profile;
 	BOOL _hasStoredPassword;
 	NSTextField *_nameField;
 	NSTextField *_hostField;
+	NSStackView *_hostGroup;
 	NSTextField *_portField;
 	NSTextField *_usernameField;
 	NSSecureTextField *_passwordField;

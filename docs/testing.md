@@ -49,5 +49,18 @@ legacy category when a behavior test is possible.
 - Keep live RDP tests separate from the default suite because they require a
   reachable server, credentials, and a graphical login session.
 
+## Native keyboard input
+
+Run `scripts/test-orbis-macos-keyboard-input.sh` on a Mac to exercise AppKit
+keyboard events through the actual patched FreeRDP view. The script builds the
+native runtime first, then enables the `integration.macos-keyboard-input` test
+using `ORBIS_TEST_FREERDP_BUILD_DIR`. Only the outgoing RDP input functions are
+replaced with a recorder; the event handlers and modifier state run unchanged.
+The test covers Option symbols, Shift+Option symbols, repeats, key release
+ordering, Alt+Tab, and Command+C. It needs no remote server or credentials.
+
+This test is optional in the default suite because it requires the full FreeRDP
+build. Once enabled in a test build directory, subsequent CTest runs include it.
+
 CTest registration lives in `tests/CMakeLists.txt`. Application builds continue
 to use the platform scripts and the pinned FreeRDP source tree.
