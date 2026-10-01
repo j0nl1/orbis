@@ -40,6 +40,7 @@ endif()
 find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(SECURITY_FRAMEWORK Security REQUIRED)
+find_library(NETWORK_FRAMEWORK Network REQUIRED)
 
 set(ORBIS_MACOS_SOURCES
     Sources/main.m
@@ -63,6 +64,18 @@ set(ORBIS_MACOS_SOURCES
     ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.m
 	${ORBIS_SHARED_DIR}/Sources/About/OrbisAcknowledgements.h
 	${ORBIS_SHARED_DIR}/Sources/About/OrbisAcknowledgements.m
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisConnectionTransport.h
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisConnectionTransport.m
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisDirectTransport.h
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisDirectTransport.m
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisCloudflareTransport.h
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisCloudflareTransport.m
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTransportFactory.h
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTransportFactory.m
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTunnelBridge.h
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTunnelBridge.m
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisRDPTransportRoute.h
+    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisRDPTransportRoute.c
 )
 
 set(ORBIS_MACOS_ICON Resources/OrbisMacIcon.png)
@@ -79,6 +92,7 @@ target_include_directories(
     ${ORBIS_SHARED_DIR}/Sources/Profiles
     ${ORBIS_SHARED_DIR}/Sources/Security
 	${ORBIS_SHARED_DIR}/Sources/About
+    ${ORBIS_SHARED_DIR}/Sources/Transport
     ${PROJECT_SOURCE_DIR}/client/Mac
 )
 
@@ -89,9 +103,19 @@ target_link_libraries(
     ${APPKIT_FRAMEWORK}
     ${FOUNDATION_FRAMEWORK}
     ${SECURITY_FRAMEWORK}
+    ${NETWORK_FRAMEWORK}
 )
 
 target_compile_options(OrbisMac PRIVATE -fno-objc-arc)
+set_source_files_properties(
+  ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTunnelBridge.m
+  ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisConnectionTransport.m
+  ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisDirectTransport.m
+  ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisCloudflareTransport.m
+  ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTransportFactory.m
+
+  PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fblocks"
+)
 
 if(ORBIS_ENABLE_UPDATES)
   target_compile_definitions(OrbisMac PRIVATE ORBIS_ENABLE_UPDATES=1)
@@ -148,3 +172,12 @@ add_custom_command(
 )
 
 install(TARGETS OrbisMac BUNDLE DESTINATION . COMPONENT client)
+
+# This boundary test needs the real pinned FreeRDP runtime, unlike the fast native suite.
+add_executable(OrbisRDPTransportRouteTests EXCLUDE_FROM_ALL
+  ${ORBIS_SHARED_DIR}/Tests/OrbisRDPTransportRouteTests.c
+  ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisRDPTransportRoute.c
+)
+target_include_directories(OrbisRDPTransportRouteTests PRIVATE ${ORBIS_SHARED_DIR}/Sources/Transport)
+target_compile_options(OrbisRDPTransportRouteTests PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_link_libraries(OrbisRDPTransportRouteTests PRIVATE freerdp)

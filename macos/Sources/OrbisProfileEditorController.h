@@ -7,9 +7,10 @@
 
 @protocol OrbisProfileEditorControllerDelegate <NSObject>
 
-- (void)profileEditorController:(OrbisProfileEditorController *)controller
+- (BOOL)profileEditorController:(OrbisProfileEditorController *)controller
                   savedProfile:(OrbisProfile *)profile
-                       password:(NSString *)password;
+                       password:(NSString *)password
+                cloudflareToken:(NSDictionary *)cloudflareToken;
 
 @end
 
@@ -26,6 +27,19 @@
 	NSButton *_certificateCheckbox;
 	NSButton *_automaticCheckbox;
 	NSTextField *_validationLabel;
+	NSPopUpButton *_transportField;
+	NSTextField *_gatewayHostnameField;
+	NSStackView *_gatewayHostnameGroup;
+	NSTextField *_clientIDField;
+	NSSecureTextField *_clientSecretField;
+	NSStackView *_clientIDGroup;
+	NSStackView *_clientSecretGroup;
+	NSStackView *_portGroup;
+	NSStackView *_formStack;
+	NSScrollView *_scrollView;
+	NSView *_formView;
+	NSString *_savedTokenHost;
+	NSString *_savedTokenClientID;
 }
 
 @property(nonatomic, assign) id<OrbisProfileEditorControllerDelegate> delegate;

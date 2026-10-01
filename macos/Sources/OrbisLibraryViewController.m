@@ -221,11 +221,11 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 
 	NSTextField *name = [NSTextField labelWithString:[profile name]];
 	[name setFont:[NSFont systemFontOfSize:16.0 weight:NSFontWeightSemibold]];
-	NSString *endpoint = [NSString stringWithFormat:@"%@:%lu  ·  %@", [profile host],
-	                                                   (unsigned long)[profile port],
-	                                                   [[profile username] length] > 0
-	                                                       ? [profile username]
-	                                                       : @"Account on connect"];
+	NSString *address = [[profile transportType] isEqualToString:OrbisTransportTypeCloudflare]
+	    ? [NSString stringWithFormat:@"%@ · Cloudflare", [profile transportHostname]]
+	    : [NSString stringWithFormat:@"%@:%lu", [profile host], (unsigned long)[profile port]];
+	NSString *endpoint = [NSString stringWithFormat:@"%@  ·  %@", address,
+	    [[profile username] length] > 0 ? [profile username] : @"Account on connect"];
 	NSTextField *detail = [NSTextField labelWithString:endpoint];
 	[detail setFont:[NSFont systemFontOfSize:12.0]];
 	[detail setTextColor:[NSColor secondaryLabelColor]];
@@ -342,11 +342,22 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[_profileEditor beginSheetForWindow:[[self view] window]];
 }
 
-- (void)profileEditorController:(OrbisProfileEditorController *)controller
+- (BOOL)profileEditorController:(OrbisProfileEditorController *)controller
                   savedProfile:(OrbisProfile *)profile
                        password:(NSString *)password
+                cloudflareToken:(NSDictionary *)cloudflareToken
 {
 	NSError *error = nil;
+	if (cloudflareToken && ![OrbisCredentialStore setCloudflareClientID:cloudflareToken[@"clientID"]
+	    secret:cloudflareToken[@"secret"] forProfile:profile error:&error])
+	{
+		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+		OrbisConfigureWarningAlert(alert);
+		[alert setMessageText:@"Service token couldn’t be saved"];
+		[alert setInformativeText:[error localizedDescription]];
+		[alert runModal];
+		return NO;
+	}
 	if (password && ![OrbisCredentialStore setPassword:password forProfile:profile error:&error])
 	{
 		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
@@ -354,13 +365,14 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 		[alert setMessageText:@"Password couldn’t be saved"];
 		[alert setInformativeText:[error localizedDescription]];
 		[alert runModal];
-		return;
+		return NO;
 	}
 	[_profileStore saveProfile:profile];
 	[self reloadProfiles];
 	[controller setDelegate:nil];
 	[_profileEditor autorelease];
 	_profileEditor = nil;
+	return YES;
 }
 
 - (void)connectPressed:(NSButton *)sender
@@ -395,7 +407,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	                 completionHandler:^(NSModalResponse response) {
 		                 if (response != NSAlertFirstButtonReturn)
 			                 return;
-		                 [OrbisCredentialStore deletePasswordForProfile:profile error:nil];
+		                 [OrbisCredentialStore deleteCredentialsForProfile:profile error:nil];
 		                 [_profileStore deleteProfileWithIdentifier:[profile identifier]];
 		                 [self reloadProfiles];
 	                 }];

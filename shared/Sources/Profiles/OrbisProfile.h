@@ -2,6 +2,9 @@
 
 #import <Foundation/Foundation.h>
 
+FOUNDATION_EXPORT NSString *const OrbisTransportTypeDirect;
+FOUNDATION_EXPORT NSString *const OrbisTransportTypeCloudflare;
+
 @interface OrbisProfile : NSObject <NSCopying>
 {
 	NSString *_identifier;
@@ -11,6 +14,8 @@
 	NSUInteger _port;
 	BOOL _acceptAllCertificates;
 	BOOL _connectAutomatically;
+	NSString *_transportType;
+	NSDictionary *_transportOptions;
 }
 
 @property(nonatomic, copy) NSString *identifier;
@@ -20,6 +25,10 @@
 @property(nonatomic, assign) NSUInteger port;
 @property(nonatomic, assign) BOOL acceptAllCertificates;
 @property(nonatomic, assign) BOOL connectAutomatically;
+// Transport options contain non-secret configuration; credentials belong in Keychain.
+@property(nonatomic, copy) NSString *transportType;
+@property(nonatomic, copy) NSDictionary *transportOptions;
+@property(nonatomic, readonly) NSString *transportHostname;
 
 - (id)initWithDictionary:(NSDictionary *)dictionary;
 - (NSDictionary *)dictionaryRepresentation;

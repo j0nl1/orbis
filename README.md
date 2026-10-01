@@ -46,6 +46,7 @@ normal keyboard mapping.
 ## What works today
 
 - Connections by IP address, local hostname, or public DNS name
+- Cloudflare Tunnel connections with Access Service Auth headers on macOS
 - GNOME Remote Login and its sign-in handoff
 - Profiles with optional automatic connection
 - Per-profile certificate prompts or automatic certificate acceptance
@@ -149,7 +150,7 @@ deletes that item.
 ```text
 ipados/   UIKit app and iPad session UI
 macos/    AppKit app and Mac session UI
-shared/   Profiles, Keychain storage, and acknowledgements
+shared/   Profiles, connection transports, Keychain storage, and acknowledgements
 vendor/   pinned FreeRDP submodule
 patches/  Orbis changes to the FreeRDP Apple adapters
 scripts/  build and test commands

@@ -33,6 +33,26 @@ static NSButton *FindButtonWithToolTip(NSView *view, NSString *toolTip)
 	return nil;
 }
 
+@interface OrbisEditorSaveRecorder : NSObject <OrbisProfileEditorControllerDelegate>
+@property(nonatomic, retain) OrbisProfile *profile;
+@end
+@implementation OrbisEditorSaveRecorder
+- (BOOL)profileEditorController:(OrbisProfileEditorController *)controller savedProfile:(OrbisProfile *)profile
+                      password:(NSString *)password cloudflareToken:(NSDictionary *)token
+{
+	(void)controller;
+	(void)password;
+	(void)token;
+	self.profile = profile;
+	return NO; // Observe the save without closing a sheet or writing credentials.
+}
+- (void)dealloc { [_profile release]; [super dealloc]; }
+@end
+
+@interface OrbisProfileEditorController (TestActions)
+- (void)save:(id)sender;
+@end
+
 @interface OrbisLibraryLayoutTests : XCTestCase
 @end
 
@@ -104,6 +124,62 @@ static NSButton *FindButtonWithToolTip(NSView *view, NSString *toolTip)
 	XCTAssertGreaterThanOrEqual(NSMinX(nameFrame), 32.0);
 	XCTAssertLessThanOrEqual(NSMaxX(nameFrame), NSWidth([content bounds]) - 32.0);
 
+	[editor release];
+	[profile release];
+}
+
+- (void)testCloudflareEditorShowsTokenFieldsAndHidesTheMappedPort
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	OrbisProfileEditorController *editor = [[OrbisProfileEditorController alloc]
+	    initWithProfile:profile hasStoredPassword:NO];
+	NSView *content = [[editor window] contentView];
+	NSPopUpButton *transport = (NSPopUpButton *)FindViewWithAccessibilityIdentifier(content, @"profile-transport-field");
+	NSView *clientID = FindViewWithAccessibilityIdentifier(content, @"profile-client-id-field");
+	NSView *secret = FindViewWithAccessibilityIdentifier(content, @"profile-client-secret-field");
+	NSView *gateway = FindViewWithAccessibilityIdentifier(content, @"profile-gateway-hostname-field");
+	NSView *port = FindViewWithAccessibilityIdentifier(content, @"profile-port-field");
+	XCTAssertNotNil(transport);
+	XCTAssertTrue([clientID isHiddenOrHasHiddenAncestor]);
+	XCTAssertTrue([secret isHiddenOrHasHiddenAncestor]);
+	XCTAssertTrue([gateway isHiddenOrHasHiddenAncestor]);
+	XCTAssertFalse([port isHiddenOrHasHiddenAncestor]);
+	[transport selectItemAtIndex:1];
+	[NSApp sendAction:[transport action] to:[transport target] from:transport];
+	[content layoutSubtreeIfNeeded];
+	XCTAssertFalse([clientID isHiddenOrHasHiddenAncestor]);
+	XCTAssertFalse([secret isHiddenOrHasHiddenAncestor]);
+	XCTAssertFalse([gateway isHiddenOrHasHiddenAncestor]);
+	XCTAssertTrue([secret isKindOfClass:[NSSecureTextField class]]);
+	XCTAssertTrue([port isHiddenOrHasHiddenAncestor]);
+	[editor release];
+	[profile release];
+}
+
+- (void)testTunnelEditorPreservesLogicalServerAndItsPortWhenSavingGatewayOptions
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	[profile setName:@"Workstation"];
+	[profile setHost:@"logical-server.example.test"];
+	[profile setPort:3390];
+	[profile setTransportType:OrbisTransportTypeCloudflare];
+	[profile setTransportOptions:@{ @"hostname" : @"gateway.example.test" }];
+	OrbisProfileEditorController *editor = [[OrbisProfileEditorController alloc]
+	    initWithProfile:profile hasStoredPassword:NO];
+	NSView *content = [[editor window] contentView];
+	NSTextField *gateway = (NSTextField *)FindViewWithAccessibilityIdentifier(content, @"profile-gateway-hostname-field");
+	XCTAssertEqualObjects([gateway stringValue], @"gateway.example.test");
+	[(NSTextField *)FindViewWithAccessibilityIdentifier(content, @"profile-client-id-field") setStringValue:@"fixture-client"];
+	[(NSTextField *)FindViewWithAccessibilityIdentifier(content, @"profile-client-secret-field") setStringValue:@"fixture-secret"];
+	OrbisEditorSaveRecorder *recorder = [[OrbisEditorSaveRecorder alloc] init];
+	[editor setDelegate:recorder];
+	[editor save:nil];
+	XCTAssertNotNil([recorder profile]);
+	XCTAssertEqualObjects([[recorder profile] host], @"logical-server.example.test");
+	XCTAssertEqual([[recorder profile] port], (NSUInteger)3390);
+	XCTAssertEqualObjects([[recorder profile] transportHostname], @"gateway.example.test");
+	[editor setDelegate:nil];
+	[recorder release];
 	[editor release];
 	[profile release];
 }

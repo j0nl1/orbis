@@ -2,6 +2,9 @@
 
 #import "OrbisProfile.h"
 
+NSString *const OrbisTransportTypeDirect = @"direct";
+NSString *const OrbisTransportTypeCloudflare = @"cloudflare";
+
 static NSString *const OrbisProfilesDefaultsKey = @"OrbisProfiles.v1";
 static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.v1";
 
@@ -14,6 +17,8 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 @synthesize port = _port;
 @synthesize acceptAllCertificates = _acceptAllCertificates;
 @synthesize connectAutomatically = _connectAutomatically;
+@synthesize transportType = _transportType;
+@synthesize transportOptions = _transportOptions;
 
 - (id)init
 {
@@ -25,6 +30,8 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 	_host = [@"" copy];
 	_username = [@"" copy];
 	_port = 3389;
+	_transportType = [OrbisTransportTypeDirect copy];
+	_transportOptions = [@{} copy];
 	_acceptAllCertificates = NO;
 	_connectAutomatically = NO;
 	return self;
@@ -53,18 +60,41 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 		[self setPort:[port unsignedIntegerValue]];
 	[self setAcceptAllCertificates:[[dictionary objectForKey:@"acceptAllCertificates"] boolValue]];
 	[self setConnectAutomatically:[[dictionary objectForKey:@"connectAutomatically"] boolValue]];
+	id transport = dictionary[@"transport"];
+	if ([transport isKindOfClass:[NSDictionary class]] &&
+	    [transport[@"type"] isKindOfClass:[NSString class]] && [transport[@"type"] length])
+	{
+		[self setTransportType:transport[@"type"]];
+		if ([transport[@"options"] isKindOfClass:[NSDictionary class]])
+			[self setTransportOptions:transport[@"options"]];
+	}
+	else if ([dictionary[@"usesCloudflareTunnel"] boolValue])
+	{
+		// Read the first tunnel prototype's profiles without keeping its provider flag.
+		[self setTransportType:OrbisTransportTypeCloudflare];
+		[self setTransportOptions:@{ @"hostname" : [self host] }];
+	}
 	return self;
+}
+
+- (NSString *)transportHostname
+{
+	id hostname = _transportOptions[@"hostname"];
+	return [hostname isKindOfClass:[NSString class]] ? hostname : _host;
 }
 
 - (NSDictionary *)dictionaryRepresentation
 {
-	return [NSDictionary dictionaryWithObjectsAndKeys:
+	NSMutableDictionary *dictionary = [NSMutableDictionary dictionaryWithObjectsAndKeys:
 	                         _identifier, @"id", _name, @"name", _host, @"host", _username,
 	                         @"username", [NSNumber numberWithUnsignedInteger:_port], @"port",
 	                         [NSNumber numberWithBool:_acceptAllCertificates],
 	                         @"acceptAllCertificates",
 	                         [NSNumber numberWithBool:_connectAutomatically],
 	                         @"connectAutomatically", nil];
+	if (![_transportType isEqualToString:OrbisTransportTypeDirect] || [_transportOptions count])
+		dictionary[@"transport"] = @{ @"type" : _transportType, @"options" : _transportOptions };
+	return dictionary;
 }
 
 - (id)copyWithZone:(NSZone *)zone
@@ -77,6 +107,8 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 	[copy setPort:_port];
 	[copy setAcceptAllCertificates:_acceptAllCertificates];
 	[copy setConnectAutomatically:_connectAutomatically];
+	[copy setTransportType:_transportType];
+	[copy setTransportOptions:_transportOptions];
 	return copy;
 }
 
@@ -86,6 +118,8 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 	[_name release];
 	[_host release];
 	[_username release];
+	[_transportType release];
+	[_transportOptions release];
 	[super dealloc];
 }
 

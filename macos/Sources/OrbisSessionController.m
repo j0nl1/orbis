@@ -14,6 +14,8 @@
 #import "mfreerdp.h"
 #import "OrbisConnectionRetryPolicy.h"
 #import "OrbisProfile.h"
+#import "OrbisConnectionTransport.h"
+#import "OrbisRDPTransportRoute.h"
 #import "OrbisSessionEndPolicy.h"
 
 static NSString *const OrbisSessionErrorDomain = @"com.dnexus.orbis.session";
@@ -30,6 +32,7 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)buildConnectingOverlay;
 - (void)completeStop;
 - (void)disposeConnectionContext;
+- (void)closeTransportSession;
 - (void)hideConnectingOverlay;
 - (void)pollModifierFlags:(NSTimer *)timer;
 - (void)remoteViewDidPresentFirstFrame:(NSNotification *)notification;
@@ -93,9 +96,12 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 @synthesize delegate = _delegate;
 
 - (id)initWithProfile:(OrbisProfile *)profile password:(NSString *)password
+             transport:(id<OrbisConnectionTransport>)transport
 {
 	if (!(self = [super init]))
 		return nil;
+	NSParameterAssert(transport != nil);
+	_transport = [transport retain];
 	_profile = [profile copy];
 	_password = [password copy];
 	return self;
@@ -300,6 +306,27 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 	if (_context || _stopping)
 		return NO;
 	_connectionPending = NO;
+	if (!_transportPrepared)
+	{
+		if (_transportPreparing)
+			return YES;
+		_transportPreparing = YES;
+		[self setConnectingStatus:[NSString stringWithFormat:@"Preparing %@…", [_transport displayName]]];
+		_transportSession = [[_transport prepareWithCompletion:^(OrbisTransportDestination *destination, NSError *error) {
+			_transportPreparing = NO;
+			if (_stopping)
+				return;
+			if (error)
+				[self finishWithMessage:[error localizedDescription] code:[error code]];
+			else
+			{
+				_transportDestination = [destination retain];
+				_transportPrepared = YES;
+				[self beginConnection];
+			}
+		}] retain];
+		return YES;
+	}
 	[_window makeFirstResponder:_remoteView];
 	NSRect contentBounds = [[_window contentView] bounds];
 
@@ -359,6 +386,16 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 		[self finishWithMessage:@"The Remote Desktop profile could not be configured." code:3];
 		return NO;
 	}
+	if (_transportDestination)
+	{
+		_transportRoute = OrbisRDPTransportRouteInstall(context,
+		    [[_transportDestination hostname] UTF8String], [_transportDestination port]);
+		if (!_transportRoute)
+		{
+			[self finishWithMessage:@"FreeRDP could not configure the connection transport." code:5];
+			return NO;
+		}
+	}
 
 	(void)freerdp_settings_set_string(context->settings, FreeRDP_WindowTitle,
 	                                  [[_profile name] UTF8String]);
@@ -405,6 +442,12 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 		return;
 	if ([result intValue] != 0)
 	{
+		NSError *transportError = [_transportSession connectionError];
+		if (transportError)
+		{
+			[self finishWithMessage:[transportError localizedDescription] code:[transportError code]];
+			return;
+		}
 		rdpContext *context = (rdpContext *)_context;
 		DWORD lastError = context ? freerdp_get_last_error(context) : 0;
 		OrbisRetryDecision retryDecision = OrbisConnectionRetryDecisionForError(
@@ -503,9 +546,21 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 	PubSub_UnsubscribeConnectionResult(context->pubSub, OrbisConnectionResultHandler);
 	PubSub_UnsubscribeErrorInfo(context->pubSub, OrbisErrorInfoHandler);
 	freerdp_client_stop(context);
+	OrbisRDPTransportRouteFree(_transportRoute);
+	_transportRoute = NULL;
 	((mfContext *)context)->view = nil;
 	freerdp_client_context_free(context);
 	_context = NULL;
+}
+
+- (void)closeTransportSession
+{
+	[_transportSession close];
+	[_transportSession release];
+	_transportSession = nil;
+	[_transportDestination release];
+	_transportDestination = nil;
+	_transportPrepared = NO;
 }
 
 - (void)retryCurrentConnection
@@ -513,6 +568,7 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 	if (!_retryPending || _stopping)
 		return;
 	_retryPending = NO;
+	[self closeTransportSession];
 	[self disposeConnectionContext];
 	if (!_stopping)
 		[self beginConnection];
@@ -539,6 +595,7 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 		_modifierPollTimer = nil;
 	}
 	_retryPending = NO;
+	[self closeTransportSession];
 	[self disposeConnectionContext];
 
 	[(OrbisRemoteView *)_remoteView setSessionController:nil];
@@ -582,6 +639,7 @@ static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event
 	[_window release];
 	[_password release];
 	[_profile release];
+	[_transport release];
 	[super dealloc];
 }
 
