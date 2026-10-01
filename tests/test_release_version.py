@@ -3,7 +3,10 @@
 
 import datetime
 import importlib.util
+import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +17,52 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/orbis-release-version.py
 SPEC = importlib.util.spec_from_file_location("release_version", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+@unittest.skipUnless(shutil.which("jq"), "Release query tests require jq")
+class ReleaseQueryTests(unittest.TestCase):
+    def run_query(self, query, pages, status=0):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "releases.json"
+            fixture.write_text(pages)
+            gh = root / "gh"
+            gh.write_text('#!/bin/sh\ncat "$RELEASE_QUERY_FIXTURE"\n'
+                          'exit "${RELEASE_QUERY_STATUS:-0}"\n')
+            gh.chmod(0o755)
+            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                       GITHUB_REPOSITORY="test/orbis", RELEASE_QUERY_FIXTURE=str(fixture),
+                       RELEASE_QUERY_STATUS=str(status))
+            return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", query],
+                                  env=env, capture_output=True, text=True, check=False)
+
+    def queries(self):
+        workflow = SCRIPT.parents[1] / ".github/workflows/macos-release.yml"
+        queries = re.findall(r'previous="\$\((.+)\)"', workflow.read_text())
+        self.assertEqual(len(queries), 2, "Exercise both version and publication queries")
+        return queries
+
+    def test_query_handles_empty_and_paginated_releases(self):
+        cases = [
+            ("[]", "\n"),
+            ('[{"draft":true,"prerelease":false,"tag_name":"draft"}]\n'
+             '[{"draft":false,"prerelease":true,"tag_name":"beta"}]', "\n"),
+            ('[{"draft":true,"prerelease":false,"tag_name":"draft"}]\n'
+             '[{"draft":false,"prerelease":false,"tag_name":"v2026.10.01.3"}]\n'
+             '[{"draft":false,"prerelease":false,"tag_name":"v2026.09.30.1"}]',
+             "v2026.10.01.3\n"),
+        ]
+        for query in self.queries():
+            for pages, expected in cases:
+                with self.subTest(query=query, pages=pages):
+                    result = self.run_query(query, pages)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, expected)
+
+    def test_query_propagates_api_failure(self):
+        for query in self.queries():
+            result = self.run_query(query, "[]", status=1)
+            self.assertNotEqual(result.returncode, 0)
 
 
 class ReleaseVersionTests(unittest.TestCase):
