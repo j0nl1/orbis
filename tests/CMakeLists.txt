@@ -18,6 +18,35 @@ add_test(NAME integration.macos-signing
   COMMAND ${PROJECT_SOURCE_DIR}/scripts/test-orbis-macos-signing.sh)
 set_tests_properties(integration.macos-signing PROPERTIES LABELS "integration;release")
 set(ORBIS_TEST_SPARKLE_ROOT "$ENV{ORBIS_TEST_SPARKLE_ROOT}" CACHE PATH "Sparkle distribution for updater tests")
+set(ORBIS_TEST_FREERDP_BUILD_DIR "" CACHE PATH "Built FreeRDP runtime for native keyboard input tests")
+if(ORBIS_TEST_FREERDP_BUILD_DIR)
+  set(keyboard_source ${PROJECT_SOURCE_DIR}/.build/vendor/freerdp)
+  set(keyboard_runtime ${ORBIS_TEST_FREERDP_BUILD_DIR}/macos/Orbis.app/Contents/Frameworks)
+  add_executable(orbis_keyboard_input_tests
+    ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisKeyboardInputTests.m
+    ${keyboard_source}/client/Mac/MRDPView.m
+    ${keyboard_source}/client/Mac/Keyboard.m
+    ${keyboard_source}/client/Mac/Clipboard.m
+    ${keyboard_source}/client/Mac/mf_client.m
+    ${keyboard_source}/client/Mac/MRDPCursor.m)
+  target_include_directories(orbis_keyboard_input_tests PRIVATE
+    ${keyboard_source}/client/Mac ${keyboard_source}/include ${keyboard_source}/winpr/include
+    ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
+  target_compile_options(orbis_keyboard_input_tests PRIVATE -fno-objc-arc -fblocks)
+  # Replace only the outgoing network boundary; run the real AppKit event handlers.
+  target_compile_definitions(orbis_keyboard_input_tests PRIVATE
+    freerdp_input_send_keyboard_event=OrbisRecordKeyboardEvent
+    freerdp_input_send_unicode_keyboard_event=OrbisRecordUnicodeKeyboardEvent)
+  set_property(SOURCE ${keyboard_source}/client/Mac/MRDPView.m APPEND PROPERTY
+    COMPILE_DEFINITIONS mf_press_mouse_button=OrbisRecordMouseButton)
+  target_link_libraries(orbis_keyboard_input_tests PRIVATE ${APPKIT_FRAMEWORK}
+    "${keyboard_runtime}/libfreerdp3.3.dylib"
+    "${keyboard_runtime}/libfreerdp-client3.3.dylib"
+    "${keyboard_runtime}/libwinpr3.3.dylib" "-framework IOKit" "-framework CoreGraphics")
+  target_link_options(orbis_keyboard_input_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_test(NAME integration.macos-keyboard-input COMMAND orbis_keyboard_input_tests)
+  set_tests_properties(integration.macos-keyboard-input PROPERTIES LABELS "integration;appkit;freerdp")
+endif()
 find_library(NETWORK_FRAMEWORK Network REQUIRED)
 
 # The asynchronous transport uses ARC independently of the existing MRC adapters.
@@ -157,11 +186,13 @@ xctest_add_bundle(
 )
 target_compile_options(OrbisMacLibraryTests PRIVATE -fno-objc-arc -fblocks)
 xctest_add_test(integration.macos-library OrbisMacLibraryTests)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test-homes/macos-library)
 set_tests_properties(
   integration.macos-library
   PROPERTIES
     LABELS "integration;xctest;appkit"
     RUN_SERIAL TRUE
+    ENVIRONMENT "CFFIXED_USER_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-homes/macos-library"
 )
 
 set(ORBIS_LEGACY_CONTRACT_TESTS

@@ -40,6 +40,8 @@ The mapping is active only while the remote session has focus.
 | ⌘⌫ | Forward Delete |
 
 On macOS, tapping Command on its own sends Super, which opens GNOME Activities.
+Option and Shift+Option symbols such as `@`, `€`, and braces use the characters
+produced by the Mac keyboard layout. Option+Tab still sends remote Alt+Tab.
 On iPadOS, Command is kept as a shortcut modifier. Other keys use FreeRDP's
 normal keyboard mapping.
 
@@ -77,9 +79,11 @@ Installation waits for an active remote session to end before restarting Orbis.
 The update feed and ZIP are verified with a free Ed25519 signature using Sparkle;
 an Apple Developer membership is not required by the release workflow.
 
-Releases are built for Apple Silicon and Intel when a `vYYYY.MM.DD.N` tag is
-pushed. The setup, signing key configuration, and first-install requirements are
-documented in [docs/macos-updates.md](docs/macos-updates.md). Local source builds
+Every push to `main`, including a merged pull request, automatically builds and
+publishes a release for Apple Silicon and Intel with a new `vYYYY.MM.DD.N` tag.
+Pushing a release tag manually is also supported. The setup, signing key
+configuration, and first-install requirements are documented in
+[docs/macos-updates.md](docs/macos-updates.md). Local source builds
 keep the updater disabled unless explicitly enabled.
 
 ## Build from source

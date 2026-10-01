@@ -62,9 +62,31 @@ Changing the embedded public key without a supported Sparkle key rotation
 breaks updates from existing installations. The workflow stops before building
 if either repository setting is absent, and refuses to publish unsigned output.
 
-## Publish a release
+## Automatic releases from main
 
-After the release changes are on the intended commit, create and push a tag:
+Every push to `main`, including merge, squash, and rebase merges of pull requests,
+starts the release workflow. No manual tag or version edit is needed. The workflow
+chooses `vYYYY.MM.DD.N` using the current UTC date and the next available revision.
+It considers all existing tags and releases, including drafts, to avoid reusing
+a version after a failed publication. If a reserved version has a later date,
+that date is retained and its revision increases so updates remain ordered.
+
+Each build and its release tag use the exact commit that triggered the workflow,
+even if `main` advances during the build. Releases are serialized, with up to 100
+pending runs queued. A rerun or an older queued commit already included in the
+most recent published stable release is skipped, preventing an older app from
+being republished with a newer version. The tag is only created after the build,
+packaging, and signature checks succeed. The workflow token creates the tag and
+release without triggering another tag-push workflow.
+
+This automation takes effect when the workflow change reaches `main`; that push
+also starts the first automatic release. It uses the existing public variable
+and private signing secret described above. The workflow never merges a pull
+request or writes a commit to `main`.
+
+## Manual release tags
+
+To publish a specific commit manually, create and push a tag:
 
 ```sh
 git tag v2026.09.30.1
@@ -77,14 +99,17 @@ ordering updates is `YYYYMMDD.N`. Increase the revision for another release on
 the same day. Dates must be valid, and a release must be newer than the latest
 published stable version. Prerelease suffixes are not accepted by this workflow.
 
+## Build and publication
+
 The workflow builds on native Apple Silicon and Intel runners, runs the native
 suite, combines the app binaries, signs the resulting app, then generates and
 verifies the signed ZIP and feed. Sparkle is already universal and is copied
 without merging its slices. The workflow creates a draft with all three assets
 before publishing it as the latest release. A build or packaging failure leaves
 the previous public release available. A publication failure may leave a draft
-that must be removed before retrying the same tag; distributable files are also
-retained as a workflow recovery artifact for seven days.
+that must be removed before retrying the same manual tag. Rerunning all jobs of
+an automatic release allocates a new version after a failed publication;
+distributable files are also retained as a workflow recovery artifact for seven days.
 
 Do not manually mark older releases as latest, replace signed assets, or publish
 an unrelated release as latest without its matching appcast. The stable feed
@@ -124,4 +149,6 @@ whole installed-app lifecycle.
 
 Primary references: [Sparkle setup](https://sparkle-project.org/documentation/),
 [Sparkle settings](https://sparkle-project.org/documentation/customization/),
-and [publishing updates](https://sparkle-project.org/documentation/publishing/).
+[publishing updates](https://sparkle-project.org/documentation/publishing/),
+[GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
+and [workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).

@@ -11,11 +11,17 @@
 
 static NSButton *OrbisSymbolButton(NSString *symbol, NSString *toolTip, id target, SEL action)
 {
-	NSImage *image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:toolTip];
+	NSImage *image = [[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:toolTip]
+	    imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:14.0
+	                                                                                 weight:NSFontWeightMedium]];
 	NSButton *button = [NSButton buttonWithImage:image target:target action:action];
-	[button setBezelStyle:NSBezelStyleCircular];
+	[button setBezelStyle:NSBezelStyleRounded];
+	[button setControlSize:NSControlSizeLarge];
 	[button setToolTip:toolTip];
+	[button setAccessibilityLabel:toolTip];
 	[button setImagePosition:NSImageOnly];
+	[[button widthAnchor] constraintEqualToConstant:36.0].active = YES;
+	[[button heightAnchor] constraintEqualToConstant:36.0].active = YES;
 	return button;
 }
 
@@ -191,6 +197,8 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	                                      target:self
 	                                      action:@selector(addConnection:)];
 	[button setBezelStyle:NSBezelStyleRounded];
+	[button setControlSize:NSControlSizeLarge];
+	[[button widthAnchor] constraintGreaterThanOrEqualToConstant:160.0].active = YES;
 
 	NSStackView *stack = [NSStackView stackViewWithViews:@[ icon, title, subtitle, button ]];
 	[stack setOrientation:NSUserInterfaceLayoutOrientationVertical];
@@ -273,7 +281,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSStackView *actions = [NSStackView stackViewWithViews:@[ connect, edit, delete ]];
 	[actions setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
 	[actions setAlignment:NSLayoutAttributeCenterY];
-	[actions setSpacing:8.0];
+	[actions setSpacing:10.0];
 	[actions setContentHuggingPriority:NSLayoutPriorityRequired
 	                      forOrientation:NSLayoutConstraintOrientationHorizontal];
 	[actions setContentCompressionResistancePriority:NSLayoutPriorityRequired
@@ -369,10 +377,16 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	}
 	[_profileStore saveProfile:profile];
 	[self reloadProfiles];
+	return YES;
+}
+
+- (void)profileEditorControllerDidFinish:(OrbisProfileEditorController *)controller
+{
+	if (controller != _profileEditor)
+		return;
 	[controller setDelegate:nil];
 	[_profileEditor autorelease];
 	_profileEditor = nil;
-	return YES;
 }
 
 - (void)connectPressed:(NSButton *)sender
