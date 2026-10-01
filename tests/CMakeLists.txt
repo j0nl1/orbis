@@ -8,6 +8,16 @@ find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(SECURITY_FRAMEWORK Security REQUIRED)
 find_package(XCTest REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME unit.release-version
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_release_version.py)
+set_tests_properties(unit.release-version PROPERTIES LABELS "unit;release")
+add_test(NAME unit.appcast COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_appcast.py)
+set_tests_properties(unit.appcast PROPERTIES LABELS "unit;release")
+add_test(NAME integration.macos-signing
+  COMMAND ${PROJECT_SOURCE_DIR}/scripts/test-orbis-macos-signing.sh)
+set_tests_properties(integration.macos-signing PROPERTIES LABELS "integration;release")
+set(ORBIS_TEST_SPARKLE_ROOT "$ENV{ORBIS_TEST_SPARKLE_ROOT}" CACHE PATH "Sparkle distribution for updater tests")
 
 add_library(
   orbis_shared
@@ -50,6 +60,20 @@ target_link_libraries(
     orbis_shared
     ${APPKIT_FRAMEWORK}
 )
+
+if(ORBIS_TEST_SPARKLE_ROOT)
+  find_library(ORBIS_TEST_SPARKLE_FRAMEWORK Sparkle
+    PATHS "${ORBIS_TEST_SPARKLE_ROOT}" NO_DEFAULT_PATH REQUIRED)
+  add_executable(orbis_updater_session_tests
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAppDelegate.m
+    ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisUpdaterSessionTests.m)
+  target_compile_definitions(orbis_updater_session_tests PRIVATE ORBIS_ENABLE_UPDATES=1)
+  target_compile_options(orbis_updater_session_tests PRIVATE -fno-objc-arc -fblocks)
+  target_link_libraries(orbis_updater_session_tests PRIVATE orbis_macos_ui ${ORBIS_TEST_SPARKLE_FRAMEWORK})
+  set_target_properties(orbis_updater_session_tests PROPERTIES BUILD_RPATH "${ORBIS_TEST_SPARKLE_ROOT}")
+  add_test(NAME integration.updater-session COMMAND orbis_updater_session_tests)
+  set_tests_properties(integration.updater-session PROPERTIES LABELS "integration;release;appkit")
+endif()
 
 add_executable(
   orbis_retry_policy_tests

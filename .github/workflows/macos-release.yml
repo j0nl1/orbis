@@ -1,0 +1,123 @@
+name: Publish macOS release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.ORBIS_VERSION }}
+      build: ${{ steps.version.outputs.ORBIS_BUILD_NUMBER }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release version and signing configuration
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          UPDATE_PUBLIC_KEY: ${{ vars.ORBIS_UPDATE_PUBLIC_KEY }}
+          UPDATE_PRIVATE_KEY: ${{ secrets.ORBIS_SPARKLE_PRIVATE_KEY }}
+        run: |
+          test -n "$UPDATE_PUBLIC_KEY" || { echo 'Set the ORBIS_UPDATE_PUBLIC_KEY repository variable.' >&2; exit 1; }
+          test -n "$UPDATE_PRIVATE_KEY" || { echo 'Set the ORBIS_SPARKLE_PRIVATE_KEY repository secret.' >&2; exit 1; }
+          previous="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // ""')"
+          python3 scripts/orbis-release-version.py "$RELEASE_TAG" --previous-tag "$previous" >> "$GITHUB_OUTPUT"
+      - name: Test release version policy
+        run: |
+          python3 tests/test_release_version.py
+          python3 tests/test_appcast.py
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install build tools
+        run: brew install cmake ninja openssl@3 ripgrep
+      - name: Run native tests
+        run: ORBIS_TEST_SPARKLE_ROOT="$(scripts/prepare-sparkle.sh)" scripts/test-orbis.sh
+      - name: Build updater-enabled app
+        env:
+          ORBIS_MACOS_ARCH: ${{ matrix.arch }}
+          ORBIS_ENABLE_UPDATES: 'ON'
+          ORBIS_UPDATE_PUBLIC_KEY: ${{ vars.ORBIS_UPDATE_PUBLIC_KEY }}
+          ORBIS_UPDATE_FEED_URL: https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml
+          ORBIS_VERSION: ${{ needs.version.outputs.version }}
+          ORBIS_BUILD_NUMBER: ${{ needs.version.outputs.build }}
+        run: |
+          scripts/build-orbis-macos.sh
+          tar -czf "Orbis-${ORBIS_MACOS_ARCH}.tar.gz" -C artifacts/macos Orbis.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: Orbis-${{ matrix.arch }}.tar.gz
+          retention-days: 7
+
+  publish:
+    needs: [version, build]
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          path: .build/release-inputs
+          merge-multiple: true
+      - name: Assemble and sign the universal app
+        run: |
+          mkdir -p .build/release-inputs/arm64 .build/release-inputs/x86_64
+          tar -xzf .build/release-inputs/Orbis-arm64.tar.gz -C .build/release-inputs/arm64
+          tar -xzf .build/release-inputs/Orbis-x86_64.tar.gz -C .build/release-inputs/x86_64
+          mkdir -p artifacts/macos
+          scripts/merge-orbis-macos.sh .build/release-inputs/arm64/Orbis.app .build/release-inputs/x86_64/Orbis.app artifacts/macos/Orbis.app
+          scripts/sign-orbis-macos.sh artifacts/macos/Orbis.app
+      - name: Sign update archive and feed
+        env:
+          PRIVATE_KEY: ${{ secrets.ORBIS_SPARKLE_PRIVATE_KEY }}
+          ORBIS_GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          umask 077
+          key_file="$(mktemp "${RUNNER_TEMP}/orbis-update-key.XXXXXX")"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$PRIVATE_KEY" > "$key_file"
+          ORBIS_SPARKLE_PRIVATE_KEY_FILE="$key_file" scripts/package-orbis-update.sh artifacts/macos/Orbis.app "$RELEASE_TAG" artifacts/update
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          previous="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // ""')"
+          python3 scripts/orbis-release-version.py "$RELEASE_TAG" --previous-tag "$previous"
+          gh release create "$RELEASE_TAG" artifacts/update/*.zip artifacts/update/appcast.xml artifacts/update/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Orbis ${RELEASE_TAG#v}" --generate-notes
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+      - name: Retain distributable after a publication failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-recovery
+          path: artifacts/update/
+          retention-days: 7

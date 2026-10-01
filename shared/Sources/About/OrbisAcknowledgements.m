@@ -16,6 +16,14 @@ NSString *const OrbisProductDescription =
 + (NSArray *)projects
 {
 	return @[
+#if ORBIS_ENABLE_UPDATES
+		@{
+			OrbisProjectNameKey : @"Sparkle",
+			OrbisProjectDetailKey : @"Signed macOS application updates",
+			OrbisProjectLicenseKey : @"MIT and bundled third-party licenses",
+			OrbisProjectURLKey : @"https://sparkle-project.org"
+		},
+#endif
 		@{
 			OrbisProjectNameKey : @"FreeRDP and WinPR",
 			OrbisProjectDetailKey : @"RDP protocol, transport, graphics, input, and platform runtime",

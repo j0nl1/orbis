@@ -63,8 +63,23 @@ the screenshots is documentation data, not a bundled connection.
 | iPad | iPadOS 26 | UIKit | arm64 device and arm64 simulator |
 | Mac | macOS 15 | AppKit | Apple Silicon, Intel, or universal |
 
-Both apps use `com.dnexus.orbis`. Versions use the UTC build date:
-`YYYY.MM.DD` for the version and `YYYYMMDD` for the build number.
+Both apps use `com.dnexus.orbis`. Local versions use the UTC build date:
+`YYYY.MM.DD` for the version and `YYYYMMDD` for the build number. macOS releases
+add a revision to the build number (`YYYYMMDD.N`) so several updates can be
+published on the same day.
+
+## macOS updates
+
+GitHub release builds include **Orbis > Check for Updates…** and check for new
+versions daily. Updates download and install inside the app after user approval.
+Installation waits for an active remote session to end before restarting Orbis.
+The update feed and ZIP are verified with a free Ed25519 signature using Sparkle;
+an Apple Developer membership is not required by the release workflow.
+
+Releases are built for Apple Silicon and Intel when a `vYYYY.MM.DD.N` tag is
+pushed. The setup, signing key configuration, and first-install requirements are
+documented in [docs/macos-updates.md](docs/macos-updates.md). Local source builds
+keep the updater disabled unless explicitly enabled.
 
 ## Build from source
 

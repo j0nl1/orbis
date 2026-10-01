@@ -6,6 +6,7 @@ Orbis uses the following open-source projects. Their source repositories contain
 |---|---|---|---|
 | FreeRDP and WinPR | RDP protocol, transport, graphics, input, and platform runtime | Apache-2.0 | [FreeRDP/FreeRDP](https://github.com/FreeRDP/FreeRDP) |
 | OpenSSL | TLS and cryptographic primitives | Apache-2.0 | [openssl/openssl](https://github.com/openssl/openssl) |
+| Sparkle | Signed macOS updates in release builds | MIT and bundled third-party licenses | [sparkle-project/Sparkle](https://github.com/sparkle-project/Sparkle) |
 | FFmpeg | H.264 and HEVC decoding support on iPadOS | LGPL-2.1-or-later in the Orbis build configuration | [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg) |
 | OpenH264 | H.264 codec support on iPadOS | BSD-2-Clause | [cisco/openh264](https://github.com/cisco/openh264) |
 | Opus | Low-latency audio codec | BSD-3-Clause | [xiph/opus](https://github.com/xiph/opus) |
@@ -19,3 +20,5 @@ The Orbis application layer is licensed under the MIT License. The FreeRDP
 submodule and the adapter patch retain Apache-2.0 and their original copyright
 notices. A redistributable copy of that license is included at
 [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
+Sparkle's complete notices are included in [LICENSES/Sparkle.txt](LICENSES/Sparkle.txt)
+and as `Sparkle-LICENSE.txt` in updater-enabled app bundles.

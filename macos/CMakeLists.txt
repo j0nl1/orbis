@@ -4,8 +4,38 @@ cmake_minimum_required(VERSION 3.22)
 
 set(ORBIS_SHARED_DIR "${PROJECT_SOURCE_DIR}/shared")
 
-string(TIMESTAMP ORBIS_VERSION_DATE "%Y.%m.%d" UTC)
-string(TIMESTAMP ORBIS_BUILD_NUMBER "%Y%m%d" UTC)
+string(TIMESTAMP ORBIS_DEFAULT_VERSION "%Y.%m.%d" UTC)
+string(TIMESTAMP ORBIS_DEFAULT_BUILD "%Y%m%d" UTC)
+set(ORBIS_VERSION_DATE "${ORBIS_DEFAULT_VERSION}" CACHE STRING "Displayed Orbis version")
+set(ORBIS_BUILD_NUMBER "${ORBIS_DEFAULT_BUILD}" CACHE STRING "Monotonically increasing Orbis build")
+option(ORBIS_ENABLE_UPDATES "Enable signed GitHub release updates" OFF)
+set(ORBIS_UPDATE_FEED_URL "https://github.com/j0nl1/orbis/releases/latest/download/appcast.xml"
+    CACHE STRING "Sparkle appcast URL")
+set(ORBIS_UPDATE_PUBLIC_KEY "" CACHE STRING "Base64 Sparkle Ed25519 public key")
+set(ORBIS_SPARKLE_ROOT "" CACHE PATH "Extracted Sparkle distribution")
+set(ORBIS_UPDATER_PLIST "")
+if(ORBIS_ENABLE_UPDATES)
+  if(NOT ORBIS_UPDATE_PUBLIC_KEY MATCHES "^[A-Za-z0-9+/]+=$" OR
+     NOT ORBIS_UPDATE_FEED_URL MATCHES "^https://[A-Za-z0-9./_-]+$")
+    message(FATAL_ERROR "Updates require an Ed25519 public key and an HTTPS appcast URL")
+  endif()
+  string(LENGTH "${ORBIS_UPDATE_PUBLIC_KEY}" ORBIS_UPDATE_KEY_LENGTH)
+  if(NOT ORBIS_UPDATE_KEY_LENGTH EQUAL 44)
+    message(FATAL_ERROR "The Ed25519 public key must encode 32 bytes")
+  endif()
+  find_library(SPARKLE_FRAMEWORK Sparkle PATHS "${ORBIS_SPARKLE_ROOT}" NO_DEFAULT_PATH REQUIRED)
+  set(ORBIS_UPDATER_PLIST "
+  <key>SUFeedURL</key><string>${ORBIS_UPDATE_FEED_URL}</string>
+  <key>SUPublicEDKey</key><string>${ORBIS_UPDATE_PUBLIC_KEY}</string>
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SUScheduledCheckInterval</key><integer>86400</integer>
+  <key>SUAutomaticallyUpdate</key><false/>
+  <key>SUAllowsAutomaticUpdates</key><false/>
+  <key>SUEnableSystemProfiling</key><false/>
+  <key>SUVerifyUpdateBeforeExtraction</key><true/>
+  <key>SURequireSignedFeed</key><true/>
+  <key>SUSignedFeedFailureExpirationInterval</key><integer>0</integer>")
+endif()
 
 find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
@@ -62,6 +92,25 @@ target_link_libraries(
 )
 
 target_compile_options(OrbisMac PRIVATE -fno-objc-arc)
+
+if(ORBIS_ENABLE_UPDATES)
+  target_compile_definitions(OrbisMac PRIVATE ORBIS_ENABLE_UPDATES=1)
+  target_link_libraries(OrbisMac PRIVATE ${SPARKLE_FRAMEWORK})
+  add_custom_command(TARGET OrbisMac POST_BUILD
+    COMMAND /usr/bin/ditto "${SPARKLE_FRAMEWORK}"
+            "$<TARGET_BUNDLE_DIR:OrbisMac>/Contents/Frameworks/Sparkle.framework"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:OrbisMac>/Contents/Resources"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ORBIS_SPARKLE_ROOT}/LICENSE"
+            "$<TARGET_BUNDLE_DIR:OrbisMac>/Contents/Resources/Sparkle-LICENSE.txt"
+    VERBATIM)
+else()
+  add_custom_command(TARGET OrbisMac POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+            "$<TARGET_BUNDLE_DIR:OrbisMac>/Contents/Frameworks/Sparkle.framework"
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+            "$<TARGET_BUNDLE_DIR:OrbisMac>/Contents/Resources/Sparkle-LICENSE.txt"
+    VERBATIM)
+endif()
 
 set_target_properties(
   OrbisMac

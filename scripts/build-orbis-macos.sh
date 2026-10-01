@@ -7,11 +7,16 @@ freerdp_source_dir="$("${repository_dir}/scripts/prepare-freerdp.sh")"
 requested_arch="${ORBIS_MACOS_ARCH:-$(uname -m)}"
 configuration="${ORBIS_CONFIGURATION:-Release}"
 artifact_dir="${repository_dir}/artifacts/macos"
-signing_identity="${ORBIS_MACOS_SIGNING_IDENTITY:--}"
+updates_enabled="${ORBIS_ENABLE_UPDATES:-OFF}"
+version="${ORBIS_VERSION:-$(date -u +%Y.%m.%d)}"
+build_number="${ORBIS_BUILD_NUMBER:-$(date -u +%Y%m%d)}"
 
 cmake_options=(
-  -G Ninja
+  -G "${ORBIS_CMAKE_GENERATOR:-Ninja}"
   "-DCMAKE_BUILD_TYPE=${configuration}"
+  "-DORBIS_VERSION_DATE=${version}"
+  "-DORBIS_BUILD_NUMBER=${build_number}"
+  "-DORBIS_ENABLE_UPDATES=${updates_enabled}"
   -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
   -DWITH_CLIENT=ON
   -DWITH_CLIENT_COMMON=ON
@@ -50,6 +55,16 @@ cmake_options=(
   -DCHANNEL_URBDRC=OFF
   -DCHANNEL_SMARTCARD=OFF
 )
+
+if [[ "$updates_enabled" == ON ]]; then
+  : "${ORBIS_UPDATE_PUBLIC_KEY:?Set ORBIS_UPDATE_PUBLIC_KEY to enable updates}"
+  sparkle_root="$("${repository_dir}/scripts/prepare-sparkle.sh")"
+  cmake_options+=(
+    "-DORBIS_SPARKLE_ROOT=${sparkle_root}"
+    "-DORBIS_UPDATE_PUBLIC_KEY=${ORBIS_UPDATE_PUBLIC_KEY}"
+    "-DORBIS_UPDATE_FEED_URL=${ORBIS_UPDATE_FEED_URL:-https://github.com/j0nl1/orbis/releases/latest/download/appcast.xml}"
+  )
+fi
 
 openssl_root_for_arch() {
   case "$1" in
@@ -95,13 +110,13 @@ bundle_openssl() {
       \( -path '*/MacOS/*' -o -name '*.dylib' \) -print
   )
 
-  codesign --force --deep --sign "$signing_identity" "$app_path"
+  "${repository_dir}/scripts/sign-orbis-macos.sh" "$app_path"
 }
 
 bundle_binaries() {
   local app_path="$1"
   find "${app_path}/Contents/MacOS" "${app_path}/Contents/Frameworks" -type f \
-    \( -path '*/MacOS/*' -o -name '*.dylib' \) -print
+    -not -path '*/Sparkle.framework/*' \( -path '*/MacOS/*' -o -name '*.dylib' \) -print
 }
 
 verify_bundle() {
@@ -134,6 +149,9 @@ verify_bundle() {
   done < <(bundle_binaries "$app_path")
 
   codesign --verify --deep --strict "$app_path"
+  if [[ "$updates_enabled" == ON ]]; then
+    lipo "${app_path}/Contents/Frameworks/Sparkle.framework/Sparkle" -verify_arch "$@"
+  fi
 }
 
 build_arch() {
@@ -197,7 +215,7 @@ package_universal() {
     cd "$arm_app"
     bundle_binaries .
   )
-  codesign --force --deep --sign "$signing_identity" "${artifact_dir}/Orbis.app"
+  "${repository_dir}/scripts/sign-orbis-macos.sh" "${artifact_dir}/Orbis.app"
   verify_bundle "${artifact_dir}/Orbis.app" arm64 x86_64
   printf 'Built universal Orbis app: %s\n' "${artifact_dir}/Orbis.app"
 }
