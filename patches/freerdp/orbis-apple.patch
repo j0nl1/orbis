@@ -824,6 +824,22 @@ index e82f50b9c..5e69fc1fe 100644
  		return FALSE;
  
  	mfc->client_width = mfc->width;
+diff --git a/client/Mac/mf_client.m b/client/Mac/mf_client.m
+--- a/client/Mac/mf_client.m
++++ b/client/Mac/mf_client.m
+@@ -146,5 +146,12 @@ void mf_scale_mouse_event(void *context, UINT16 flags, UINT16 x, UINT16 y)
+ {
+ 	mfContext *mfc = (mfContext *)context;
++	/* The button sender does not encode wheel events on the AInput channel. */
++	if (flags & (PTR_FLAGS_WHEEL | PTR_FLAGS_HWHEEL))
++	{
++		freerdp_client_send_wheel_event(&mfc->common, flags);
++		return;
++	}
++
+ 	MRDPView *view = (MRDPView *)mfc->view;
+ 	// Convert to windows coordinates
+ 	y = [view frame].size.height - y;
 diff --git a/client/iOS/AppDelegate.h b/client/iOS/AppDelegate.h
 index dc13cd8fa..26a075ef5 100644
 --- a/client/iOS/AppDelegate.h
