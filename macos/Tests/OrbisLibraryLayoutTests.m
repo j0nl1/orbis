@@ -219,6 +219,9 @@ static void DrainSheetCompletion(void)
 		NSButton *delete = FindButtonWithToolTip(card, @"Delete");
 		if (!delete)
 			continue;
+		XCTAssertTrue([card isKindOfClass:[NSBox class]]);
+		XCTAssertEqualWithAccuracy([(NSBox *)card contentViewMargins].width, 5.0, 0.01);
+		XCTAssertEqualWithAccuracy([(NSBox *)card contentViewMargins].height, 5.0, 0.01);
 		NSRect actionFrame = [delete convertRect:[delete bounds] toView:content];
 		XCTAssertEqualWithAccuracy(NSMaxX(actionFrame), NSWidth([content bounds]) - 42.0, 1.0);
 		NSTextField *name = (NSTextField *)FindViewWithAccessibilityIdentifier(card, @"connection-name-label");
