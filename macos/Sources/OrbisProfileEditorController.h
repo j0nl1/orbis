@@ -38,6 +38,8 @@
 	NSStackView *_clientIDGroup;
 	NSStackView *_clientSecretGroup;
 	NSStackView *_portGroup;
+	NSStackView *_endpointGroup;
+	NSStackView *_accessGroup;
 	NSStackView *_formStack;
 	NSScrollView *_scrollView;
 	NSView *_formView;

@@ -6,6 +6,7 @@
 #import "OrbisLibraryViewController.h"
 #import "OrbisProfile.h"
 #import "OrbisProfileEditorController.h"
+#import "OrbisAboutController.h"
 
 static NSView *FindViewWithAccessibilityIdentifier(NSView *view, NSString *identifier)
 {
@@ -105,29 +106,70 @@ static void DrainSheetCompletion(void)
 	NSButton *refresh = FindButtonWithToolTip(content, @"Refresh connections");
 	NSButton *add = FindButtonWithToolTip(content, @"New connection");
 	NSButton *about = FindButtonWithToolTip(content, @"About Orbis");
-	XCTAssertNotNil(refresh);
+	XCTAssertNil(refresh);
 	XCTAssertNotNil(add);
 	XCTAssertNotNil(about);
 
-	NSRect refreshFrame = [refresh convertRect:[refresh bounds] toView:content];
+	NSRect addFrame = [add convertRect:[add bounds] toView:content];
 	NSRect aboutFrame = [about convertRect:[about bounds] toView:content];
 	XCTAssertGreaterThanOrEqual(NSMaxX(aboutFrame), NSWidth([content bounds]) - 45.0);
-	XCTAssertGreaterThanOrEqual(NSMinX(refreshFrame), NSWidth([content bounds]) * 0.75);
+	XCTAssertGreaterThanOrEqual(NSMinX(addFrame), NSWidth([content bounds]) * 0.7);
 
 	NSView *statusIcon = FindViewWithAccessibilityIdentifier(content, @"connection-status-icon");
 	NSView *statusLabel = FindViewWithAccessibilityIdentifier(content, @"connection-status-label");
 	if (statusIcon || statusLabel)
 	{
 		XCTAssertNotNil(statusIcon);
-		XCTAssertNotNil(statusLabel);
-		XCTAssertEqual([statusIcon superview], [statusLabel superview]);
-		NSRect iconFrame = [statusIcon convertRect:[statusIcon bounds] toView:[statusIcon superview]];
-		NSRect labelFrame = [statusLabel convertRect:[statusLabel bounds] toView:[statusLabel superview]];
-		XCTAssertLessThanOrEqual(fabs(NSMidY(iconFrame) - NSMidY(labelFrame)), 1.0);
+		XCTAssertNil(statusLabel);
+		NSView *identity = [statusIcon superview];
+		NSView *name = FindViewWithAccessibilityIdentifier(content, @"connection-name-label");
+		XCTAssertEqual([name superview], identity);
 	}
 
 	[window release];
 	[controller release];
+}
+
+- (void)testEditorKeepsSaveAndCancelOutsideTheScrollingForm
+{
+	OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease];
+	OrbisProfileEditorController *editor = [[[OrbisProfileEditorController alloc]
+	    initWithProfile:profile hasStoredPassword:NO] autorelease];
+	NSView *content = [[editor window] contentView];
+	[content layoutSubtreeIfNeeded];
+	NSButton *save = FindButtonWithTitle(content, @"Save connection");
+	NSButton *cancel = FindButtonWithTitle(content, @"Cancel");
+	XCTAssertNotNil(save);
+	XCTAssertNil([save enclosingScrollView]);
+	XCTAssertNil([cancel enclosingScrollView]);
+	XCTAssertEqual([save superview], [cancel superview]);
+	NSRect saveFrame = [save convertRect:[save bounds] toView:content];
+	XCTAssertGreaterThanOrEqual(NSMinY(saveFrame), 0.0);
+	XCTAssertLessThanOrEqual(NSMaxY(saveFrame), NSHeight([content bounds]));
+}
+
+- (void)testAboutProvidesScrollableChangelogAndAcknowledgements
+{
+	OrbisAboutController *about = [[[OrbisAboutController alloc] init] autorelease];
+	NSTabView *tabs = (NSTabView *)FindViewWithAccessibilityIdentifier(
+	    [[about window] contentView], @"about-tabs");
+	XCTAssertEqual([tabs numberOfTabViewItems], (NSInteger)2);
+	XCTAssertEqualObjects([[tabs tabViewItemAtIndex:0] label], @"Changelog");
+	XCTAssertEqualObjects([[tabs tabViewItemAtIndex:1] label], @"Acknowledgements");
+	NSSegmentedControl *sections = (NSSegmentedControl *)FindViewWithAccessibilityIdentifier(
+	    [[about window] contentView], @"about-sections");
+	XCTAssertNotNil(sections);
+	[sections setSelectedSegment:1];
+	[NSApp sendAction:[sections action] to:[sections target] from:sections];
+	XCTAssertEqual([tabs selectedTabViewItem], [tabs tabViewItemAtIndex:1]);
+	for (NSTabViewItem *item in [tabs tabViewItems])
+	{
+		XCTAssertTrue([[item view] isKindOfClass:[NSScrollView class]]);
+		NSTextView *text = [(NSScrollView *)[item view] documentView];
+		XCTAssertFalse([text isEditable]);
+		XCTAssertTrue([text isSelectable]);
+		XCTAssertGreaterThan([[text string] length], (NSUInteger)0);
+	}
 }
 
 - (void)testProfileEditorUsesRoundedInputsWithHorizontalPadding
@@ -150,6 +192,41 @@ static void DrainSheetCompletion(void)
 
 	[editor release];
 	[profile release];
+}
+
+- (void)testConnectionActionsStayAlignedAtTheMinimumWindowWidth
+{
+	OrbisLibraryViewController *controller = [[[OrbisLibraryViewController alloc] init] autorelease];
+	NSMutableArray *fixtures = [NSMutableArray array];
+	for (NSString *name in @[ @"Studio Mac", @"A workstation with a very long connection name" ])
+	{
+		OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease];
+		[profile setName:name];
+		[profile setHost:@"long-workstation-hostname.example.test"];
+		[[controller profileStore] saveProfile:profile];
+		[fixtures addObject:profile];
+	}
+	NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 520)
+	    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO] autorelease];
+	[window setContentViewController:controller];
+	[window setContentSize:NSMakeSize(760, 520)];
+	NSView *content = [window contentView];
+	[content layoutSubtreeIfNeeded];
+	XCTAssertEqualWithAccuracy(NSWidth([content bounds]), 760.0, 1.0);
+	NSStackView *cards = (NSStackView *)FindViewWithAccessibilityIdentifier(content, @"connection-cards");
+	for (NSView *card in [cards arrangedSubviews])
+	{
+		NSButton *delete = FindButtonWithToolTip(card, @"Delete");
+		if (!delete)
+			continue;
+		NSRect actionFrame = [delete convertRect:[delete bounds] toView:content];
+		XCTAssertEqualWithAccuracy(NSMaxX(actionFrame), NSWidth([content bounds]) - 42.0, 1.0);
+		NSTextField *name = (NSTextField *)FindViewWithAccessibilityIdentifier(card, @"connection-name-label");
+		if ([[name stringValue] isEqualToString:@"Studio Mac"])
+			XCTAssertGreaterThanOrEqual(NSWidth([name frame]), [[name cell] cellSize].width);
+	}
+	for (OrbisProfile *profile in fixtures)
+		[[controller profileStore] deleteProfileWithIdentifier:[profile identifier]];
 }
 
 - (void)testCloudflareEditorShowsTokenFieldsAndHidesTheMappedPort

@@ -6,6 +6,35 @@
 #import "OrbisCredentialStore.h"
 #import "OrbisTunnelBridge.h"
 
+static NSRect OrbisCenteredTextRect(NSRect rect, NSFont *font)
+{
+	CGFloat height = ceil([font ascender] - [font descender] + [font leading]);
+	if (NSHeight(rect) > height)
+	{
+		rect.origin.y += floor((NSHeight(rect) - height) / 2.0);
+		rect.size.height = height;
+	}
+	return rect;
+}
+
+@interface OrbisCenteredTextFieldCell : NSTextFieldCell
+@end
+@implementation OrbisCenteredTextFieldCell
+- (NSRect)drawingRectForBounds:(NSRect)bounds
+{
+	return OrbisCenteredTextRect([super drawingRectForBounds:bounds], [self font]);
+}
+@end
+
+@interface OrbisCenteredSecureTextFieldCell : NSSecureTextFieldCell
+@end
+@implementation OrbisCenteredSecureTextFieldCell
+- (NSRect)drawingRectForBounds:(NSRect)bounds
+{
+	return OrbisCenteredTextRect([super drawingRectForBounds:bounds], [self font]);
+}
+@end
+
 static NSTextField *OrbisEditorLabel(NSString *title)
 {
 	NSTextField *label = [NSTextField labelWithString:title];
@@ -16,6 +45,19 @@ static NSTextField *OrbisEditorLabel(NSString *title)
 
 static void OrbisConfigureEditorField(NSTextField *field, NSString *identifier)
 {
+	Class cellClass = [field isKindOfClass:[NSSecureTextField class]]
+	    ? [OrbisCenteredSecureTextFieldCell class] : [OrbisCenteredTextFieldCell class];
+	NSTextFieldCell *cell = [[[cellClass alloc] initTextCell:[field stringValue]] autorelease];
+	NSTextFieldCell *originalCell = [field cell];
+	[cell setPlaceholderString:[originalCell placeholderString]];
+	[cell setEditable:[originalCell isEditable]];
+	[cell setSelectable:[originalCell isSelectable]];
+	[cell setScrollable:[originalCell isScrollable]];
+	[cell setUsesSingleLineMode:[originalCell usesSingleLineMode]];
+	[cell setDrawsBackground:[originalCell drawsBackground]];
+	[cell setBackgroundColor:[originalCell backgroundColor]];
+	[cell setTextColor:[originalCell textColor]];
+	[field setCell:cell];
 	[field setBezeled:YES];
 	[field setBezelStyle:NSTextFieldRoundedBezel];
 	[field setControlSize:NSControlSizeLarge];
@@ -26,12 +68,26 @@ static void OrbisConfigureEditorField(NSTextField *field, NSString *identifier)
 
 static NSStackView *OrbisEditorFieldGroup(NSString *title, NSView *field)
 {
+	[field setAccessibilityLabel:title];
 	NSStackView *group = [NSStackView stackViewWithViews:@[ OrbisEditorLabel(title), field ]];
 	[group setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[group setAlignment:NSLayoutAttributeLeading];
 	[group setSpacing:6.0];
 	[[field widthAnchor] constraintEqualToAnchor:[group widthAnchor]].active = YES;
 	return group;
+}
+
+static NSStackView *OrbisEditorSection(NSString *title, NSArray *views)
+{
+	NSTextField *heading = [NSTextField labelWithString:title];
+	[heading setFont:[NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold]];
+	NSStackView *section = [NSStackView stackViewWithViews:[@[ heading ] arrayByAddingObjectsFromArray:views]];
+	[section setOrientation:NSUserInterfaceLayoutOrientationVertical];
+	[section setAlignment:NSLayoutAttributeLeading];
+	[section setSpacing:10.0];
+	for (NSView *view in views)
+		[[view widthAnchor] constraintEqualToAnchor:[section widthAnchor]].active = YES;
+	return section;
 }
 
 static NSView *OrbisEditorFlexibleSpacer(void)
@@ -51,7 +107,7 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 - (id)initWithProfile:(OrbisProfile *)profile hasStoredPassword:(BOOL)hasStoredPassword
 {
 	NSWindow *window = [[[NSWindow alloc]
-	    initWithContentRect:NSMakeRect(0.0, 0.0, 560.0, 610.0)
+	    initWithContentRect:NSMakeRect(0.0, 0.0, 620.0, 640.0)
 	              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 	                backing:NSBackingStoreBuffered
 	                  defer:NO] autorelease];
@@ -60,6 +116,7 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 
 	_profile = [profile copy];
 	_hasStoredPassword = hasStoredPassword;
+	[window setTitle:[[_profile host] length] > 0 ? @"Edit connection" : @"New connection"];
 	[window setDelegate:self];
 	[self buildContent];
 	return self;
@@ -69,9 +126,11 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 {
 	NSView *content = [[self window] contentView];
 	[content setWantsLayer:YES];
-	_scrollView = [[NSScrollView alloc] initWithFrame:[content bounds]];
-	[_scrollView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+	_scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+	[_scrollView setTranslatesAutoresizingMaskIntoConstraints:NO];
 	[_scrollView setHasVerticalScroller:YES];
+	[_scrollView setAutohidesScrollers:YES];
+	[_scrollView setBorderType:NSNoBorder];
 	[_scrollView setDrawsBackground:NO];
 	_formView = [[NSView alloc] initWithFrame:[content bounds]];
 	[_scrollView setDocumentView:_formView];
@@ -178,10 +237,24 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	_portGroup = [OrbisEditorFieldGroup(@"Port", _portField) retain];
 	NSStackView *usernameGroup = OrbisEditorFieldGroup(@"Username", _usernameField);
 	NSStackView *passwordGroup = OrbisEditorFieldGroup(@"Password", _passwordField);
-	NSStackView *transportGroup = OrbisEditorFieldGroup(@"Connection", _transportField);
+	NSStackView *transportGroup = OrbisEditorFieldGroup(@"Connection type", _transportField);
 	_gatewayHostnameGroup = [OrbisEditorFieldGroup(@"Tunnel URL", _gatewayHostnameField) retain];
 	_clientIDGroup = [OrbisEditorFieldGroup(@"CF-Access-Client-Id", _clientIDField) retain];
 	_clientSecretGroup = [OrbisEditorFieldGroup(@"CF-Access-Client-Secret", _clientSecretField) retain];
+	_endpointGroup = [[NSStackView stackViewWithViews:@[ _hostGroup, _portGroup ]] retain];
+	[_endpointGroup setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
+	[_endpointGroup setAlignment:NSLayoutAttributeTop];
+	[_endpointGroup setSpacing:14.0];
+	[[_portGroup widthAnchor] constraintEqualToConstant:100.0].active = YES;
+	[_hostGroup setContentHuggingPriority:NSLayoutPriorityDefaultLow
+	                     forOrientation:NSLayoutConstraintOrientationHorizontal];
+	_accessGroup = [OrbisEditorSection(@"Cloudflare Access", @[ _clientIDGroup, _clientSecretGroup ]) retain];
+	NSStackView *accountFields = [NSStackView stackViewWithViews:@[ usernameGroup, passwordGroup ]];
+	[accountFields setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
+	[accountFields setAlignment:NSLayoutAttributeTop];
+	[accountFields setDistribution:NSStackViewDistributionFillEqually];
+	[accountFields setSpacing:14.0];
+	NSStackView *account = OrbisEditorSection(@"Remote Desktop account", @[ accountFields ]);
 
 	NSStackView *options = [NSStackView stackViewWithViews:@[
 		_certificateCheckbox, _automaticCheckbox
@@ -189,32 +262,44 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[options setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[options setAlignment:NSLayoutAttributeLeading];
 	[options setSpacing:8.0];
-	[options setEdgeInsets:NSEdgeInsetsMake(12.0, 14.0, 12.0, 14.0)];
-	[options setWantsLayer:YES];
-	[options.layer setCornerRadius:12.0];
-	[options.layer setBackgroundColor:[[NSColor tertiarySystemFillColor] CGColor]];
+	NSStackView *preferences = OrbisEditorSection(@"Preferences", @[ options ]);
 
 	NSStackView *stack = [NSStackView stackViewWithViews:@[
-		header, nameGroup, transportGroup, _hostGroup, _portGroup, _gatewayHostnameGroup, _clientIDGroup, _clientSecretGroup,
-		usernameGroup, passwordGroup, options,
-		_validationLabel, buttons
+		header, nameGroup, transportGroup, _endpointGroup, _gatewayHostnameGroup, _accessGroup,
+		account, preferences, _validationLabel
 	]];
 	_formStack = [stack retain];
 	[stack setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[stack setAlignment:NSLayoutAttributeLeading];
-	[stack setSpacing:14.0];
+	[stack setSpacing:18.0];
+	[stack setCustomSpacing:24.0 afterView:header];
 	[stack setTranslatesAutoresizingMaskIntoConstraints:NO];
 	[_formView addSubview:stack];
 
-	for (NSView *view in @[ header, nameGroup, transportGroup, _hostGroup, _portGroup, _gatewayHostnameGroup, _clientIDGroup,
-	                          _clientSecretGroup, usernameGroup, passwordGroup,
-	                          options, _validationLabel, buttons ])
+	for (NSView *view in @[ header, nameGroup, transportGroup, _endpointGroup, _gatewayHostnameGroup,
+	                          _accessGroup, account, preferences, _validationLabel ])
 		[[view widthAnchor] constraintEqualToAnchor:[stack widthAnchor]].active = YES;
 	for (NSView *field in @[ _nameField, _hostField, _portField, _usernameField, _passwordField,
 	                         _transportField, _gatewayHostnameField, _clientIDField, _clientSecretField ])
 		[[field heightAnchor] constraintEqualToConstant:36.0].active = YES;
 	[[buttons heightAnchor] constraintEqualToConstant:38.0].active = YES;
+	[buttons setTranslatesAutoresizingMaskIntoConstraints:NO];
+	[content addSubview:buttons];
+	NSBox *divider = [[[NSBox alloc] initWithFrame:NSZeroRect] autorelease];
+	[divider setBoxType:NSBoxSeparator];
+	[divider setTranslatesAutoresizingMaskIntoConstraints:NO];
+	[content addSubview:divider];
 	[NSLayoutConstraint activateConstraints:@[
+		[[_scrollView leadingAnchor] constraintEqualToAnchor:[content leadingAnchor]],
+		[[_scrollView trailingAnchor] constraintEqualToAnchor:[content trailingAnchor]],
+		[[_scrollView topAnchor] constraintEqualToAnchor:[content topAnchor]],
+		[[_scrollView bottomAnchor] constraintEqualToAnchor:[divider topAnchor] constant:-12.0],
+		[[divider leadingAnchor] constraintEqualToAnchor:[content leadingAnchor]],
+		[[divider trailingAnchor] constraintEqualToAnchor:[content trailingAnchor]],
+		[[divider bottomAnchor] constraintEqualToAnchor:[buttons topAnchor] constant:-14.0],
+		[[buttons leadingAnchor] constraintEqualToAnchor:[content leadingAnchor] constant:36.0],
+		[[buttons trailingAnchor] constraintEqualToAnchor:[content trailingAnchor] constant:-36.0],
+		[[buttons bottomAnchor] constraintEqualToAnchor:[content bottomAnchor] constant:-20.0],
 		[[stack leadingAnchor] constraintEqualToAnchor:[_formView leadingAnchor] constant:36.0],
 		[[stack trailingAnchor] constraintEqualToAnchor:[_formView trailingAnchor] constant:-36.0],
 		[[stack topAnchor] constraintEqualToAnchor:[_formView topAnchor] constant:30.0]
@@ -226,6 +311,9 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 {
 	(void)sender;
 	BOOL tunnel = [_transportField indexOfSelectedItem] == 1;
+	[[self window] setContentSize:NSMakeSize(620.0, tunnel ? 780.0 : 640.0)];
+	[_endpointGroup setHidden:tunnel];
+	[_accessGroup setHidden:!tunnel];
 	[_hostGroup setHidden:tunnel];
 	[_gatewayHostnameGroup setHidden:!tunnel];
 	[_clientIDGroup setHidden:!tunnel];
@@ -238,6 +326,7 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 
 - (void)updateFormLayout
 {
+	[[[self window] contentView] layoutSubtreeIfNeeded];
 	[_formView layoutSubtreeIfNeeded];
 	CGFloat height = MAX(NSHeight([_scrollView contentView].bounds), [_formStack fittingSize].height + 60.0);
 	[_formView setFrameSize:NSMakeSize(NSWidth([_scrollView contentView].bounds), height)];
@@ -377,6 +466,8 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[_clientIDGroup release];
 	[_clientSecretGroup release];
 	[_portGroup release];
+	[_endpointGroup release];
+	[_accessGroup release];
 	[_formStack release];
 	[_formView release];
 	[_scrollView release];

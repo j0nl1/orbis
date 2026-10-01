@@ -120,6 +120,14 @@ target_link_libraries(
     ${APPKIT_FRAMEWORK}
 )
 
+add_executable(orbis_editing_tests
+  ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAppDelegate.m
+  ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisEditingTests.m)
+target_compile_options(orbis_editing_tests PRIVATE -fno-objc-arc -fblocks)
+target_link_libraries(orbis_editing_tests PRIVATE orbis_macos_ui)
+add_test(NAME integration.macos-editing COMMAND orbis_editing_tests)
+set_tests_properties(integration.macos-editing PROPERTIES LABELS "integration;appkit" RUN_SERIAL TRUE)
+
 if(ORBIS_TEST_SPARKLE_ROOT)
   find_library(ORBIS_TEST_SPARKLE_FRAMEWORK Sparkle
     PATHS "${ORBIS_TEST_SPARKLE_ROOT}" NO_DEFAULT_PATH REQUIRED)

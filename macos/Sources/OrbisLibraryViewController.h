@@ -27,6 +27,7 @@
 
 - (void)reloadProfiles;
 - (void)addConnection:(id)sender;
+- (void)showAbout:(id)sender;
 - (void)connectSelectedProfile:(id)sender;
 
 @end

@@ -63,7 +63,6 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 {
 	NSView *root = [[[NSView alloc] initWithFrame:NSMakeRect(0.0, 0.0, 980.0, 680.0)] autorelease];
 	[root setWantsLayer:YES];
-	[root.layer setBackgroundColor:[[NSColor windowBackgroundColor] CGColor]];
 	[self setView:root];
 
 	NSTextField *title = [NSTextField labelWithString:@"Orbis"];
@@ -77,15 +76,19 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[titles setAlignment:NSLayoutAttributeLeading];
 	[titles setSpacing:1.0];
 
-	NSButton *refresh = OrbisSymbolButton(@"arrow.clockwise", @"Refresh connections", self,
-	                                      @selector(refreshPressed:));
-	NSButton *add = OrbisSymbolButton(@"plus", @"New connection", self, @selector(addConnection:));
+	NSButton *add = [NSButton buttonWithTitle:@"New connection" target:self action:@selector(addConnection:)];
+	[add setImage:[NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:nil]];
+	[add setImagePosition:NSImageLeading];
+	[add setBezelStyle:NSBezelStyleRounded];
+	[add setControlSize:NSControlSizeLarge];
+	[add setToolTip:@"New connection"];
+	[add setAccessibilityLabel:@"New connection"];
+	[[add heightAnchor] constraintEqualToConstant:36.0].active = YES;
 	NSButton *info = OrbisSymbolButton(@"info.circle", @"About Orbis", self,
 	                                  @selector(showAbout:));
-	[refresh setContentTintColor:[NSColor secondaryLabelColor]];
 	[add setContentTintColor:[NSColor systemTealColor]];
-	[info setContentTintColor:[NSColor systemBlueColor]];
-	NSStackView *headerActions = [NSStackView stackViewWithViews:@[ refresh, add, info ]];
+	[info setContentTintColor:[NSColor secondaryLabelColor]];
+	NSStackView *headerActions = [NSStackView stackViewWithViews:@[ add, info ]];
 	[headerActions setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
 	[headerActions setAlignment:NSLayoutAttributeCenterY];
 	[headerActions setSpacing:10.0];
@@ -117,6 +120,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSView *document = [[[NSView alloc] initWithFrame:NSZeroRect] autorelease];
 	[document setTranslatesAutoresizingMaskIntoConstraints:NO];
 	_cardsStack = [[NSStackView alloc] initWithFrame:NSZeroRect];
+	[_cardsStack setAccessibilityIdentifier:@"connection-cards"];
 	[_cardsStack setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[_cardsStack setAlignment:NSLayoutAttributeLeading];
 	[_cardsStack setSpacing:12.0];
@@ -221,14 +225,22 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[card setFillColor:[NSColor controlBackgroundColor]];
 	[card setBorderColor:[NSColor separatorColor]];
 	[card setBorderWidth:1.0];
-	[card setCornerRadius:18.0];
+	[card setCornerRadius:14.0];
 
 	NSImageView *icon = [[[NSImageView alloc] initWithFrame:NSZeroRect] autorelease];
-	[icon setImage:[NSImage imageWithSystemSymbolName:@"bolt.fill" accessibilityDescription:nil]];
+	[icon setImage:[NSImage imageWithSystemSymbolName:@"desktopcomputer" accessibilityDescription:nil]];
+	[icon setSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:24.0
+	                                                                           weight:NSFontWeightRegular]];
+	[[icon widthAnchor] constraintEqualToConstant:32.0].active = YES;
+	[[icon heightAnchor] constraintEqualToConstant:32.0].active = YES;
 	[icon setContentTintColor:[NSColor systemTealColor]];
 
 	NSTextField *name = [NSTextField labelWithString:[profile name]];
+	[name setAccessibilityIdentifier:@"connection-name-label"];
 	[name setFont:[NSFont systemFontOfSize:16.0 weight:NSFontWeightSemibold]];
+	[name setLineBreakMode:NSLineBreakByTruncatingTail];
+	[name setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+	                               forOrientation:NSLayoutConstraintOrientationHorizontal];
 	NSString *address = [[profile transportType] isEqualToString:OrbisTransportTypeCloudflare]
 	    ? [NSString stringWithFormat:@"%@ · Cloudflare", [profile transportHostname]]
 	    : [NSString stringWithFormat:@"%@:%lu", [profile host], (unsigned long)[profile port]];
@@ -237,10 +249,10 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSTextField *detail = [NSTextField labelWithString:endpoint];
 	[detail setFont:[NSFont systemFontOfSize:12.0]];
 	[detail setTextColor:[NSColor secondaryLabelColor]];
-	NSStackView *labels = [NSStackView stackViewWithViews:@[ name, detail ]];
-	[labels setOrientation:NSUserInterfaceLayoutOrientationVertical];
-	[labels setAlignment:NSLayoutAttributeLeading];
-	[labels setSpacing:2.0];
+	[detail setLineBreakMode:NSLineBreakByTruncatingTail];
+	[detail setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+	                                 forOrientation:NSLayoutConstraintOrientationHorizontal];
+	[detail setToolTip:endpoint];
 
 	NSImageView *statusIcon = [[[NSImageView alloc] initWithFrame:NSZeroRect] autorelease];
 	[statusIcon setImage:[NSImage imageWithSystemSymbolName:@"checkmark.circle.fill"
@@ -250,31 +262,38 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[statusIcon setContentTintColor:[NSColor systemGreenColor]];
 	[statusIcon setImageScaling:NSImageScaleProportionallyDown];
 	[statusIcon setAccessibilityIdentifier:@"connection-status-icon"];
+	[[statusIcon widthAnchor] constraintEqualToConstant:16.0].active = YES;
+	[[statusIcon heightAnchor] constraintEqualToConstant:16.0].active = YES;
 
-	NSTextField *statusLabel = [NSTextField labelWithString:@"Ready to connect"];
-	[statusLabel setFont:[NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium]];
-	[statusLabel setTextColor:[NSColor secondaryLabelColor]];
-	[statusLabel setAlignment:NSTextAlignmentCenter];
-	[statusLabel setAccessibilityIdentifier:@"connection-status-label"];
-
-	NSStackView *status = [NSStackView stackViewWithViews:@[ statusIcon, statusLabel ]];
-	[status setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
-	[status setAlignment:NSLayoutAttributeCenterY];
-	[status setSpacing:5.0];
-	[status setEdgeInsets:NSEdgeInsetsMake(5.0, 8.0, 5.0, 8.0)];
-	[status setWantsLayer:YES];
-	[status.layer setCornerRadius:13.0];
-	[status.layer setBackgroundColor:[[NSColor tertiarySystemFillColor] CGColor]];
-	[status setContentHuggingPriority:NSLayoutPriorityRequired
-	                    forOrientation:NSLayoutConstraintOrientationHorizontal];
-	[status setContentCompressionResistancePriority:NSLayoutPriorityRequired
+	NSView *identity = [[[NSView alloc] initWithFrame:NSZeroRect] autorelease];
+	for (NSView *view in @[ name, statusIcon ])
+	{
+		[view setTranslatesAutoresizingMaskIntoConstraints:NO];
+		[identity addSubview:view];
+	}
+	[NSLayoutConstraint activateConstraints:@[
+		[[identity heightAnchor] constraintEqualToConstant:22.0],
+		[[name leadingAnchor] constraintEqualToAnchor:[identity leadingAnchor]],
+		[[name centerYAnchor] constraintEqualToAnchor:[identity centerYAnchor]],
+		[[statusIcon leadingAnchor] constraintEqualToAnchor:[name trailingAnchor] constant:8.0],
+		[[statusIcon centerYAnchor] constraintEqualToAnchor:[identity centerYAnchor]],
+		[[statusIcon trailingAnchor] constraintLessThanOrEqualToAnchor:[identity trailingAnchor]]
+	]];
+	NSStackView *labels = [NSStackView stackViewWithViews:@[ identity, detail ]];
+	[labels setOrientation:NSUserInterfaceLayoutOrientationVertical];
+	[labels setAlignment:NSLayoutAttributeLeading];
+	[labels setSpacing:5.0];
+	[labels setContentHuggingPriority:1.0 forOrientation:NSLayoutConstraintOrientationHorizontal];
+	[labels setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
 	                                  forOrientation:NSLayoutConstraintOrientationHorizontal];
+	[[identity widthAnchor] constraintEqualToAnchor:[labels widthAnchor]].active = YES;
+	[[detail widthAnchor] constraintEqualToAnchor:[labels widthAnchor]].active = YES;
 
 	NSButton *connect = OrbisSymbolButton(@"play.fill", @"Connect", self, @selector(connectPressed:));
 	NSButton *edit = OrbisSymbolButton(@"pencil", @"Edit", self, @selector(editPressed:));
 	NSButton *delete = OrbisSymbolButton(@"trash", @"Delete", self, @selector(deletePressed:));
 	[connect setContentTintColor:[NSColor systemTealColor]];
-	[edit setContentTintColor:[NSColor systemBlueColor]];
+	[edit setContentTintColor:[NSColor secondaryLabelColor]];
 	for (NSButton *button in @[ connect, edit, delete ])
 		[button setTag:(NSInteger)index];
 	[delete setContentTintColor:[NSColor systemRedColor]];
@@ -282,29 +301,25 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[actions setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
 	[actions setAlignment:NSLayoutAttributeCenterY];
 	[actions setSpacing:10.0];
+	[[actions widthAnchor] constraintEqualToConstant:[actions fittingSize].width].active = YES;
 	[actions setContentHuggingPriority:NSLayoutPriorityRequired
 	                      forOrientation:NSLayoutConstraintOrientationHorizontal];
 	[actions setContentCompressionResistancePriority:NSLayoutPriorityRequired
 	                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-	NSView *statusSpacer = OrbisFlexibleSpacer();
-	NSStackView *row = [NSStackView stackViewWithViews:@[ icon, labels, statusSpacer, status, actions ]];
-	[row setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
-	[row setAlignment:NSLayoutAttributeCenterY];
-	[row setSpacing:14.0];
-	[row setEdgeInsets:NSEdgeInsetsMake(18.0, 18.0, 18.0, 18.0)];
-	[row setTranslatesAutoresizingMaskIntoConstraints:NO];
-	[card addSubview:row];
-	[[labels widthAnchor] constraintGreaterThanOrEqualToConstant:260.0].active = YES;
-	[[statusIcon widthAnchor] constraintEqualToConstant:16.0].active = YES;
-	[[statusIcon heightAnchor] constraintEqualToConstant:16.0].active = YES;
-	[[status heightAnchor] constraintEqualToConstant:26.0].active = YES;
+	NSView *cardContent = [card contentView];
+	for (NSView *view in @[ icon, labels, actions ])
+	{
+		[view setTranslatesAutoresizingMaskIntoConstraints:NO];
+		[cardContent addSubview:view];
+		[[view centerYAnchor] constraintEqualToAnchor:[cardContent centerYAnchor]].active = YES;
+	}
 	[NSLayoutConstraint activateConstraints:@[
 		[[card heightAnchor] constraintEqualToConstant:82.0],
-		[[row leadingAnchor] constraintEqualToAnchor:[card leadingAnchor]],
-		[[row trailingAnchor] constraintEqualToAnchor:[card trailingAnchor]],
-		[[row topAnchor] constraintEqualToAnchor:[card topAnchor]],
-		[[row bottomAnchor] constraintEqualToAnchor:[card bottomAnchor]]
+		[[icon leadingAnchor] constraintEqualToAnchor:[cardContent leadingAnchor] constant:12.0],
+		[[labels leadingAnchor] constraintEqualToAnchor:[icon trailingAnchor] constant:14.0],
+		[[labels trailingAnchor] constraintEqualToAnchor:[actions leadingAnchor] constant:-14.0],
+		[[actions trailingAnchor] constraintEqualToAnchor:[cardContent trailingAnchor] constant:-12.0]
 	]];
 	return card;
 }
@@ -327,9 +342,12 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 - (void)showAbout:(id)sender
 {
 	(void)sender;
+	NSWindow *parent = [[self view] window];
+	if (!parent || [parent attachedSheet])
+		return;
 	if (!_aboutController)
 		_aboutController = [[OrbisAboutController alloc] init];
-	[_aboutController beginSheetForWindow:[[self view] window]];
+	[_aboutController beginSheetForWindow:parent];
 }
 
 - (void)editPressed:(NSButton *)sender
@@ -425,12 +443,6 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 		                 [_profileStore deleteProfileWithIdentifier:[profile identifier]];
 		                 [self reloadProfiles];
 	                 }];
-}
-
-- (void)refreshPressed:(id)sender
-{
-	(void)sender;
-	[self reloadProfiles];
 }
 
 - (void)dealloc
