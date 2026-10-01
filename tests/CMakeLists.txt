@@ -18,6 +18,31 @@ add_test(NAME integration.macos-signing
   COMMAND ${PROJECT_SOURCE_DIR}/scripts/test-orbis-macos-signing.sh)
 set_tests_properties(integration.macos-signing PROPERTIES LABELS "integration;release")
 set(ORBIS_TEST_SPARKLE_ROOT "$ENV{ORBIS_TEST_SPARKLE_ROOT}" CACHE PATH "Sparkle distribution for updater tests")
+find_library(NETWORK_FRAMEWORK Network REQUIRED)
+
+# The asynchronous transport uses ARC independently of the existing MRC adapters.
+add_library(orbis_tunnel STATIC
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Transport/OrbisTunnelBridge.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Transport/OrbisConnectionTransport.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Transport/OrbisDirectTransport.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Transport/OrbisCloudflareTransport.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Transport/OrbisTransportFactory.m
+)
+target_include_directories(orbis_tunnel PUBLIC ${PROJECT_SOURCE_DIR}/shared/Sources/Transport)
+target_compile_options(orbis_tunnel PRIVATE -fobjc-arc -fblocks -Wall -Wextra)
+target_link_libraries(orbis_tunnel PUBLIC ${FOUNDATION_FRAMEWORK} ${NETWORK_FRAMEWORK})
+
+xctest_add_bundle(OrbisTunnelTests orbis_tunnel
+  ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisTunnelBridgeTests.m
+  ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisConnectionTransportTests.m
+)
+target_compile_options(OrbisTunnelTests PRIVATE -fobjc-arc -fblocks)
+xctest_add_test(integration.tunnel OrbisTunnelTests)
+set_tests_properties(integration.tunnel PROPERTIES
+  LABELS "integration;xctest;shared;network"
+  TIMEOUT 120
+  ENVIRONMENT "ORBIS_TUNNEL_FIXTURE_PYTHON=${Python3_EXECUTABLE};ORBIS_TUNNEL_FIXTURE_SCRIPT=${PROJECT_SOURCE_DIR}/shared/Tests/Fixtures/tunnel_server.py"
+)
 
 add_library(
   orbis_shared
@@ -41,6 +66,10 @@ target_link_libraries(
     ${SECURITY_FRAMEWORK}
 )
 
+
+# Adapter selection shares the profile and credential store, outside the RDP session.
+target_link_libraries(orbis_tunnel PUBLIC orbis_shared)
+
 add_library(
   orbis_macos_ui
   STATIC
@@ -58,6 +87,7 @@ target_link_libraries(
   orbis_macos_ui
   PUBLIC
     orbis_shared
+    orbis_tunnel
     ${APPKIT_FRAMEWORK}
 )
 
@@ -70,7 +100,7 @@ if(ORBIS_TEST_SPARKLE_ROOT)
   target_compile_definitions(orbis_updater_session_tests PRIVATE ORBIS_ENABLE_UPDATES=1)
   target_compile_options(orbis_updater_session_tests PRIVATE -fno-objc-arc -fblocks)
   target_link_libraries(orbis_updater_session_tests PRIVATE orbis_macos_ui ${ORBIS_TEST_SPARKLE_FRAMEWORK})
-  set_target_properties(orbis_updater_session_tests PROPERTIES BUILD_RPATH "${ORBIS_TEST_SPARKLE_ROOT}")
+  target_link_options(orbis_updater_session_tests PRIVATE "LINKER:-rpath,${ORBIS_TEST_SPARKLE_ROOT}")
   add_test(NAME integration.updater-session COMMAND orbis_updater_session_tests)
   set_tests_properties(integration.updater-session PROPERTIES LABELS "integration;release;appkit")
 endif()

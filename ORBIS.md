@@ -49,21 +49,51 @@ need a warning.
 
 ## Remote access through Cloudflare
 
-RDP is a raw TCP protocol, so Cloudflare Access HTTP service-token headers cannot
-be attached directly to an RDP connection. The recommended iPad architecture is:
+RDP is a TCP protocol. Access Service Auth headers authenticate the HTTPS
+WebSocket handshake; RDP bytes then travel inside binary WebSocket messages.
+
+The macOS client includes a **Cloudflare Tunnel** connection mode:
+
+1. Run an origin `cloudflared` connector and publish a hostname with an RDP
+   service, such as `rdp://127.0.0.1:3389`.
+2. Protect that hostname with an Access application and a **Service Auth** policy
+   allowing the intended service token.
+3. Select **Cloudflare Tunnel** in the Orbis connection editor. Enter the published
+   hostname in **Tunnel hostname**, **CF-Access-Client-Id**, **CF-Access-Client-Secret**, and
+   the usual RDP account. **Host** identifies the logical RDP server for certificate
+   verification and may differ from the public tunnel hostname. Leaving **Tunnel
+   hostname** empty uses **Host**.
+
+Orbis stores the service token in Keychain, separately from the RDP password,
+and binds it to the tunnel hostname. Leaving the secret field empty preserves
+an existing token only when its hostname and Client ID are unchanged. The origin
+RDP port belongs in the tunnel configuration; Orbis connects to the published
+hostname over WSS on port 443 through an internal loopback TCP bridge.
+
+Transport selection uses a shared port with direct and Cloudflare adapters.
+Each connection attempt owns its prepared transport session and closes it on
+retry or disconnect. Each tunneled RDP connection opens a separate authenticated
+WebSocket. TLS verification
+and RDP certificate policy still apply. HTTP redirects are rejected, and tokens
+are not included in saved profile dictionaries or connection error messages.
+Redirected RDP connections use the same tunnel backend while retaining FreeRDP's
+logical server identity. Binary forwarding and the FreeRDP route are covered by
+native tests; an actual GNOME login and desktop handoff still requires live
+end-to-end validation.
+
+The iPad client currently uses the private-network approach:
 
 1. Publish the private network through Cloudflare Tunnel.
 2. Enrol the iPad in Cloudflare One and connect with WARP.
 3. Enter the private hostname or IP address in the Orbis profile.
 
-Orbis then uses an ordinary RDP connection over the authenticated private-network
-route. No Cloudflare credentials need to be stored in Orbis. A future macOS
-client may additionally support a local `cloudflared access rdp` helper, but that
-model is not available to a normal sandboxed iPad application.
+The iPad then uses an ordinary RDP connection over that authenticated route.
+Its UI and session adapter do not yet expose the macOS Service Auth mode.
 
 References:
 
-- [Cloudflare Tunnel setup](https://developers.cloudflare.com/tunnel/setup/)
+- [Published application protocols](https://developers.cloudflare.com/tunnel/concepts/routing/)
+- [Access service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
 - [Private networks with Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/private-net/)
 
 ## Keyboard behaviour

@@ -7,9 +7,11 @@
 @implementation OrbisSessionController
 @synthesize delegate = _delegate;
 - (id)initWithProfile:(OrbisProfile *)profile password:(NSString *)password
+             transport:(id<OrbisConnectionTransport>)transport
 {
 	(void)profile;
 	(void)password;
+	(void)transport;
 	return [super init];
 }
 - (BOOL)start { return YES; }

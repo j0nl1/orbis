@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #import "OrbisAppDelegate.h"
+#import "OrbisTransportFactory.h"
 
 #import "OrbisCredentialStore.h"
 #import "OrbisProfile.h"
@@ -160,7 +161,17 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 		return;
 	}
 
-	_sessionController = [[OrbisSessionController alloc] initWithProfile:profile password:password];
+	id<OrbisConnectionTransport> transport = [OrbisTransportFactory transportForProfile:profile error:&error];
+	if (!transport)
+	{
+		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+		OrbisConfigureWarningAlert(alert);
+		[alert setMessageText:@"Connection unavailable"];
+		[alert setInformativeText:[error localizedDescription]];
+		[alert runModal];
+		return;
+	}
+	_sessionController = [[OrbisSessionController alloc] initWithProfile:profile password:password transport:transport];
 	[_sessionController setDelegate:self];
 	if (![_sessionController start])
 	{

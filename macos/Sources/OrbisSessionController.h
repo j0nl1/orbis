@@ -4,6 +4,10 @@
 
 @class OrbisProfile;
 @class OrbisSessionController;
+@protocol OrbisConnectionTransport;
+@protocol OrbisTransportSession;
+@class OrbisTransportDestination;
+typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 
 @protocol OrbisSessionControllerDelegate <NSObject>
 
@@ -30,11 +34,18 @@
 	BOOL _retryPending;
 	unsigned int _transientConnectRetryCount;
 	NSError *_finishError;
+	id<OrbisConnectionTransport> _transport;
+	id<OrbisTransportSession> _transportSession;
+	OrbisTransportDestination *_transportDestination;
+	OrbisRDPTransportRoute *_transportRoute;
+	BOOL _transportPreparing;
+	BOOL _transportPrepared;
 }
 
 @property(nonatomic, assign) id<OrbisSessionControllerDelegate> delegate;
 
-- (id)initWithProfile:(OrbisProfile *)profile password:(NSString *)password;
+- (id)initWithProfile:(OrbisProfile *)profile password:(NSString *)password
+             transport:(id<OrbisConnectionTransport>)transport;
 - (BOOL)start;
 - (void)stop;
 

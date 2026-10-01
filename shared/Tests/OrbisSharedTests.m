@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: MIT */
 
 #import <XCTest/XCTest.h>
+#import <Security/Security.h>
 
 #import "OrbisAcknowledgements.h"
 #import "OrbisProfile.h"
+#import "OrbisCredentialStore.h"
 
 @interface OrbisProfileTests : XCTestCase
 @end
@@ -21,6 +23,8 @@
 	XCTAssertEqual([profile port], (NSUInteger)3389);
 	XCTAssertFalse([profile acceptAllCertificates]);
 	XCTAssertFalse([profile connectAutomatically]);
+	XCTAssertEqualObjects([profile transportType], OrbisTransportTypeDirect);
+	XCTAssertEqualObjects([profile transportOptions], @{});
 
 	[profile release];
 }
@@ -54,6 +58,48 @@
 	}
 }
 
+- (void)testTunnelProfilesRoundTripAndCopyWithoutPersistingCredentials
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	[profile setHost:@"rdp.example.test"];
+	[profile setTransportType:OrbisTransportTypeCloudflare];
+	[profile setTransportOptions:@{ @"hostname" : @"gateway.example.test" }];
+	OrbisProfile *decoded = [[OrbisProfile alloc] initWithDictionary:[profile dictionaryRepresentation]];
+	OrbisProfile *copy = [profile copy];
+	XCTAssertEqualObjects([decoded transportType], OrbisTransportTypeCloudflare);
+	XCTAssertEqualObjects([copy transportOptions], [profile transportOptions]);
+	XCTAssertEqualObjects([decoded transportHostname], @"gateway.example.test");
+	XCTAssertEqualObjects([decoded host], @"rdp.example.test");
+	XCTAssertNil([profile dictionaryRepresentation][@"usesCloudflareTunnel"]);
+	XCTAssertNil([[profile dictionaryRepresentation] objectForKey:@"clientID"]);
+	XCTAssertNil([[profile dictionaryRepresentation] objectForKey:@"secret"]);
+	[copy release];
+	[decoded release];
+	[profile release];
+}
+
+- (void)testLegacyTunnelProfilesMigrateToTransportConfiguration
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] initWithDictionary:@{
+	    @"host" : @"gateway.example.test", @"usesCloudflareTunnel" : @YES }];
+	XCTAssertEqualObjects([profile transportType], OrbisTransportTypeCloudflare);
+	XCTAssertEqualObjects([profile transportHostname], @"gateway.example.test");
+	XCTAssertNil([profile dictionaryRepresentation][@"usesCloudflareTunnel"]);
+	XCTAssertEqualObjects([profile dictionaryRepresentation][@"transport"], (@{
+	    @"type" : @"cloudflare", @"options" : @{ @"hostname" : @"gateway.example.test" } }));
+	[profile release];
+}
+
+- (void)testUnknownTransportIsPreservedInsteadOfDowngradedToDirect
+{
+	NSDictionary *transport = @{ @"type" : @"future-gateway", @"options" : @{ @"hostname" : @"future.example.test" } };
+	OrbisProfile *profile = [[OrbisProfile alloc] initWithDictionary:@{
+	    @"host" : @"rdp.example.test", @"transport" : transport, @"usesCloudflareTunnel" : @YES }];
+	XCTAssertEqualObjects([profile transportType], @"future-gateway");
+	XCTAssertEqualObjects([profile dictionaryRepresentation][@"transport"], transport);
+	[profile release];
+}
+
 - (void)testCopyCanChangeWithoutMutatingOriginal
 {
 	OrbisProfile *profile = [[OrbisProfile alloc] init];
@@ -70,6 +116,132 @@
 
 	[copy release];
 	[profile release];
+}
+
+@end
+
+// Limit credential tests to a disposable keychain, never the user's login keychain.
+@interface OrbisCredentialStore (TestKeychainQuery)
++ (NSMutableDictionary *)queryForProfile:(OrbisProfile *)profile account:(NSString *)account;
+@end
+
+static SecKeychainRef OrbisFixtureKeychain = NULL;
+
+@interface OrbisFixtureCredentialStore : OrbisCredentialStore
+@end
+
+@implementation OrbisFixtureCredentialStore
++ (NSMutableDictionary *)queryForProfile:(OrbisProfile *)profile account:(NSString *)account
+{
+	NSMutableDictionary *query = [super queryForProfile:profile account:account];
+	NSAssert(OrbisFixtureKeychain != NULL, @"The fixture keychain must exist");
+	[query setObject:(id)OrbisFixtureKeychain forKey:(id)kSecUseKeychain];
+	[query setObject:@[ (id)OrbisFixtureKeychain ] forKey:(id)kSecMatchSearchList];
+	return query;
+}
+@end
+
+@interface OrbisCredentialStoreTests : XCTestCase
+@end
+
+@implementation OrbisCredentialStoreTests
+
+- (void)setUp
+{
+	[super setUp];
+	NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+	    [NSString stringWithFormat:@"orbis-test-%@.keychain", [[NSUUID UUID] UUIDString]]];
+	const char password[] = "isolated-fixture-password";
+	OSStatus status = SecKeychainCreate([path fileSystemRepresentation], sizeof(password) - 1,
+	    password, false, NULL, &OrbisFixtureKeychain);
+	XCTAssertEqual(status, errSecSuccess);
+}
+
+- (void)tearDown
+{
+	if (OrbisFixtureKeychain)
+	{
+		XCTAssertEqual(SecKeychainDelete(OrbisFixtureKeychain), errSecSuccess);
+		CFRelease(OrbisFixtureKeychain);
+		OrbisFixtureKeychain = NULL;
+	}
+	[super tearDown];
+}
+
+- (void)testServiceTokenIsIndependentFromPasswordAndBoundToHostname
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	[profile setHost:@"rdp.example.test"];
+	@try
+	{
+		NSError *error = nil;
+		XCTAssertTrue([OrbisFixtureCredentialStore setPassword:@"fixture-password" forProfile:profile error:&error], @"%@", error);
+		XCTAssertTrue([OrbisFixtureCredentialStore setCloudflareClientID:@"fixture-client" secret:@"fixture-secret"
+		    forProfile:profile error:&error], @"%@", error);
+		NSDictionary *token = [OrbisFixtureCredentialStore cloudflareTokenForProfile:profile error:&error];
+		XCTAssertNil(error);
+		XCTAssertEqualObjects(token[@"clientID"], @"fixture-client");
+		XCTAssertEqualObjects(token[@"secret"], @"fixture-secret");
+		XCTAssertEqualObjects([OrbisFixtureCredentialStore passwordForProfile:profile error:&error], @"fixture-password");
+		[profile setHost:@"another.example.test"];
+		XCTAssertNil([OrbisFixtureCredentialStore cloudflareTokenForProfile:profile error:&error]);
+		XCTAssertNil(error);
+		[profile setHost:@"RDP.EXAMPLE.TEST"];
+		XCTAssertNotNil([OrbisFixtureCredentialStore cloudflareTokenForProfile:profile error:&error]);
+		XCTAssertTrue([OrbisFixtureCredentialStore deleteCredentialsForProfile:profile error:&error]);
+		XCTAssertNil([OrbisFixtureCredentialStore passwordForProfile:profile error:&error]);
+		XCTAssertNil([OrbisFixtureCredentialStore cloudflareTokenForProfile:profile error:&error]);
+	}
+	@finally
+	{
+		[OrbisFixtureCredentialStore deleteCredentialsForProfile:profile error:nil];
+		[profile release];
+	}
+}
+
+- (void)testTokenIsBoundToGatewayRatherThanLogicalRDPTarget
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	[profile setHost:@"logical-server.example.test"];
+	[profile setTransportType:OrbisTransportTypeCloudflare];
+	[profile setTransportOptions:@{ @"hostname" : @"gateway.example.test" }];
+	@try
+	{
+		NSError *error = nil;
+		XCTAssertTrue([OrbisFixtureCredentialStore setCloudflareClientID:@"fixture-client" secret:@"fixture-secret"
+		    forProfile:profile error:&error]);
+		[profile setHost:@"redirected.internal"];
+		XCTAssertNotNil([OrbisFixtureCredentialStore cloudflareTokenForProfile:profile error:&error]);
+		[profile setTransportOptions:@{ @"hostname" : @"another-gateway.example.test" }];
+		XCTAssertNil([OrbisFixtureCredentialStore cloudflareTokenForProfile:profile error:&error]);
+		XCTAssertNil(error);
+	}
+	@finally
+	{
+		[OrbisFixtureCredentialStore deleteCredentialsForProfile:profile error:nil];
+		[profile release];
+	}
+}
+
+- (void)testInvalidTokenDoesNotOverwriteAnExistingToken
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	[profile setHost:@"rdp.example.test"];
+	@try
+	{
+		NSError *error = nil;
+		XCTAssertTrue([OrbisFixtureCredentialStore setCloudflareClientID:@"fixture-client" secret:@"fixture-secret"
+		    forProfile:profile error:&error]);
+		XCTAssertFalse([OrbisFixtureCredentialStore setCloudflareClientID:@"injected\r\nHeader: value" secret:@"new-secret"
+		    forProfile:profile error:&error]);
+		XCTAssertNotNil(error);
+		XCTAssertEqualObjects([OrbisFixtureCredentialStore cloudflareTokenForProfile:profile error:&error][@"secret"], @"fixture-secret");
+	}
+	@finally
+	{
+		[OrbisFixtureCredentialStore deleteCredentialsForProfile:profile error:nil];
+		[profile release];
+	}
 }
 
 @end

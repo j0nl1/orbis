@@ -3,6 +3,8 @@
 #import "OrbisProfileEditorController.h"
 
 #import "OrbisProfile.h"
+#import "OrbisCredentialStore.h"
+#import "OrbisTunnelBridge.h"
 
 static NSTextField *OrbisEditorLabel(NSString *title)
 {
@@ -22,7 +24,7 @@ static void OrbisConfigureEditorField(NSTextField *field, NSString *identifier)
 	[field setAccessibilityIdentifier:identifier];
 }
 
-static NSStackView *OrbisEditorFieldGroup(NSString *title, NSTextField *field)
+static NSStackView *OrbisEditorFieldGroup(NSString *title, NSView *field)
 {
 	NSStackView *group = [NSStackView stackViewWithViews:@[ OrbisEditorLabel(title), field ]];
 	[group setOrientation:NSUserInterfaceLayoutOrientationVertical];
@@ -66,6 +68,13 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 {
 	NSView *content = [[self window] contentView];
 	[content setWantsLayer:YES];
+	_scrollView = [[NSScrollView alloc] initWithFrame:[content bounds]];
+	[_scrollView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+	[_scrollView setHasVerticalScroller:YES];
+	[_scrollView setDrawsBackground:NO];
+	_formView = [[NSView alloc] initWithFrame:[content bounds]];
+	[_scrollView setDocumentView:_formView];
+	[content addSubview:_scrollView];
 
 	NSTextField *title = [NSTextField labelWithString:
 	    ([[_profile host] length] > 0 ? @"Edit connection" : @"New connection")];
@@ -98,6 +107,28 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	_passwordField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
 	[_passwordField setPlaceholderString:(_hasStoredPassword ? @"••••••••" : @"Optional")];
 	OrbisConfigureEditorField(_passwordField, @"profile-password-field");
+
+	_transportField = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+	[_transportField addItemsWithTitles:@[ @"Direct RDP", @"Cloudflare Tunnel" ]];
+	[_transportField selectItemAtIndex:[[_profile transportType] isEqualToString:OrbisTransportTypeCloudflare] ? 1 : 0];
+	[_transportField setAccessibilityIdentifier:@"profile-transport-field"];
+	[_transportField setTarget:self];
+	[_transportField setAction:@selector(transportChanged:)];
+	_gatewayHostnameField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+	[_gatewayHostnameField setPlaceholderString:@"Defaults to the RDP host"];
+	if ([[_profile transportType] isEqualToString:OrbisTransportTypeCloudflare])
+		[_gatewayHostnameField setStringValue:[_profile transportHostname]];
+	OrbisConfigureEditorField(_gatewayHostnameField, @"profile-gateway-hostname-field");
+	_clientIDField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+	[_clientIDField setPlaceholderString:@"Service Token Client ID"];
+	OrbisConfigureEditorField(_clientIDField, @"profile-client-id-field");
+	_clientSecretField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
+	OrbisConfigureEditorField(_clientSecretField, @"profile-client-secret-field");
+	NSDictionary *token = [OrbisCredentialStore cloudflareTokenForProfile:_profile error:nil];
+	_savedTokenHost = token ? [[[_profile transportHostname] lowercaseString] copy] : nil;
+	_savedTokenClientID = [token[@"clientID"] copy];
+	[_clientIDField setStringValue:_savedTokenClientID ?: @""];
+	[_clientSecretField setPlaceholderString:token ? @"Saved in Keychain" : @"Service Token Client Secret"];
 
 	_certificateCheckbox = [[NSButton alloc] initWithFrame:NSZeroRect];
 	[_certificateCheckbox setButtonType:NSButtonTypeSwitch];
@@ -141,9 +172,13 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 
 	NSStackView *nameGroup = OrbisEditorFieldGroup(@"Name", _nameField);
 	NSStackView *hostGroup = OrbisEditorFieldGroup(@"Host", _hostField);
-	NSStackView *portGroup = OrbisEditorFieldGroup(@"Port", _portField);
+	_portGroup = [OrbisEditorFieldGroup(@"Port", _portField) retain];
 	NSStackView *usernameGroup = OrbisEditorFieldGroup(@"Username", _usernameField);
 	NSStackView *passwordGroup = OrbisEditorFieldGroup(@"Password", _passwordField);
+	NSStackView *transportGroup = OrbisEditorFieldGroup(@"Connection", _transportField);
+	_gatewayHostnameGroup = [OrbisEditorFieldGroup(@"Tunnel hostname", _gatewayHostnameField) retain];
+	_clientIDGroup = [OrbisEditorFieldGroup(@"CF-Access-Client-Id", _clientIDField) retain];
+	_clientSecretGroup = [OrbisEditorFieldGroup(@"CF-Access-Client-Secret", _clientSecretField) retain];
 
 	NSStackView *options = [NSStackView stackViewWithViews:@[
 		_certificateCheckbox, _automaticCheckbox
@@ -157,27 +192,47 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[options.layer setBackgroundColor:[[NSColor tertiarySystemFillColor] CGColor]];
 
 	NSStackView *stack = [NSStackView stackViewWithViews:@[
-		header, nameGroup, hostGroup, portGroup, usernameGroup, passwordGroup, options,
+		header, nameGroup, transportGroup, hostGroup, _portGroup, _gatewayHostnameGroup, _clientIDGroup, _clientSecretGroup,
+		usernameGroup, passwordGroup, options,
 		_validationLabel, buttons
 	]];
+	_formStack = [stack retain];
 	[stack setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[stack setAlignment:NSLayoutAttributeLeading];
 	[stack setSpacing:14.0];
 	[stack setTranslatesAutoresizingMaskIntoConstraints:NO];
-	[content addSubview:stack];
+	[_formView addSubview:stack];
 
-	for (NSView *view in @[ header, nameGroup, hostGroup, portGroup, usernameGroup, passwordGroup,
+	for (NSView *view in @[ header, nameGroup, transportGroup, hostGroup, _portGroup, _gatewayHostnameGroup, _clientIDGroup,
+	                          _clientSecretGroup, usernameGroup, passwordGroup,
 	                          options, _validationLabel, buttons ])
 		[[view widthAnchor] constraintEqualToAnchor:[stack widthAnchor]].active = YES;
-	for (NSTextField *field in @[ _nameField, _hostField, _portField, _usernameField, _passwordField ])
+	for (NSView *field in @[ _nameField, _hostField, _portField, _usernameField, _passwordField,
+	                         _transportField, _gatewayHostnameField, _clientIDField, _clientSecretField ])
 		[[field heightAnchor] constraintEqualToConstant:36.0].active = YES;
 	[[buttons heightAnchor] constraintEqualToConstant:38.0].active = YES;
 	[NSLayoutConstraint activateConstraints:@[
-		[[stack leadingAnchor] constraintEqualToAnchor:[content leadingAnchor] constant:36.0],
-		[[stack trailingAnchor] constraintEqualToAnchor:[content trailingAnchor] constant:-36.0],
-		[[stack topAnchor] constraintEqualToAnchor:[content topAnchor] constant:30.0],
-		[[stack bottomAnchor] constraintLessThanOrEqualToAnchor:[content bottomAnchor] constant:-30.0]
+		[[stack leadingAnchor] constraintEqualToAnchor:[_formView leadingAnchor] constant:36.0],
+		[[stack trailingAnchor] constraintEqualToAnchor:[_formView trailingAnchor] constant:-36.0],
+		[[stack topAnchor] constraintEqualToAnchor:[_formView topAnchor] constant:30.0]
 	]];
+	[self transportChanged:nil];
+}
+
+- (void)transportChanged:(id)sender
+{
+	(void)sender;
+	BOOL tunnel = [_transportField indexOfSelectedItem] == 1;
+	[_gatewayHostnameGroup setHidden:!tunnel];
+	[_clientIDGroup setHidden:!tunnel];
+	[_clientSecretGroup setHidden:!tunnel];
+	[_portGroup setHidden:tunnel];
+	[_hostField setPlaceholderString:@"IP address or hostname"];
+	[_formView layoutSubtreeIfNeeded];
+	CGFloat height = MAX(NSHeight([_scrollView contentView].bounds), [_formStack fittingSize].height + 60.0);
+	[_formView setFrameSize:NSMakeSize(NSWidth([_scrollView contentView].bounds), height)];
+	[[_scrollView contentView] scrollToPoint:NSMakePoint(0, height - NSHeight([_scrollView contentView].bounds))];
+	[_scrollView reflectScrolledClipView:[_scrollView contentView]];
 }
 
 - (void)beginSheetForWindow:(NSWindow *)parentWindow
@@ -199,17 +254,48 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 	NSString *host = [[_hostField stringValue]
 	    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-	NSInteger port = [_portField integerValue];
+	BOOL tunnel = [_transportField indexOfSelectedItem] == 1;
+	NSInteger port = tunnel ? (NSInteger)[_profile port] : [_portField integerValue];
 	if ([name length] == 0 || [host length] == 0 || port < 1 || port > 65535)
 	{
 		[_validationLabel setStringValue:@"Name, host, and a valid port are required."];
 		[_validationLabel setHidden:NO];
 		return;
 	}
+	NSString *gatewayHostname = [[_gatewayHostnameField stringValue] stringByTrimmingCharactersInSet:
+	    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	if (![gatewayHostname length])
+		gatewayHostname = host;
+	NSDictionary *cloudflareToken = nil;
+	if (tunnel)
+	{
+		NSError *endpointError = nil;
+		if (![OrbisTunnelBridge endpointForHostname:gatewayHostname error:&endpointError])
+		{
+			[_validationLabel setStringValue:[endpointError localizedDescription]];
+			[_validationLabel setHidden:NO];
+			return;
+		}
+		NSString *clientID = [[_clientIDField stringValue] stringByTrimmingCharactersInSet:
+		    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+		NSString *secret = [_clientSecretField stringValue];
+		BOOL preserved = [_savedTokenHost isEqualToString:[gatewayHostname lowercaseString]] &&
+		                 [_savedTokenClientID isEqualToString:clientID];
+		if (![clientID length] || (![secret length] && !preserved))
+		{
+			[_validationLabel setStringValue:@"Enter CF-Access-Client-Id and CF-Access-Client-Secret for this tunnel hostname."];
+			[_validationLabel setHidden:NO];
+			return;
+		}
+		if ([secret length])
+			cloudflareToken = @{ @"clientID" : clientID, @"secret" : secret };
+	}
 
 	[_profile setName:name];
 	[_profile setHost:host];
 	[_profile setPort:(NSUInteger)port];
+	[_profile setTransportType:tunnel ? OrbisTransportTypeCloudflare : OrbisTransportTypeDirect];
+	[_profile setTransportOptions:tunnel ? @{ @"hostname" : gatewayHostname } : @{}];
 	[_profile setUsername:[[_usernameField stringValue]
 	                          stringByTrimmingCharactersInSet:
 	                              [NSCharacterSet whitespaceAndNewlineCharacterSet]]];
@@ -219,7 +305,9 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	NSString *password = [_passwordField stringValue];
 	if ([password length] == 0)
 		password = nil;
-	[_delegate profileEditorController:self savedProfile:_profile password:password];
+	if (![_delegate profileEditorController:self savedProfile:_profile password:password
+	                          cloudflareToken:cloudflareToken])
+		return;
 	[[[self window] sheetParent] endSheet:[self window]];
 }
 
@@ -229,6 +317,19 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[_profile release];
 	[_nameField release];
 	[_hostField release];
+	[_transportField release];
+	[_gatewayHostnameField release];
+	[_gatewayHostnameGroup release];
+	[_clientIDField release];
+	[_clientSecretField release];
+	[_clientIDGroup release];
+	[_clientSecretGroup release];
+	[_portGroup release];
+	[_formStack release];
+	[_formView release];
+	[_scrollView release];
+	[_savedTokenHost release];
+	[_savedTokenClientID release];
 	[_portField release];
 	[_usernameField release];
 	[_passwordField release];
