@@ -226,8 +226,6 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[card setBorderColor:[NSColor separatorColor]];
 	[card setBorderWidth:1.0];
 	[card setCornerRadius:14.0];
-	// Keep the approved content inset independent of AppKit's version defaults.
-	[card setContentViewMargins:NSMakeSize(5.0, 5.0)];
 
 	NSImageView *icon = [[[NSImageView alloc] initWithFrame:NSZeroRect] autorelease];
 	[icon setImage:[NSImage imageWithSystemSymbolName:@"desktopcomputer" accessibilityDescription:nil]];

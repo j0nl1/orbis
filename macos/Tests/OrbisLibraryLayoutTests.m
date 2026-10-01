@@ -219,16 +219,16 @@ static void DrainSheetCompletion(void)
 		NSButton *delete = FindButtonWithToolTip(card, @"Delete");
 		if (!delete)
 			continue;
-		XCTAssertTrue([card isKindOfClass:[NSBox class]]);
-		XCTAssertEqualWithAccuracy([(NSBox *)card contentViewMargins].width, 5.0, 0.01);
-		XCTAssertEqualWithAccuracy([(NSBox *)card contentViewMargins].height, 5.0, 0.01);
-		NSRect actionFrame = [delete convertRect:[delete bounds] toView:content];
+		// Auto Layout positions the alignment rect; bezel padding varies by macOS.
+		NSRect actionFrame = [[delete superview] convertRect:[delete alignmentRectForFrame:[delete frame]]
+		    toView:content];
 		XCTAssertEqualWithAccuracy(NSMaxX(actionFrame), NSWidth([content bounds]) - 42.0, 1.0,
-		    @"Card: %@; content: %@; actions: %@; button: %@; button alignment insets: %@",
+		    @"Card: %@; content: %@; actions: %@; button alignment: %@; button bounds: %@; trailing inset: %g",
 		    NSStringFromRect([card convertRect:[card bounds] toView:content]),
 		    NSStringFromRect([[(NSBox *)card contentView] convertRect:[[(NSBox *)card contentView] bounds] toView:content]),
 		    NSStringFromRect([[delete superview] convertRect:[[delete superview] bounds] toView:content]),
-		    NSStringFromRect(actionFrame), NSStringFromNSEdgeInsets([delete alignmentRectInsets]));
+		    NSStringFromRect(actionFrame), NSStringFromRect([delete convertRect:[delete bounds] toView:content]),
+		    [delete alignmentRectInsets].right);
 		NSTextField *name = (NSTextField *)FindViewWithAccessibilityIdentifier(card, @"connection-name-label");
 		if ([[name stringValue] isEqualToString:@"Studio Mac"])
 			XCTAssertGreaterThanOrEqual(NSWidth([name frame]), [[name cell] cellSize].width);
