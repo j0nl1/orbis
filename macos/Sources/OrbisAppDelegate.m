@@ -77,7 +77,10 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 
 	NSMenuItem *applicationItem = [[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""] autorelease];
 	NSMenu *applicationMenu = [[[NSMenu alloc] initWithTitle:@"Orbis"] autorelease];
-	[applicationMenu addItemWithTitle:@"About Orbis" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+	NSMenuItem *aboutItem = [applicationMenu addItemWithTitle:@"About Orbis"
+	                                               action:@selector(showAbout:)
+	                                        keyEquivalent:@""];
+	[aboutItem setTarget:self];
 #if ORBIS_ENABLE_UPDATES
 	NSMenuItem *updatesItem = [applicationMenu addItemWithTitle:@"Check for Updates…"
 	                                                  action:@selector(checkForUpdates:)
@@ -99,6 +102,19 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[fileMenu addItemWithTitle:@"Connect" action:@selector(connectSelectedProfile:) keyEquivalent:@"\r"];
 	[fileItem setSubmenu:fileMenu];
 	[mainMenu addItem:fileItem];
+
+	NSMenuItem *editItem = [[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""] autorelease];
+	NSMenu *editMenu = [[[NSMenu alloc] initWithTitle:@"Edit"] autorelease];
+	[editMenu addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+	NSMenuItem *redo = [editMenu addItemWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"z"];
+	[redo setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagShift];
+	[editMenu addItem:[NSMenuItem separatorItem]];
+	[editMenu addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
+	[editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+	[editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+	[editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+	[editItem setSubmenu:editMenu];
+	[mainMenu addItem:editItem];
 
 	NSMenuItem *viewItem = [[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""] autorelease];
 	NSMenu *viewMenu = [[[NSMenu alloc] initWithTitle:@"View"] autorelease];
@@ -135,10 +151,20 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[_sessionController stop];
 }
 
+- (void)showAbout:(id)sender
+{
+	if (_sessionController)
+		return;
+	[self showLibraryWindow];
+	[_libraryViewController showAbout:sender];
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem
 {
 	if ([menuItem action] == @selector(disconnectSession:))
 		return _sessionController != nil;
+	if ([menuItem action] == @selector(showAbout:))
+		return _sessionController == nil && _window != nil;
 	return YES;
 }
 

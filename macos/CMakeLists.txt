@@ -80,10 +80,13 @@ set(ORBIS_MACOS_SOURCES
 
 set(ORBIS_MACOS_ICON Resources/OrbisMacIcon.png)
 set_source_files_properties(${ORBIS_MACOS_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+get_filename_component(ORBIS_MACOS_REAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
+set(ORBIS_CHANGELOG "${ORBIS_MACOS_REAL_DIR}/../CHANGELOG.md")
+set_source_files_properties(${ORBIS_CHANGELOG} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
 configure_file(Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
 
-add_executable(OrbisMac MACOSX_BUNDLE ${ORBIS_MACOS_SOURCES} ${ORBIS_MACOS_ICON})
+add_executable(OrbisMac MACOSX_BUNDLE ${ORBIS_MACOS_SOURCES} ${ORBIS_MACOS_ICON} ${ORBIS_CHANGELOG})
 
 target_include_directories(
   OrbisMac

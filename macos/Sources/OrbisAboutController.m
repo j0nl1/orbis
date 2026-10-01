@@ -91,19 +91,29 @@
 	[header setAlignment:NSLayoutAttributeCenterY];
 	[header setSpacing:14.0];
 
-	NSTextView *textView = [[[NSTextView alloc] initWithFrame:NSZeroRect] autorelease];
-	[textView setEditable:NO];
-	[textView setSelectable:YES];
-	[textView setDrawsBackground:NO];
-	[textView setTextContainerInset:NSMakeSize(8.0, 8.0)];
-	[[textView textStorage] setAttributedString:[self acknowledgementText]];
-
-	NSScrollView *scroll = [[[NSScrollView alloc] initWithFrame:NSZeroRect] autorelease];
-	[scroll setBorderType:NSNoBorder];
-	[scroll setDrawsBackground:NO];
-	[scroll setHasVerticalScroller:YES];
-	[scroll setAutohidesScrollers:YES];
-	[scroll setDocumentView:textView];
+	_tabs = [[NSTabView alloc] initWithFrame:NSZeroRect];
+	[_tabs setTabViewType:NSNoTabsNoBorder];
+	[_tabs setAccessibilityIdentifier:@"about-tabs"];
+	NSArray *texts = @[ [self changelogText], [self acknowledgementText] ];
+	NSArray *titles = @[ @"Changelog", @"Acknowledgements" ];
+	for (NSUInteger index = 0; index < [titles count]; index++)
+	{
+		NSTabViewItem *item = [[[NSTabViewItem alloc] initWithIdentifier:titles[index]] autorelease];
+		[item setLabel:titles[index]];
+		[item setView:[self scrollViewWithText:texts[index]]];
+		[_tabs addTabViewItem:item];
+	}
+	NSSegmentedControl *sections = [NSSegmentedControl segmentedControlWithLabels:titles
+	    trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(changeSection:)];
+	[sections setSelectedSegment:0];
+	[sections setControlSize:NSControlSizeLarge];
+	[sections setAccessibilityLabel:@"About sections"];
+	[sections setAccessibilityIdentifier:@"about-sections"];
+	NSStackView *pages = [NSStackView stackViewWithViews:@[ sections, _tabs ]];
+	[pages setOrientation:NSUserInterfaceLayoutOrientationVertical];
+	[pages setAlignment:NSLayoutAttributeCenterX];
+	[pages setSpacing:12.0];
+	[[_tabs widthAnchor] constraintEqualToAnchor:[pages widthAnchor]].active = YES;
 
 	NSButton *done = [NSButton buttonWithTitle:@"Done" target:self action:@selector(closeSheet:)];
 	[done setBezelStyle:NSBezelStyleRounded];
@@ -116,15 +126,15 @@
 	[footer setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
 	[footer setAlignment:NSLayoutAttributeCenterY];
 
-	NSStackView *stack = [NSStackView stackViewWithViews:@[ header, scroll, footer ]];
+	NSStackView *stack = [NSStackView stackViewWithViews:@[ header, pages, footer ]];
 	[stack setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[stack setAlignment:NSLayoutAttributeLeading];
 	[stack setSpacing:18.0];
 	[stack setTranslatesAutoresizingMaskIntoConstraints:NO];
 	[content addSubview:stack];
-	for (NSView *view in @[ header, scroll, footer ])
+	for (NSView *view in @[ header, pages, footer ])
 		[[view widthAnchor] constraintEqualToAnchor:[stack widthAnchor]].active = YES;
-	[[scroll heightAnchor] constraintEqualToConstant:420.0].active = YES;
+	[[_tabs heightAnchor] constraintEqualToConstant:380.0].active = YES;
 	[[done widthAnchor] constraintGreaterThanOrEqualToConstant:100.0].active = YES;
 	[NSLayoutConstraint activateConstraints:@[
 		[[stack leadingAnchor] constraintEqualToAnchor:[content leadingAnchor] constant:30.0],
@@ -132,6 +142,66 @@
 		[[stack topAnchor] constraintEqualToAnchor:[content topAnchor] constant:26.0],
 		[[stack bottomAnchor] constraintLessThanOrEqualToAnchor:[content bottomAnchor] constant:-24.0]
 	]];
+}
+
+- (void)changeSection:(NSSegmentedControl *)sender
+{
+	[_tabs selectTabViewItemAtIndex:[sender selectedSegment]];
+}
+
+- (NSScrollView *)scrollViewWithText:(NSAttributedString *)text
+{
+	NSScrollView *scroll = [[[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 480, 380)] autorelease];
+	[scroll setBorderType:NSNoBorder];
+	[scroll setDrawsBackground:NO];
+	[scroll setHasVerticalScroller:YES];
+	[scroll setAutohidesScrollers:YES];
+	NSTextView *textView = [[[NSTextView alloc] initWithFrame:[[scroll contentView] bounds]] autorelease];
+	[textView setEditable:NO];
+	[textView setSelectable:YES];
+	[textView setDrawsBackground:NO];
+	[textView setTextContainerInset:NSMakeSize(14.0, 14.0)];
+	[textView setVerticallyResizable:YES];
+	[textView setHorizontallyResizable:NO];
+	[textView setAutoresizingMask:NSViewWidthSizable];
+	[textView setMaxSize:NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX)];
+	[[textView textContainer] setWidthTracksTextView:YES];
+	[[textView textStorage] setAttributedString:text];
+	[scroll setDocumentView:textView];
+	return scroll;
+}
+
+- (NSAttributedString *)changelogText
+{
+	NSURL *url = [[NSBundle mainBundle] URLForResource:@"CHANGELOG" withExtension:@"md"];
+	NSString *source = url ? [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil] : nil;
+	if (![source length])
+		source = @"Changelog unavailable in this build.";
+	NSMutableAttributedString *text = [[[NSMutableAttributedString alloc] init] autorelease];
+	for (NSString *line in [source componentsSeparatedByString:@"\n"])
+	{
+		if ([line isEqualToString:@"# Changelog"])
+			continue;
+		BOOL release = [line hasPrefix:@"## "];
+		BOOL section = [line hasPrefix:@"### "];
+		NSString *display = (release || section) ? [line substringFromIndex:release ? 3 : 4] : line;
+		if ([display isEqualToString:@"Unreleased"])
+			display = @"Latest changes";
+		if ([display hasPrefix:@"- "])
+			display = [@"• " stringByAppendingString:[display substringFromIndex:2]];
+		NSMutableParagraphStyle *paragraph = [[[NSMutableParagraphStyle alloc] init] autorelease];
+		[paragraph setParagraphSpacing:release ? 8.0 : 5.0];
+		[paragraph setLineSpacing:3.0];
+		NSDictionary *attributes = @{
+			NSFontAttributeName : [NSFont systemFontOfSize:release ? 17.0 : 12.0
+			    weight:(release || section) ? NSFontWeightSemibold : NSFontWeightRegular],
+			NSForegroundColorAttributeName : [NSColor labelColor],
+			NSParagraphStyleAttributeName : paragraph
+		};
+		[text appendAttributedString:[[[NSAttributedString alloc]
+		    initWithString:[display stringByAppendingString:@"\n"] attributes:attributes] autorelease]];
+	}
+	return text;
 }
 
 - (void)beginSheetForWindow:(NSWindow *)parentWindow
@@ -145,6 +215,12 @@
 	NSWindow *parent = [[self window] sheetParent];
 	if (parent)
 		[parent endSheet:[self window]];
+}
+
+- (void)dealloc
+{
+	[_tabs release];
+	[super dealloc];
 }
 
 @end

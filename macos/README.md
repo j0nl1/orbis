@@ -10,3 +10,10 @@ identity can optionally be supplied with `ORBIS_MACOS_SIGNING_IDENTITY`.
 
 See [the update guide](../docs/macos-updates.md) for the release workflow,
 signing key setup, and updater-enabled source builds.
+
+About Orbis includes an offline copy of [the changelog](../CHANGELOG.md).
+Add user-visible changes under `Unreleased`, and move them into a versioned
+section when preparing a release. The application displays that section as
+`Latest changes`. Use second-level headings for releases, third-level headings
+for change categories, and one-line bullet entries; the About view formats those
+elements for reading.
