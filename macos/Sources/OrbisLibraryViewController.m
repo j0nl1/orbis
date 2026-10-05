@@ -89,13 +89,8 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	                                  @selector(showAbout:));
 	[add setContentTintColor:[NSColor systemTealColor]];
 	[info setContentTintColor:[NSColor secondaryLabelColor]];
-	NSButton *settings = [NSButton buttonWithTitle:@"Settings" target:self action:@selector(showSettings:)];
-    [settings setImage:[NSImage imageWithSystemSymbolName:@"gearshape" accessibilityDescription:nil]];
-    [settings setImagePosition:NSImageLeading];
-    [settings setBezelStyle:NSBezelStyleRounded];
-    [settings setControlSize:NSControlSizeLarge];
+	NSButton *settings = OrbisSymbolButton(@"gearshape", @"Settings", self, @selector(showSettings:));
     [settings setAccessibilityIdentifier:@"display-settings-button"];
-    [[settings heightAnchor] constraintEqualToConstant:36].active = YES;
     NSStackView *headerActions = [NSStackView stackViewWithViews:@[ add, settings, info ]];
 	[headerActions setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
 	[headerActions setAlignment:NSLayoutAttributeCenterY];
