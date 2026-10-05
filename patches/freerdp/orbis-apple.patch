@@ -1667,10 +1667,10 @@ index c5a018e..417ceab 100644
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378c..3449aea 100644
+index b6d378c..3352890 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
-@@ -10,21 +10,23 @@
+@@ -10,21 +10,22 @@
  
  #import <QuartzCore/QuartzCore.h>
  #import <GameController/GameController.h>
@@ -1692,12 +1692,11 @@ index b6d378c..3449aea 100644
 +- (void)hideConnectingView;
 +- (void)queueViewportResize;
 +- (void)sendViewportResize;
-+- (CGRect)remoteViewportFrame;
 +- (CGSize)remoteSizeForCurrentViewport;
  - (UIToolbar *)keyboardToolbar;
  - (void)initGestureRecognizers;
  - (void)suspendSession;
-@@ -60,6 +62,8 @@
+@@ -60,6 +61,8 @@
  		_advanced_keyboard_visible = NO;
  		_requesting_advanced_keyboard = NO;
  		_last_session_viewport_size = CGSizeZero;
@@ -1706,7 +1705,7 @@ index b6d378c..3449aea 100644
  
  		_session_toolbar_visible = NO;
  
-@@ -85,10 +89,6 @@
+@@ -85,10 +88,6 @@
  	// load default view and set background color and resizing mask
  	[super loadView];
  
@@ -1717,7 +1716,7 @@ index b6d378c..3449aea 100644
  	// init keyboard handling vars
  	_keyboard_visible = NO;
  
-@@ -99,9 +99,9 @@
+@@ -99,9 +98,9 @@
  	// init gesture recognizers
  	[self initGestureRecognizers];
  
@@ -1730,7 +1729,7 @@ index b6d378c..3449aea 100644
  }
  
  // Implement viewDidLoad to do additional setup after loading the view, typically from a nib.
-@@ -117,18 +117,26 @@
+@@ -117,6 +116,11 @@
  	[_session_scrollview setAlwaysBounceHorizontal:NO];
  	[_session_scrollview setAlwaysBounceVertical:NO];
  	[_session_scrollview setBounces:NO];
@@ -1742,12 +1741,7 @@ index b6d378c..3449aea 100644
  }
  
  - (void)viewDidLayoutSubviews
- {
- 	[super viewDidLayoutSubviews];
- 
--	CGRect viewportFrame = [[self view] bounds];
-+	CGRect viewportFrame = [self remoteViewportFrame];
- 	[_session_scrollview setFrame:viewportFrame];
+@@ -128,7 +132,10 @@
  
  	CGSize viewportSize = [_session_scrollview bounds].size;
  	if (!CGSizeEqualToSize(viewportSize, _last_session_viewport_size))
@@ -1758,7 +1752,7 @@ index b6d378c..3449aea 100644
  	else
  		[self centerSessionViewInViewport];
  }
-@@ -177,6 +185,8 @@
+@@ -177,6 +184,8 @@
  	[self setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:YES animated:animated];
@@ -1767,7 +1761,7 @@ index b6d378c..3449aea 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:YES animated:animated];
  	else
-@@ -197,10 +207,11 @@
+@@ -197,10 +206,11 @@
  	if (!_session_initilized)
  	{
  		if ([_session isSuspended])
@@ -1783,7 +1777,7 @@ index b6d378c..3449aea 100644
  		else
  			[_session connect];
  
-@@ -219,6 +230,7 @@
+@@ -219,6 +229,7 @@
  
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:NO animated:animated];
@@ -1791,7 +1785,7 @@ index b6d378c..3449aea 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:NO animated:animated];
  	else
-@@ -236,12 +248,17 @@
+@@ -236,12 +247,17 @@
  {
  	// remove any observers
  	[[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -1809,7 +1803,7 @@ index b6d378c..3449aea 100644
  	[_session release];
  	[super dealloc];
  }
-@@ -361,36 +378,86 @@
+@@ -361,36 +377,86 @@
  
  - (void)session:(RDPSession *)session didFailToConnect:(int)reason
  {
@@ -1916,7 +1910,7 @@ index b6d378c..3449aea 100644
  	// register keyboard notification handlers
  	[[NSNotificationCenter defaultCenter] addObserver:self
  	                                         selector:@selector(keyboardWillShow:)
-@@ -419,11 +486,7 @@
+@@ -419,11 +485,7 @@
  	                                             name:GCKeyboardDidDisconnectNotification
  	                                           object:nil];
  	[self hardwareKeyboardChanged:nil];
@@ -1929,7 +1923,7 @@ index b6d378c..3449aea 100644
  
  	// check if session settings changed ...
  	// The 2nd width check is to ignore changes in resolution settings due to the RDVH display bug
-@@ -451,10 +514,17 @@
+@@ -451,10 +513,17 @@
  
  - (void)sessionWillDisconnect:(RDPSession *)session
  {
@@ -1947,7 +1941,7 @@ index b6d378c..3449aea 100644
  	// return to bookmark list
  	[[self navigationController] popViewControllerAnimated:YES];
  }
-@@ -492,13 +562,28 @@
+@@ -492,13 +561,28 @@
  	if (!_has_cursor_view_position)
  		(void)[self currentCursorViewPosition];
  
@@ -1979,7 +1973,7 @@ index b6d378c..3449aea 100644
  }
  
  - (void)session:(RDPSession *)session didSetRemoteCursor:(RDPCursor *)cursor
-@@ -553,26 +638,66 @@
+@@ -553,26 +637,58 @@
  
  - (void)session:(RDPSession *)session verifyCertificateWithParams:(NSMutableDictionary *)params
  {
@@ -2030,20 +2024,12 @@ index b6d378c..3449aea 100644
 +	return [self remoteSizeForCurrentViewport];
 +}
 +
-+- (CGRect)remoteViewportFrame
-+{
-+	// Keep the remote edges away from iPadOS window resize handles.
-+	CGRect bounds = [[self view] bounds];
-+	CGFloat inset = MIN(8.0, MAX(0.0, MIN(bounds.size.width, bounds.size.height) * 0.5));
-+	return CGRectInset(bounds, inset, inset);
-+}
-+
 +- (CGSize)remoteSizeForCurrentViewport
 +{
 +	// Use the native viewport resolution so text and application chrome remain crisp.
 +	CGSize size = [_session_scrollview bounds].size;
 +	if (size.width <= 0.0f || size.height <= 0.0f)
-+		size = [self remoteViewportFrame].size;
++		size = [self view].bounds.size;
  	UIScreen *screen = [[self view] window] ? [[[self view] window] screen] : [UIScreen mainScreen];
 -	CGFloat scale =
 +	CGFloat nativeScale =
@@ -2060,7 +2046,7 @@ index b6d378c..3449aea 100644
  
  	CGFloat maxDimension = MAX(size.width, size.height);
  	if (maxDimension > 4096.0f)
-@@ -584,9 +709,42 @@
+@@ -584,9 +700,42 @@
  
  	size.width = MAX(64.0f, size.width);
  	size.height = MAX(64.0f, size.height);
@@ -2103,7 +2089,7 @@ index b6d378c..3449aea 100644
  #pragma mark - Keyboard Toolbar Handlers
  
  - (void)showAdvancedKeyboardAnimated
-@@ -702,6 +860,15 @@
+@@ -702,6 +851,15 @@
  	}
  }
  
@@ -2119,7 +2105,7 @@ index b6d378c..3449aea 100644
  - (IBAction)disconnectSession:(id)sender
  {
  	[_session disconnect];
-@@ -902,20 +1069,30 @@
+@@ -902,20 +1060,30 @@
  
  - (void)handleScroll:(UIPanGestureRecognizer *)gesture
  {
@@ -2158,7 +2144,7 @@ index b6d378c..3449aea 100644
  }
  
  - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
-@@ -998,35 +1175,9 @@
+@@ -998,35 +1166,9 @@
  
  - (void)showSessionToolbar:(BOOL)show
  {
@@ -2197,7 +2183,7 @@ index b6d378c..3449aea 100644
  }
  
  - (UIToolbar *)keyboardToolbar
-@@ -1143,7 +1294,11 @@
+@@ -1143,7 +1285,11 @@
  	UIPanGestureRecognizer *scrollRecognizer =
  	    [[[UIPanGestureRecognizer alloc] initWithTarget:self
  	                                             action:@selector(handleScroll:)] autorelease];
@@ -2210,7 +2196,7 @@ index b6d378c..3449aea 100644
  	[scrollRecognizer setDelegate:self];
  
  	// double long press gesture recognizer
-@@ -1163,6 +1318,8 @@
+@@ -1163,6 +1309,8 @@
  
  	// Reserve one finger for the mouse; two fingers still pan/zoom the viewport.
  	[[_session_scrollview panGestureRecognizer] setMinimumNumberOfTouches:2];
@@ -2219,7 +2205,7 @@ index b6d378c..3449aea 100644
  
  	// add gestures to scroll view
  	[_session_scrollview addGestureRecognizer:singleTapRecognizer];
-@@ -1171,6 +1328,7 @@
+@@ -1171,6 +1319,7 @@
  	[_session_scrollview addGestureRecognizer:hoverRecognizer];
  	[_session_scrollview addGestureRecognizer:secondaryTapRecognizer];
  	[_session_scrollview addGestureRecognizer:scrollRecognizer];
