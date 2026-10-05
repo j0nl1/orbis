@@ -16,14 +16,13 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 
 @end
 
-@interface OrbisSessionController : NSObject <NSWindowDelegate, NSToolbarDelegate>
+@interface OrbisSessionController : NSObject <NSWindowDelegate>
 {
 	id<OrbisSessionControllerDelegate> _delegate;
 	OrbisProfile *_profile;
 	NSString *_password;
 	NSWindow *_window, *_secondaryWindow, *_closingSecondaryWindow;
 	id _secondaryView;
-	NSButton *_addDisplayButton;
 	NSLock *_displayLock;
 	void *_displayChannel;
 	uint32_t _displayMaxMonitors;
@@ -58,5 +57,7 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
              transport:(id<OrbisConnectionTransport>)transport;
 - (BOOL)start;
 - (void)stop;
+- (BOOL)canAddVirtualDisplay;
+- (void)addVirtualDisplay:(id)sender;
 
 @end

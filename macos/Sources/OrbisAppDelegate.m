@@ -8,6 +8,7 @@
 
 @interface OrbisAppDelegate ()
 - (void)disconnectSession:(id)sender;
+- (void)addVirtualDisplay:(id)sender;
 - (void)showLibraryWindow;
 @end
 
@@ -125,6 +126,10 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSMenuItem *sessionItem =
 	    [[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""] autorelease];
 	NSMenu *sessionMenu = [[[NSMenu alloc] initWithTitle:@"Session"] autorelease];
+	NSMenuItem *displayItem = [sessionMenu addItemWithTitle:@"Add Virtual Display"
+	    action:@selector(addVirtualDisplay:) keyEquivalent:@""];
+	[displayItem setTarget:self];
+	[sessionMenu addItem:[NSMenuItem separatorItem]];
 	NSMenuItem *disconnectItem =
 	    [sessionMenu addItemWithTitle:@"Disconnect"
 	                           action:@selector(disconnectSession:)
@@ -145,6 +150,11 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[NSApp setMainMenu:mainMenu];
 }
 
+- (void)addVirtualDisplay:(id)sender
+{
+	if ([_sessionController canAddVirtualDisplay]) [_sessionController addVirtualDisplay:sender];
+}
+
 - (void)disconnectSession:(id)sender
 {
 	(void)sender;
@@ -161,6 +171,8 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem
 {
+	if ([menuItem action] == @selector(addVirtualDisplay:))
+		return [_sessionController canAddVirtualDisplay];
 	if ([menuItem action] == @selector(disconnectSession:))
 		return _sessionController != nil;
 	if ([menuItem action] == @selector(showAbout:))

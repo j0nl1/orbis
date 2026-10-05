@@ -274,7 +274,7 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[_monitorArrangementField setAccessibilityIdentifier:@"profile-monitor-arrangement"];
 	NSView *arrangement = OrbisEditorFieldGroup(@"Monitor arrangement", _monitorArrangementField);
 	NSTextField *displayHint = [NSTextField wrappingLabelWithString:
-	    @"Start with one display. Add a virtual second display from the session toolbar. Manual resolutions use pixels; resizing a window scales its display."];
+	    @"Start with one display. Add a virtual second display from Session → Add Virtual Display. Manual resolutions use pixels; resizing a window scales its display."];
 	[displayHint setFont:[NSFont systemFontOfSize:12.0]];
 	[displayHint setTextColor:[NSColor secondaryLabelColor]];
 	NSStackView *preferences = OrbisEditorSection(@"Options", @[ options, primaryResolution, secondaryResolution, arrangement, displayHint ]);

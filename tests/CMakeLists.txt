@@ -47,6 +47,12 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   target_link_options(orbis_keyboard_input_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
   add_executable(orbis_virtual_display_tests
     ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisVirtualDisplayTests.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAppDelegate.m
+    ${keyboard_source}/client/Mac/MRDPView.m
+    ${keyboard_source}/client/Mac/Keyboard.m
+    ${keyboard_source}/client/Mac/Clipboard.m
+    ${keyboard_source}/client/Mac/mf_client.m
+    ${keyboard_source}/client/Mac/MRDPCursor.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionController.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisConnectionRetryPolicy.c
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionEndPolicy.c
@@ -56,8 +62,8 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
     ${keyboard_source}/include ${keyboard_source}/winpr/include
     ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
   target_compile_options(orbis_virtual_display_tests PRIVATE -fno-objc-arc -fblocks)
-  target_link_libraries(orbis_virtual_display_tests PRIVATE orbis_tunnel ${APPKIT_FRAMEWORK}
-    "${keyboard_runtime}/libMacFreeRDP-library.dylib"
+  target_link_libraries(orbis_virtual_display_tests PRIVATE orbis_macos_ui ${APPKIT_FRAMEWORK}
+    "-framework IOKit" "-framework CoreGraphics"
     "${keyboard_runtime}/libfreerdp3.3.dylib"
     "${keyboard_runtime}/libfreerdp-client3.3.dylib"
     "${keyboard_runtime}/libwinpr3.3.dylib")

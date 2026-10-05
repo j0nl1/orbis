@@ -28,6 +28,8 @@ static NSUInteger failures;
 }
 - (BOOL)start { return NO; }
 - (void)stop {}
+- (BOOL)canAddVirtualDisplay { return NO; }
+- (void)addVirtualDisplay:(id)sender { (void)sender; }
 @end
 
 @interface OrbisAppDelegate (EditingTests)

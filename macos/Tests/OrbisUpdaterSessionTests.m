@@ -16,6 +16,8 @@
 }
 - (BOOL)start { return YES; }
 - (void)stop {}
+- (BOOL)canAddVirtualDisplay { return NO; }
+- (void)addVirtualDisplay:(id)sender { (void)sender; }
 @end
 
 static void Require(BOOL condition, const char *message)

@@ -102,7 +102,11 @@ framebuffer resize notifications, without opening a remote connection.
 Coverage includes all four arrangements, unequal resolutions, signed monitor
 positions, normalized framebuffer regions, adding/removing windows, server monitor
 and area limits, and rollback on timeout. AppKit input tests exercise a secondary
-view's keyboard, pointer coordinates, and cropped rendering. Editor and profile
+view's keyboard, pointer coordinates, and cropped rendering. Captured pointer
+sequences also cross between both real AppKit output views in either direction
+for all four arrangements, checking one button press, movement
+on the destination monitor, and one release. Native menu tests cover availability
+and dispatch of Add Virtual Display. Editor and profile
 tests cover manual dimensions, validation, automatic defaults, copying, and
 persistence. These fixtures do not establish server interoperability; validate
 adding and closing a second display against a live remote login before release.

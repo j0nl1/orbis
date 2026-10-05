@@ -11,6 +11,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #import "MRDPView.h"
+#import "OrbisRemoteView.h"
 #import "mf_client.h"
 #import "mfreerdp.h"
 #import "OrbisConnectionRetryPolicy.h"
@@ -38,7 +39,7 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)pollModifierFlags:(NSTimer *)timer;
 - (void)remoteViewDidPresentFirstFrame:(NSNotification *)notification;
 - (void)retryCurrentConnection;
-- (void)addVirtualDisplay:(id)sender;
+- (NSPoint)remoteView:(MRDPView *)view remotePointForEvent:(NSEvent *)event;
 - (void)updateDisplayControls;
 - (void)desktopDidResize:(NSNotification *)notification;
 - (void)displayChangeTimedOut:(NSTimer *)timer;
@@ -50,12 +51,13 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)setConnectingStatus:(NSString *)status;
 @end
 
-@interface OrbisRemoteView : MRDPView
-@property(nonatomic, assign) OrbisSessionController *sessionController;
-@end
-
 @implementation OrbisRemoteView
 @synthesize sessionController;
+- (NSPoint)remotePointForEvent:(NSEvent *)event
+{
+	return sessionController ? [sessionController remoteView:self remotePointForEvent:event]
+	                         : [super remotePointForEvent:event];
+}
 @end
 
 static OrbisSessionController *OrbisControllerForContext(void *value)
@@ -162,10 +164,6 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[_window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
 	[_window setDelegate:self];
 	[_window setReleasedWhenClosed:NO];
-	NSToolbar *toolbar = [[[NSToolbar alloc] initWithIdentifier:@"orbis-session-displays"] autorelease];
-	[toolbar setDelegate:self]; [toolbar setAllowsUserCustomization:NO];
-	[_window setToolbar:toolbar];
-	[_window setToolbarStyle:NSWindowToolbarStyleUnifiedCompact];
 
 	OrbisRemoteView *remoteView = [[OrbisRemoteView alloc] initWithFrame:[[_window contentView] bounds]];
 	[remoteView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
@@ -472,31 +470,6 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	return YES;
 }
 
-- (NSArray *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar
-{
-	(void)toolbar;
-	return @[ NSToolbarFlexibleSpaceItemIdentifier, @"add-virtual-display" ];
-}
-
-- (NSArray *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar
-{
-	return [self toolbarAllowedItemIdentifiers:toolbar];
-}
-
-- (NSToolbarItem *)toolbar:(NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)identifier
-  willBeInsertedIntoToolbar:(BOOL)inserted
-{
-	(void)toolbar; (void)inserted;
-	if (![identifier isEqualToString:@"add-virtual-display"]) return nil;
-	NSToolbarItem *item = [[[NSToolbarItem alloc] initWithItemIdentifier:identifier] autorelease];
-	_addDisplayButton = [[NSButton buttonWithTitle:@"Add virtual display" target:self action:@selector(addVirtualDisplay:)] retain];
-	[_addDisplayButton setBezelStyle:NSBezelStyleRounded];
-	[_addDisplayButton setAccessibilityIdentifier:@"add-virtual-display"];
-	[item setLabel:@"Add virtual display"]; [item setView:_addDisplayButton];
-	[self updateDisplayControls];
-	return item;
-}
-
 - (void)displayChannelConnected:(DispClientContext *)channel
 {
 	[_displayLock lock];
@@ -523,13 +496,37 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[self performSelectorOnMainThread:@selector(updateDisplayControls) withObject:nil waitUntilDone:NO];
 }
 
-- (void)updateDisplayControls
+- (BOOL)canAddVirtualDisplay
 {
 	[_displayLock lock]; BOOL supported = _displayChannel && _displayMaxMonitors >= 2; [_displayLock unlock];
-	[_addDisplayButton setEnabled:supported && _wasConnected && !_stopping && !_displayChangePending && !_secondaryWindow && !_closingSecondaryWindow];
-	[_addDisplayButton setTitle:_displayChangePending ? (_pendingDisplayLayout.count == 2 ? @"Adding display…" : @"Removing display…") : @"Add virtual display"];
-	[_addDisplayButton setToolTip:supported ? @"Use the resolution and arrangement saved for this connection" :
-	    @"The server must support adding virtual displays during a session"];
+	return supported && _wasConnected && !_stopping && !_displayChangePending &&
+	    !_secondaryWindow && !_closingSecondaryWindow;
+}
+
+- (void)updateDisplayControls
+{
+	[[NSApp mainMenu] update];
+}
+
+- (NSPoint)remoteView:(MRDPView *)source remotePointForEvent:(NSEvent *)event
+{
+	NSWindow *eventWindow = [event window] ?: [source window];
+	if (!_stopping && _secondaryWindow && eventWindow && _displayLayout.count == 2)
+	{
+		// AppKit keeps delivering a drag and its release to the window that captured the press.
+		// Resolve its screen position against both outputs, keeping that single button sequence.
+		NSPoint screenPoint = [eventWindow convertPointToScreen:[event locationInWindow]];
+		for (NSWindow *window in [NSApp orderedWindows])
+		{
+			MRDPView *target = window == _window ? _remoteView :
+			    (window == _secondaryWindow ? _secondaryView : nil);
+			if (!target || ![window isVisible] || [window isMiniaturized] || ![window isOnActiveSpace]) continue;
+			NSPoint point = [window convertPointFromScreen:screenPoint];
+			NSPoint local = [target convertPoint:point fromView:nil];
+			if (NSPointInRect(local, [target bounds])) return [target remotePointForWindowPoint:point];
+		}
+	}
+	return [source remotePointForWindowPoint:[event locationInWindow]];
 }
 
 - (BOOL)sendDisplayLayout:(OrbisDisplayLayout)layout
@@ -908,7 +905,6 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	[_connectingStatusLabel release];
 	[_connectingOverlay release];
-	[_addDisplayButton release];
 	[_displayLock release];
 	[_remoteView release];
 	[_window release];

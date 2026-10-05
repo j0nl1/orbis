@@ -11,6 +11,7 @@
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- Add Virtual Display is available in the macOS Session menu, without a session toolbar.
 - iPadOS connection forms group endpoint, Access token, account, and connection options, accept tunnel HTTPS URLs, and preserve saved credentials.
 - iPadOS hardware keyboards support Option-Backspace word deletion and Option symbols while retaining remote Alt+Tab.
 - The iPadOS library has a labeled New connection action, and failed connections show transport or authentication details after returning to the library.
@@ -24,6 +25,7 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- macOS remote window drags can cross between Orbis display windows while keeping the original button press.
 - iPadOS connection indicators check RDP availability independently of session state, including after disconnecting.
 - iPadOS Command-Backspace sends Forward Delete without Control, including when Command is released before Backspace.
 - OpenH264 simulator builds use the simulator SDK and target consistently and remain compatible with the supported CMake version.

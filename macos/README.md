@@ -26,7 +26,7 @@ second display to the right, left, above, or below the primary. Manual dimension
 are pixels, from 200 to 8192, with an even width. Automatic sizing uses the local
 screen's dimensions in points, preserving the existing default.
 
-The session toolbar's **Add virtual display** action requests a second remote
+The **Session → Add Virtual Display** menu action requests a second remote
 monitor using the same RDP session. The second window opens after the server
 confirms the combined desktop size; move it to another Mac screen or use native
 fullscreen. Window resizing scales the image without changing its saved remote
@@ -38,3 +38,9 @@ two monitors. Advertised monitor area limits are checked before sending a layout
 A ten-second resize deadline reports unsupported changes and requests the previous
 layout again. No physical monitor is needed on a server that supports virtual
 remote displays. Live server validation is still required for this implementation.
+
+Pointer drags remain in the same remote session when crossing between the two
+Orbis windows, including native fullscreen windows on separate Mac screens.
+The captured drag uses the output under the cursor, preserving the button press
+until its release in either window. Match the saved monitor arrangement to the
+Mac screens for a continuous transition between adjacent remote displays.
