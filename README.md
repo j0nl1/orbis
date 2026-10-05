@@ -42,13 +42,15 @@ The mapping is active only while the remote session has focus.
 On macOS, tapping Command on its own sends Super, which opens GNOME Activities.
 Option and Shift+Option symbols such as `@`, `€`, and braces use the characters
 produced by the Mac keyboard layout. Option+Tab still sends remote Alt+Tab.
-On iPadOS, Command is kept as a shortcut modifier. Other keys use FreeRDP's
-normal keyboard mapping.
+On iPadOS, Command is kept as a shortcut modifier. Option-Backspace deletes the
+previous word, Option symbols use the iPad keyboard layout, and Option+Tab sends
+remote Alt+Tab.
+Other keys use FreeRDP's normal keyboard mapping.
 
 ## What works today
 
 - Connections by IP address, local hostname, or public DNS name
-- Cloudflare Tunnel connections with Access Service Auth headers on macOS
+- Cloudflare Tunnel connections with Access Service Auth headers on iPadOS and macOS
 - GNOME Remote Login and its sign-in handoff
 - Profiles with optional automatic connection
 - Per-profile certificate prompts or automatic certificate acceptance

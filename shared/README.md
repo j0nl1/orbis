@@ -7,8 +7,8 @@ Only code with the same contract and behaviour on iPadOS and macOS belongs here.
 - `Security` stores RDP passwords and hostname-bound gateway credentials in
   separate Apple Keychain items.
 - `Transport` defines the connection port, direct and Cloudflare adapters, and
-  adapter session ownership. The macOS application currently consumes this module;
-  the iPadOS session integration remains pending.
+  adapter session ownership. Both applications select an adapter before starting
+  RDP and keep its prepared session alive until the connection attempt ends.
 
 The application composition root selects an adapter through `OrbisTransportFactory`
 and injects `OrbisConnectionTransport` into the RDP session controller. Each

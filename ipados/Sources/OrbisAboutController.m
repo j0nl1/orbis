@@ -54,6 +54,29 @@
 	[description setNumberOfLines:0];
 	[description setAdjustsFontForContentSizeCategory:YES];
 
+	UILabel *changesTitle = [[[UILabel alloc] init] autorelease];
+	[changesTitle setText:@"Latest changes"];
+	[changesTitle setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleTitle2]];
+	[changesTitle setAdjustsFontForContentSizeCategory:YES];
+	UILabel *changes = [[[UILabel alloc] init] autorelease];
+	[changes setNumberOfLines:0];
+	[changes setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleBody]];
+	[changes setAdjustsFontForContentSizeCategory:YES];
+	NSString *path = [[NSBundle mainBundle] pathForResource:@"CHANGELOG" ofType:@"md"];
+	NSString *changelog = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+	NSMutableArray *lines = [NSMutableArray array];
+	for (NSString *line in [changelog componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]])
+	{
+		if ([line hasPrefix:@"# "]) continue;
+		if ([line hasPrefix:@"## "])
+			[lines addObject:[line substringFromIndex:3]];
+		else if ([line hasPrefix:@"### "])
+			[lines addObject:[line substringFromIndex:4]];
+		else if ([line hasPrefix:@"- "])
+			[lines addObject:[@"• " stringByAppendingString:[line substringFromIndex:2]]];
+		else [lines addObject:line];
+	}
+	[changes setText:[lines count] ? [lines componentsJoinedByString:@"\n"] : @"The changelog is unavailable in this build."];
 	UILabel *thanks = [[[UILabel alloc] init] autorelease];
 	[thanks setText:@"Orbis is possible because these projects publish their work as open source. Thank you to their maintainers and contributors."];
 	[thanks setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleBody]];
@@ -90,7 +113,7 @@
 	}
 
 	UIStackView *stack = [[[UIStackView alloc]
-	    initWithArrangedSubviews:@[ icon, title, versionLabel, description, thanks, projects ]]
+	    initWithArrangedSubviews:@[ icon, title, versionLabel, description, changesTitle, changes, thanks, projects ]]
 	    autorelease];
 	[stack setAxis:UILayoutConstraintAxisVertical];
 	[stack setAlignment:UIStackViewAlignmentCenter];
@@ -101,6 +124,7 @@
 	[stack setTranslatesAutoresizingMaskIntoConstraints:NO];
 	[content addSubview:stack];
 	[[description widthAnchor] constraintEqualToAnchor:[stack widthAnchor]].active = YES;
+	[[changes widthAnchor] constraintEqualToAnchor:[stack widthAnchor]].active = YES;
 	[[thanks widthAnchor] constraintEqualToAnchor:[stack widthAnchor]].active = YES;
 	[[projects widthAnchor] constraintEqualToAnchor:[stack widthAnchor]].active = YES;
 

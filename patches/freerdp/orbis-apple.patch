@@ -1040,14 +1040,14 @@ index 1f4f4732d..278cb7724 100644
      didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
  {
 diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
-index b1cc404d1..44bf58ef4 100644
+index b1cc404d1..50e589033 100644
 --- a/client/iOS/CMakeLists.txt
 +++ b/client/iOS/CMakeLists.txt
 @@ -30,6 +30,11 @@ project(iFreeRDP VERSION ${FREERDP_DEFAULT_PROJECT_VERSION})
  message("project ${PROJECT_NAME} is using version ${PROJECT_VERSION}")
  
  get_filename_component(FREERDP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-+set(ORBIS_IPADOS_APP_DIR "${FREERDP_SOURCE_DIR}/ipados")
++get_filename_component(ORBIS_IPADOS_APP_DIR "${FREERDP_SOURCE_DIR}/ipados" REALPATH)
 +set(ORBIS_SHARED_DIR "${FREERDP_SOURCE_DIR}/shared")
 +
 +string(TIMESTAMP ORBIS_VERSION_DATE "%Y.%m.%d" UTC)
@@ -1076,7 +1076,7 @@ index b1cc404d1..44bf58ef4 100644
  
  message("sysroot:    ${CMAKE_SYSROOT}")
  message("target:     ${CMAKE_OSX_DEPLOYMENT_TARGET}")
-@@ -85,6 +90,10 @@ include_directories(SYSTEM ${IOS_CLIENT_FREERDP_DIR})
+@@ -85,6 +90,11 @@ include_directories(SYSTEM ${IOS_CLIENT_FREERDP_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_MISC_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_MODELS_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_VIEWS_DIR})
@@ -1084,21 +1084,24 @@ index b1cc404d1..44bf58ef4 100644
 +include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/Profiles)
 +include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/Security)
 +include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/About)
++include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/Transport)
  
  # Dependencies
  include(ExternalDeps)
-@@ -115,6 +124,10 @@ set(SRCS
+@@ -115,6 +125,12 @@ set(SRCS
      Controllers/CredentialsEditorController.m
      Controllers/CredentialsInputController.h
      Controllers/CredentialsInputController.m
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisController.h
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisController.m
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisConnectionHealthCheck.h
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisConnectionHealthCheck.m
 +	${ORBIS_IPADOS_APP_DIR}/Sources/OrbisAboutController.h
 +	${ORBIS_IPADOS_APP_DIR}/Sources/OrbisAboutController.m
      Controllers/EditorBaseController.h
      Controllers/EditorBaseController.m
      Controllers/EditorSelectionController.h
-@@ -123,14 +136,14 @@ set(SRCS
+@@ -123,14 +139,14 @@ set(SRCS
      Controllers/EncryptionController.m
      Controllers/MainTabBarController.h
      Controllers/MainTabBarController.m
@@ -1115,7 +1118,7 @@ index b1cc404d1..44bf58ef4 100644
      FreeRDP/ios_cliprdr.h
      FreeRDP/ios_cliprdr.m
      FreeRDP/ios_freerdp_events.h
-@@ -155,6 +168,12 @@ set(SRCS
+@@ -155,6 +171,18 @@ set(SRCS
      Models/Encryptor.m
      Models/GlobalDefaults.h
      Models/GlobalDefaults.m
@@ -1125,10 +1128,16 @@ index b1cc404d1..44bf58ef4 100644
 +    ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.m
 +	${ORBIS_SHARED_DIR}/Sources/About/OrbisAcknowledgements.h
 +	${ORBIS_SHARED_DIR}/Sources/About/OrbisAcknowledgements.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisConnectionTransport.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisDirectTransport.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisCloudflareTransport.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTransportFactory.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTunnelBridge.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisRDPTransportRoute.c
      Models/RDPKeyboard.h
      Models/RDPKeyboard.m
      Models/RDPSession.h
-@@ -204,10 +223,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
+@@ -204,10 +232,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
      Resources/EditSubEditTableViewCell.xib
      Resources/EditTextTableViewCell.xib
      Resources/MainWindow.xib
@@ -1139,7 +1148,7 @@ index b1cc404d1..44bf58ef4 100644
  )
  
  set(IOS_CLIENT_RESOURCES_PNGS
-@@ -224,6 +241,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
+@@ -224,6 +250,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
      Resources/alert-window-landscape.png
      Resources/alert-window.png
      Resources/cancel_button_background.png
@@ -1147,7 +1156,35 @@ index b1cc404d1..44bf58ef4 100644
      Resources/Default@2x.png
      Resources/Default-568h@2x.png
      Resources/Default-Landscape@2x~ipad.png
-@@ -325,7 +343,11 @@ add_executable(
+@@ -287,6 +314,15 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
+ find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+ find_library(WEBKIT_FRAMEWORK WebKit REQUIRED)
+ find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
++find_library(NETWORK_FRAMEWORK Network REQUIRED)
++set_source_files_properties(
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisConnectionHealthCheck.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisConnectionTransport.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisDirectTransport.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisCloudflareTransport.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTransportFactory.m
++    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTunnelBridge.m
++    PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fblocks")
+ 
+ set(EXTRA_LIBS
+     ${FOUNDATION_FRAMEWORK}
+@@ -298,9 +334,10 @@ set(EXTRA_LIBS
+     ${SYSTEMCONFIGURATION_FRAMEWORK}
+     ${WEBKIT_FRAMEWORK}
+     ${GAMECONTROLLER_FRAMEWORK}
++    ${NETWORK_FRAMEWORK}
+ )
+ 
+-set(RESOURCES ${IOS_CLIENT_RESOURCES_XIBS} ${IOS_CLIENT_RESOURCES_PNGS} ${IOS_CLIENT_RESOURCES_DIR}/about_page
++set(RESOURCES ${ORBIS_IPADOS_APP_DIR}/../CHANGELOG.md ${IOS_CLIENT_RESOURCES_XIBS} ${IOS_CLIENT_RESOURCES_PNGS} ${IOS_CLIENT_RESOURCES_DIR}/about_page
+               ${IOS_CLIENT_RESOURCES_DIR}/en.lproj ${IOS_CLIENT_DIR}/Defaults.plist
+ )
+ 
+@@ -325,7 +362,11 @@ add_executable(
  add_dependencies(${PROJECT_NAME} freerdp)
  
  set_target_properties(
@@ -1160,7 +1197,7 @@ index b1cc404d1..44bf58ef4 100644
                               RESOURCE "${RESOURCES}"
  )
  
-@@ -347,6 +369,26 @@ if(TARGET winpr3-lib)
+@@ -347,6 +388,26 @@ if(TARGET winpr3-lib)
    list(APPEND _ios_embed_frameworks "${_ios_winpr_runtime_location}")
  endif()
  
@@ -1187,6 +1224,15 @@ index b1cc404d1..44bf58ef4 100644
  if(AVCODEC_LIBRARIES MATCHES "\\.framework/")
    get_filename_component(_ios_ffmpeg_framework "${AVCODEC_LIBRARIES}" DIRECTORY)
    list(APPEND _ios_embed_frameworks "${_ios_ffmpeg_framework}")
+@@ -358,3 +419,8 @@ if(_ios_embed_frameworks)
+                                XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
+   )
+ endif()
++
++option(ORBIS_BUILD_IPADOS_TESTS "Build app-hosted iPadOS XCTest bundle" OFF)
++if(ORBIS_BUILD_IPADOS_TESTS)
++  add_subdirectory(${ORBIS_IPADOS_APP_DIR}/Tests ${CMAKE_CURRENT_BINARY_DIR}/orbis-tests)
++endif()
 diff --git a/client/iOS/Controllers/RDPSessionViewController.h b/client/iOS/Controllers/RDPSessionViewController.h
 index c5a018ec6..417ceabda 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.h
@@ -1210,7 +1256,7 @@ index c5a018ec6..417ceabda 100644
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378cce..e557a3094 100644
+index b6d378cce..cef2a5d0c 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
 @@ -10,21 +10,22 @@
@@ -1239,7 +1285,7 @@ index b6d378cce..e557a3094 100644
  - (UIToolbar *)keyboardToolbar;
  - (void)initGestureRecognizers;
  - (void)suspendSession;
-@@ -60,6 +61,8 @@ - (id)initWithNibName:(NSString *)nibNameOrNil
+@@ -60,6 +61,8 @@
  		_advanced_keyboard_visible = NO;
  		_requesting_advanced_keyboard = NO;
  		_last_session_viewport_size = CGSizeZero;
@@ -1248,7 +1294,7 @@ index b6d378cce..e557a3094 100644
  
  		_session_toolbar_visible = NO;
  
-@@ -85,10 +88,6 @@ - (void)loadView
+@@ -85,10 +88,6 @@
  	// load default view and set background color and resizing mask
  	[super loadView];
  
@@ -1259,7 +1305,7 @@ index b6d378cce..e557a3094 100644
  	// init keyboard handling vars
  	_keyboard_visible = NO;
  
-@@ -99,9 +98,9 @@ - (void)loadView
+@@ -99,9 +98,9 @@
  	// init gesture recognizers
  	[self initGestureRecognizers];
  
@@ -1272,7 +1318,7 @@ index b6d378cce..e557a3094 100644
  }
  
  // Implement viewDidLoad to do additional setup after loading the view, typically from a nib.
-@@ -117,6 +116,11 @@ - (void)viewDidLoad
+@@ -117,6 +116,11 @@
  	[_session_scrollview setAlwaysBounceHorizontal:NO];
  	[_session_scrollview setAlwaysBounceVertical:NO];
  	[_session_scrollview setBounces:NO];
@@ -1284,7 +1330,7 @@ index b6d378cce..e557a3094 100644
  }
  
  - (void)viewDidLayoutSubviews
-@@ -128,7 +132,10 @@ - (void)viewDidLayoutSubviews
+@@ -128,7 +132,10 @@
  
  	CGSize viewportSize = [_session_scrollview bounds].size;
  	if (!CGSizeEqualToSize(viewportSize, _last_session_viewport_size))
@@ -1295,7 +1341,7 @@ index b6d378cce..e557a3094 100644
  	else
  		[self centerSessionViewInViewport];
  }
-@@ -177,6 +184,8 @@ - (void)viewWillAppear:(BOOL)animated
+@@ -177,6 +184,8 @@
  	[self setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:YES animated:animated];
@@ -1304,7 +1350,7 @@ index b6d378cce..e557a3094 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:YES animated:animated];
  	else
-@@ -197,10 +206,11 @@ - (void)viewDidAppear:(BOOL)animated
+@@ -197,10 +206,11 @@
  	if (!_session_initilized)
  	{
  		if ([_session isSuspended])
@@ -1320,7 +1366,7 @@ index b6d378cce..e557a3094 100644
  		else
  			[_session connect];
  
-@@ -219,6 +229,7 @@ - (void)viewWillDisappear:(BOOL)animated
+@@ -219,6 +229,7 @@
  
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:NO animated:animated];
@@ -1328,7 +1374,7 @@ index b6d378cce..e557a3094 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:NO animated:animated];
  	else
-@@ -236,12 +247,17 @@ - (void)dealloc
+@@ -236,12 +247,17 @@
  {
  	// remove any observers
  	[[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -1346,7 +1392,7 @@ index b6d378cce..e557a3094 100644
  	[_session release];
  	[super dealloc];
  }
-@@ -361,10 +377,9 @@ - (void)modifiersChangedForKeyboard:(RDPKeyboard *)keyboard
+@@ -361,36 +377,86 @@
  
  - (void)session:(RDPSession *)session didFailToConnect:(int)reason
  {
@@ -1354,13 +1400,28 @@ index b6d378cce..e557a3094 100644
 -	[_connecting_indicator_view stopAnimating];
 -	[_connecting_view removeFromSuperview];
 -	[_connecting_view autorelease];
-+	(void)session;
+-
+-	// return to bookmark list
+-	[[self navigationController] popViewControllerAnimated:YES];
 +	(void)reason;
 +	[self hideConnectingView];
- 
- 	// return to bookmark list
- 	[[self navigationController] popViewControllerAnimated:YES];
-@@ -372,25 +387,60 @@ - (void)session:(RDPSession *)session didFailToConnect:(int)reason
++	UINavigationController *navigation = [self navigationController];
++	NSString *message = [session connectionFailureMessage];
++	[navigation popViewControllerAnimated:YES];
++	void (^presentError)(void) = ^{
++		UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Connection Failed"
++		    message:message preferredStyle:UIAlertControllerStyleAlert];
++		[alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
++		[[navigation topViewController] presentViewController:alert animated:YES completion:nil];
++	};
++	id<UIViewControllerTransitionCoordinator> transition = [navigation transitionCoordinator];
++	if (transition)
++		[transition animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
++			(void)context;
++			presentError();
++		}];
++	else presentError();
+ }
  
  - (void)sessionWillConnect:(RDPSession *)session
  {
@@ -1395,8 +1456,12 @@ index b6d378cce..e557a3094 100644
 +	[connectingLabel setAdjustsFontForContentSizeCategory:YES];
 +	[connectingLabel setTextColor:[UIColor secondaryLabelColor]];
 +
++	UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
++	[cancelButton setTitle:@"Cancel" forState:UIControlStateNormal];
++	[cancelButton addTarget:self action:@selector(cancelButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
++	[[cancelButton heightAnchor] constraintGreaterThanOrEqualToConstant:44.0].active = YES;
 +	UIStackView *connectingStack = [[[UIStackView alloc]
-+	    initWithArrangedSubviews:@[ _connecting_indicator_view, connectingLabel ]] autorelease];
++	    initWithArrangedSubviews:@[ _connecting_indicator_view, connectingLabel, cancelButton ]] autorelease];
 +	[connectingStack setAxis:UILayoutConstraintAxisVertical];
 +	[connectingStack setAlignment:UIStackViewAlignmentCenter];
 +	[connectingStack setSpacing:14.0];
@@ -1434,7 +1499,7 @@ index b6d378cce..e557a3094 100644
  	// register keyboard notification handlers
  	[[NSNotificationCenter defaultCenter] addObserver:self
  	                                         selector:@selector(keyboardWillShow:)
-@@ -419,11 +469,7 @@ - (void)sessionDidConnect:(RDPSession *)session
+@@ -419,11 +485,7 @@
  	                                             name:GCKeyboardDidDisconnectNotification
  	                                           object:nil];
  	[self hardwareKeyboardChanged:nil];
@@ -1447,7 +1512,7 @@ index b6d378cce..e557a3094 100644
  
  	// check if session settings changed ...
  	// The 2nd width check is to ignore changes in resolution settings due to the RDVH display bug
-@@ -451,10 +497,17 @@ - (void)sessionDidConnect:(RDPSession *)session
+@@ -451,10 +513,17 @@
  
  - (void)sessionWillDisconnect:(RDPSession *)session
  {
@@ -1465,7 +1530,7 @@ index b6d378cce..e557a3094 100644
  	// return to bookmark list
  	[[self navigationController] popViewControllerAnimated:YES];
  }
-@@ -492,13 +545,28 @@ - (void)sessionBitmapContextDidChange:(RDPSession *)session
+@@ -492,13 +561,28 @@
  	if (!_has_cursor_view_position)
  		(void)[self currentCursorViewPosition];
  
@@ -1497,7 +1562,7 @@ index b6d378cce..e557a3094 100644
  }
  
  - (void)session:(RDPSession *)session didSetRemoteCursor:(RDPCursor *)cursor
-@@ -553,26 +621,58 @@ - (void)session:(RDPSession *)session requestsAuthenticationWithParams:(NSMutabl
+@@ -553,26 +637,58 @@
  
  - (void)session:(RDPSession *)session verifyCertificateWithParams:(NSMutableDictionary *)params
  {
@@ -1570,7 +1635,7 @@ index b6d378cce..e557a3094 100644
  
  	CGFloat maxDimension = MAX(size.width, size.height);
  	if (maxDimension > 4096.0f)
-@@ -584,9 +684,35 @@ - (CGSize)sizeForFitScreenForSession:(RDPSession *)session
+@@ -584,9 +700,35 @@
  
  	size.width = MAX(64.0f, size.width);
  	size.height = MAX(64.0f, size.height);
@@ -1606,7 +1671,7 @@ index b6d378cce..e557a3094 100644
  #pragma mark - Keyboard Toolbar Handlers
  
  - (void)showAdvancedKeyboardAnimated
-@@ -702,6 +828,14 @@ - (IBAction)toggleExtKeyboard:(id)sender
+@@ -702,6 +844,14 @@
  	}
  }
  
@@ -1621,7 +1686,7 @@ index b6d378cce..e557a3094 100644
  - (IBAction)disconnectSession:(id)sender
  {
  	[_session disconnect];
-@@ -914,8 +1048,7 @@ - (void)handleScroll:(UIPanGestureRecognizer *)gesture
+@@ -914,8 +1064,7 @@
  
  - (void)handleSingle3FingersTap:(UITapGestureRecognizer *)gesture
  {
@@ -1631,7 +1696,7 @@ index b6d378cce..e557a3094 100644
  }
  
  - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
-@@ -998,35 +1131,9 @@ - (void)centerSessionViewInViewport
+@@ -998,35 +1147,9 @@
  
  - (void)showSessionToolbar:(BOOL)show
  {
@@ -1880,10 +1945,41 @@ index accafd2e5..154c376a6 100644
  
  DWORD ios_ui_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
 diff --git a/client/iOS/Models/RDPSession.h b/client/iOS/Models/RDPSession.h
-index 131fdc135..05d45b824 100644
+index 131fdc135..51169e12f 100644
 --- a/client/iOS/Models/RDPSession.h
 +++ b/client/iOS/Models/RDPSession.h
-@@ -99,6 +99,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -12,6 +12,8 @@
+ #import <UIKit/UIKit.h>
+ 
+ #include <freerdp/freerdp.h>
++#import "OrbisConnectionTransport.h"
++#import "OrbisRDPTransportRoute.h"
+ 
+ // forward declaration
+ @class RDPSession;
+@@ -64,11 +66,21 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+ 
+ 	// flag if the session is suspended
+ 	BOOL _suspended;
++	id<OrbisConnectionTransport> _connectionTransport;
++	id<OrbisTransportSession> _transportSession;
++	OrbisRDPTransportRoute *_transportRoute;
++	BOOL _transportPreparing;
++	BOOL _connectionStarted;
++	BOOL _connectionCancelled;
++	BOOL _finished;
++	NSString *_connectionFailureMessage;
+ 
+ 	// flag that specifies whether the RDP toolbar is visible
+ 	BOOL _toolbar_visible;
+ }
+ 
++@property(nonatomic, retain) id<OrbisConnectionTransport> connectionTransport;
++@property(nonatomic, readonly) NSString *connectionFailureMessage;
+ @property(readonly) ConnectionParams *params;
+ @property(readonly) ComputerBookmark *bookmark;
+ @property(assign) id<RDPSessionDelegate> delegate;
+@@ -99,6 +111,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  // send input event to the server
  - (void)sendInputEvent:(NSDictionary *)event;
  
@@ -1894,7 +1990,7 @@ index 131fdc135..05d45b824 100644
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
  
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
-index 0fde5e33b..6ffc7049a 100644
+index 0fde5e33b..dc7580db3 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
 @@ -12,6 +12,9 @@
@@ -1907,7 +2003,25 @@ index 0fde5e33b..6ffc7049a 100644
  #import "RDPSession.h"
  #import "RDPCursor.h"
  #import "TSXTypes.h"
-@@ -107,6 +110,9 @@ - (id)initWithBookmark:(ComputerBookmark *)bookmark
+@@ -23,6 +26,8 @@ NSString *TSXSessionDidFailToConnectNotification = @"TSXSessionDidFailToConnect"
+ 
+ @interface RDPSession (Private)
+ - (void)runSession;
++- (void)beginRDPConnection;
++- (void)closeTransportSession;
+ - (void)runSessionFinished:(NSNumber *)result;
+ - (mfInfo *)mfi;
+ 
+@@ -37,6 +42,8 @@ NSString *TSXSessionDidFailToConnectNotification = @"TSXSessionDidFailToConnect"
+ 
+ @implementation RDPSession
+ 
++@synthesize connectionTransport = _connectionTransport, connectionFailureMessage = _connectionFailureMessage;
++
+ @synthesize delegate = _delegate, params = _params, toolbarVisible = _toolbar_visible,
+             uiRequestCompleted = _ui_request_completed, bookmark = _bookmark;
+ 
+@@ -107,6 +114,9 @@ static void freeArguments(int argc, char **argv)
  
  	if (!addArgument(&argc, &argv, "/relax-order-checks"))
  		goto out_free;
@@ -1917,7 +2031,7 @@ index 0fde5e33b..6ffc7049a 100644
  	// Screen Size is set on connect (we need a valid delegate in case the user choose an automatic
  	// screen size)
  
-@@ -260,6 +266,19 @@ - (id)initWithBookmark:(ComputerBookmark *)bookmark
+@@ -260,6 +270,19 @@ static void freeArguments(int argc, char **argv)
  	if (0 != status)
  		goto out_free;
  
@@ -1937,7 +2051,89 @@ index 0fde5e33b..6ffc7049a 100644
  	freeArguments(argc, argv);
  	[self mfi]->session = self;
  	return self;
-@@ -382,6 +401,20 @@ - (void)sendInputEvent:(NSDictionary *)eventDescriptor
+@@ -276,7 +299,11 @@ out_free:
+ 	[_name release];
+ 	[_params release];
+ 	[_ui_request_completed release];
++	OrbisRDPTransportRouteFree(_transportRoute);
+ 	ios_freerdp_free(_freerdp);
++	[_transportSession release];
++	[_connectionTransport release];
++	[_connectionFailureMessage release];
+ 	[super dealloc];
+ }
+ 
+@@ -290,6 +317,37 @@ out_free:
+ 
+ - (void)connect
+ {
++	if (_connectionStarted || _transportPreparing || _connectionCancelled || _finished)
++		return;
++	if (!_connectionTransport)
++		return [self beginRDPConnection];
++	_transportPreparing = YES;
++	[self sessionWillConnect];
++	_transportSession = [[_connectionTransport prepareWithCompletion:^(OrbisTransportDestination *destination, NSError *error) {
++		_transportPreparing = NO;
++		if (_connectionCancelled || _finished)
++			return;
++		if (!error && destination)
++		{
++			_transportRoute = OrbisRDPTransportRouteInstall(_freerdp->context,
++				[[destination hostname] UTF8String], [destination port]);
++			if (!_transportRoute)
++				error = [NSError errorWithDomain:@"com.dnexus.orbis.transport" code:1 userInfo:@{
++					NSLocalizedDescriptionKey : @"FreeRDP could not configure the connection transport." }];
++		}
++		if (error)
++		{
++			[_connectionFailureMessage release];
++			_connectionFailureMessage = [[error localizedDescription] copy];
++			[self sessionDidFailToConnect:MF_EXIT_CONN_FAILED];
++		}
++		else [self beginRDPConnection];
++	}] retain];
++}
++
++- (void)beginRDPConnection
++{
++	_connectionStarted = YES;
+ 	// Set Screen Size to automatic if width or height are still 0
+ 	rdpSettings *settings = _freerdp->context->settings;
+ 
+@@ -313,7 +371,7 @@ out_free:
+ 	// TODO: This is a hack to ensure connections to RDVH with 16bpp don't have an odd screen
+ 	// resolution width
+ 	//       Otherwise this could result in screen corruption ..
+-	if (freerdp_settings_get_uint32(settings, FreeRDP_ColorDepth) <= 16)
++	if (freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) % 2 != 0)
+ 	{
+ 		const UINT32 w = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) & (~1);
+ 		(void)freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
+@@ -324,13 +382,21 @@ out_free:
+ 
+ - (void)disconnect
+ {
++	if (_connectionCancelled || _finished) return;
++	_connectionCancelled = YES;
++	[self closeTransportSession];
++	if (!_connectionStarted)
++	{
++		[self sessionDidDisconnect];
++		return;
++	}
++	(void)freerdp_abort_connect_context(_freerdp->context);
+ 	mfInfo *mfi = [self mfi];
+ 	ios_events_send(mfi, [NSDictionary dictionaryWithObject:@"disconnect" forKey:@"type"]);
+ 
+ 	if (mfi->connection_state == TSXConnectionConnecting)
+ 	{
+ 		mfi->unwanted = YES;
+-		[self sessionDidDisconnect];
+ 		return;
+ 	}
+ }
+@@ -382,6 +448,20 @@ out_free:
  		ios_events_send([self mfi], eventDescriptor);
  }
  
@@ -1957,6 +2153,47 @@ index 0fde5e33b..6ffc7049a 100644
 +
  #pragma mark -
  #pragma mark Server events (main thread)
+ 
+@@ -508,8 +588,30 @@ out_free:
+ 		[[self delegate] sessionDidConnect:self];
+ }
+ 
++- (void)closeTransportSession
++{
++	[_transportSession close];
++}
++
+ - (void)sessionDidFailToConnect:(int)reason
+ {
++	if (_finished) return;
++	if (_connectionCancelled) return [self sessionDidDisconnect];
++	_finished = YES;
++	if (!_connectionFailureMessage)
++	{
++		NSError *transportError = [_transportSession connectionError];
++		DWORD code = freerdp_get_last_error(_freerdp->context);
++		BOOL authentication = code == FREERDP_ERROR_AUTHENTICATION_FAILED ||
++			code == FREERDP_ERROR_CONNECT_LOGON_FAILURE || code == FREERDP_ERROR_CONNECT_WRONG_PASSWORD ||
++			code == FREERDP_ERROR_CONNECT_NO_OR_MISSING_CREDENTIALS;
++		NSString *summary = authentication ? @"Authentication failed. Check the username and password."
++			: @"Could not connect to the Remote Desktop server.";
++		const char *detail = freerdp_get_last_error_string(code);
++		_connectionFailureMessage = [(transportError ? [transportError localizedDescription] :
++			[NSString stringWithFormat:@"%@\n\n%s (0x%08X)", summary, detail ?: "Unknown error", (unsigned int)code]) copy];
++	}
++	[self closeTransportSession];
+ 	[[NSNotificationCenter defaultCenter]
+ 	    postNotificationName:TSXSessionDidFailToConnectNotification
+ 	                  object:self];
+@@ -520,6 +622,9 @@ out_free:
+ 
+ - (void)sessionDidDisconnect
+ {
++	if (_finished) return;
++	_finished = YES;
++	[self closeTransportSession];
+ 	[[NSNotificationCenter defaultCenter] postNotificationName:TSXSessionDidDisconnectNotification
+ 	                                                    object:self];
  
 diff --git a/client/iOS/SceneDelegate.m b/client/iOS/SceneDelegate.m
 index febf4472a..76957170e 100644
@@ -2044,10 +2281,10 @@ index 722bccc2a..9ffe3365b 100644
  - (void)setRemoteCursorPosition:(CGPoint)position;
  - (void)showRemoteCursor;
 diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView.m
-index c7e2f4134..92d0751c1 100644
+index c7e2f4134..2c0d3c8f1 100644
 --- a/client/iOS/Views/RDPSessionView.m
 +++ b/client/iOS/Views/RDPSessionView.m
-@@ -39,10 +39,15 @@ @interface RDPSessionView ()
+@@ -39,10 +39,20 @@
  	RDPSessionDisplayLinkTarget *_displayLinkTarget;
  	CGRect _pendingDirtyRect;
  	BOOL _hasPendingDirtyRect;
@@ -2060,10 +2297,15 @@ index c7e2f4134..92d0751c1 100644
  	CGPoint _cursorPosition;
  	CGPoint _cursorHotspot;
 +	NSMutableSet *_commandMappedKeys;
++	BOOL _commandControlDown;
++	NSMutableSet *_commandConsumedKeys;
++	NSMutableSet *_optionConsumedKeys;
++	BOOL _remoteOptionDown;
++	NSMutableSet *_remoteShiftKeys;
  }
  
  - (void)configureMetal;
-@@ -75,6 +80,8 @@ - (void)clearView
+@@ -75,6 +85,8 @@
  
  @implementation RDPSessionView
  
@@ -2072,7 +2314,7 @@ index c7e2f4134..92d0751c1 100644
  + (Class)layerClass
  {
  	return [CAMetalLayer class];
-@@ -84,7 +91,6 @@ - (void)setSession:(RDPSession *)session
+@@ -84,7 +96,6 @@
  {
  	_session = session;
  	[self configureDesktopTexture];
@@ -2080,7 +2322,7 @@ index c7e2f4134..92d0751c1 100644
  }
  
  - (void)awakeFromNib
-@@ -99,9 +105,14 @@ - (void)awakeFromNib
+@@ -99,9 +110,17 @@
  	_session = nil;
  	_pendingDirtyRect = CGRectNull;
  	_hasPendingDirtyRect = NO;
@@ -2092,10 +2334,13 @@ index c7e2f4134..92d0751c1 100644
  	_cursorPosition = CGPointZero;
  	_cursorHotspot = CGPointZero;
 +	_commandMappedKeys = [[NSMutableSet alloc] init];
++	_commandConsumedKeys = [[NSMutableSet alloc] init];
++	_optionConsumedKeys = [[NSMutableSet alloc] init];
++	_remoteShiftKeys = [[NSMutableSet alloc] init];
  	_cursorImageView = [[UIImageView alloc] initWithFrame:CGRectZero];
  	[_cursorImageView setUserInteractionEnabled:NO];
  	[_cursorImageView setContentMode:UIViewContentModeTopLeft];
-@@ -258,6 +269,10 @@ - (void)prepareForBitmapContextChange
+@@ -258,6 +277,10 @@
  	[_displayLink setPaused:YES];
  	_hasPendingDirtyRect = NO;
  	_pendingDirtyRect = CGRectNull;
@@ -2106,7 +2351,7 @@ index c7e2f4134..92d0751c1 100644
  	[_desktopTexture release];
  	_desktopTexture = nil;
  }
-@@ -277,6 +292,12 @@ - (void)setNeedsDisplayInRemoteRect:(CGRect)rect
+@@ -277,6 +300,12 @@
  	[self scheduleRender];
  }
  
@@ -2119,7 +2364,7 @@ index c7e2f4134..92d0751c1 100644
  - (void)scheduleRender
  {
  	if ([self window] && _displayLink && _hasPendingDirtyRect)
-@@ -360,6 +381,23 @@ - (void)renderDisplayLink:(CADisplayLink *)displayLink
+@@ -360,6 +389,23 @@
  	[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
  	[encoder endEncoding];
  	[commandBuffer presentDrawable:drawable];
@@ -2143,7 +2388,7 @@ index c7e2f4134..92d0751c1 100644
  	[commandBuffer commit];
  
  	if (!_hasPendingDirtyRect)
-@@ -454,6 +492,31 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -454,6 +500,31 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	}
  }
  
@@ -2175,7 +2420,7 @@ index c7e2f4134..92d0751c1 100644
  - (BOOL)canBecomeFirstResponder
  {
  	return _hardwareKeyboardActive;
-@@ -467,7 +530,55 @@ - (void)handlePresses:(NSSet<UIPress *> *)presses up:(BOOL)up
+@@ -467,7 +538,134 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		if (key == nil)
  			continue;
  
@@ -2192,7 +2437,8 @@ index c7e2f4134..92d0751c1 100644
 +				RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
 +				for (NSNumber *mappedKey in _commandMappedKeys)
 +					[keyboard sendVirtualKey:[mappedKey intValue] up:YES];
-+				[keyboard sendVirtualKey:VK_LCONTROL up:YES];
++				if (_commandControlDown) [keyboard sendVirtualKey:VK_LCONTROL up:YES];
++				_commandControlDown = NO;
 +				[_commandMappedKeys removeAllObjects];
 +			}
 +			continue;
@@ -2205,20 +2451,36 @@ index c7e2f4134..92d0751c1 100644
 +			RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
 +			[keyboard sendVirtualKey:commandVK up:YES];
 +			[_commandMappedKeys removeObject:commandKey];
-+			if ([_commandMappedKeys count] == 0)
++			[_commandConsumedKeys removeObject:@(usage)];
++			BOOL needsControl = NO;
++			for (NSNumber *mapped in _commandMappedKeys)
++				needsControl |= [mapped intValue] != (VK_DELETE | KBDEXT);
++			if (!needsControl && _commandControlDown)
++			{
 +				[keyboard sendVirtualKey:VK_LCONTROL up:YES];
++				_commandControlDown = NO;
++			}
 +			continue;
 +		}
 +
++		if (up && [_commandConsumedKeys containsObject:@(usage)])
++		{
++			[_commandConsumedKeys removeObject:@(usage)];
++			continue;
++		}
 +		if (!up && (key.modifierFlags & UIKeyModifierCommand) != 0)
 +		{
 +			// Translate the Mac editing shortcuts to their Linux Control equivalent.
 +			// Unmapped Command combinations remain local and are not sent as plain keys.
++			[_commandConsumedKeys addObject:@(usage)];
 +			if (commandVK != 0)
 +			{
 +				RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
-+				if ([_commandMappedKeys count] == 0)
++				if (commandVK != (VK_DELETE | KBDEXT) && !_commandControlDown)
++				{
 +					[keyboard sendVirtualKey:VK_LCONTROL up:NO];
++					_commandControlDown = YES;
++				}
 +				[_commandMappedKeys addObject:commandKey];
 +				[keyboard sendVirtualKey:commandVK up:NO];
 +			}
@@ -2228,11 +2490,86 @@ index c7e2f4134..92d0751c1 100644
 +		if (up && (key.modifierFlags & UIKeyModifierCommand) != 0)
 +			continue;
 +
++		RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
++		NSNumber *physicalKey = @(usage);
++		BOOL optionKey = usage == UIKeyboardHIDUsageKeyboardLeftAlt || usage == UIKeyboardHIDUsageKeyboardRightAlt;
++		if (optionKey)
++		{
++			if (up && _remoteOptionDown)
++			{
++				[keyboard sendVirtualKey:VK_LMENU up:YES];
++				_remoteOptionDown = NO;
++			}
++			continue;
++		}
++		if (up && [_optionConsumedKeys containsObject:physicalKey])
++		{
++			[_optionConsumedKeys removeObject:physicalKey];
++			continue;
++		}
++		if (!up && (key.modifierFlags & UIKeyModifierAlternate) &&
++		    !(key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierControl)))
++		{
++			if (usage == UIKeyboardHIDUsageKeyboardDeleteOrBackspace)
++			{
++				if (_remoteOptionDown) [keyboard sendVirtualKey:VK_LMENU up:YES];
++				_remoteOptionDown = NO;
++				[keyboard sendVirtualKey:VK_LCONTROL up:NO];
++				[keyboard sendVirtualKey:VK_BACK up:NO];
++				[keyboard sendVirtualKey:VK_BACK up:YES];
++				[keyboard sendVirtualKey:VK_LCONTROL up:YES];
++				[_optionConsumedKeys addObject:physicalKey];
++				continue;
++			}
++			NSString *text = key.characters;
++			if ([text length] && [text rangeOfCharacterFromSet:[NSCharacterSet controlCharacterSet]].location == NSNotFound &&
++			    [text rangeOfCharacterFromSet:[NSCharacterSet characterSetWithRange:NSMakeRange(0xF700, 0x100)]].location == NSNotFound &&
++			    usage != UIKeyboardHIDUsageKeyboardEscape && usage != UIKeyboardHIDUsageKeyboardTab)
++			{
++				// Unicode events already contain Shift and Option effects from the local layout.
++				NSArray *shiftKeys = [_remoteShiftKeys allObjects];
++				if (_remoteOptionDown) [keyboard sendVirtualKey:VK_LMENU up:YES];
++				_remoteOptionDown = NO;
++				for (NSNumber *shift in shiftKeys) [keyboard sendVirtualKey:[shift intValue] up:YES];
++				for (NSUInteger index = 0; index < [text length]; index++)
++					for (NSNumber *released in @[ @NO, @YES ])
++						[_session sendInputEvent:@{ @"type" : @"keyboard", @"subtype" : @"unicode",
++							@"unicode_char" : @([text characterAtIndex:index]), @"flags" : @([released boolValue] ? KBD_FLAGS_RELEASE : 0) }];
++				for (NSNumber *shift in shiftKeys) [keyboard sendVirtualKey:[shift intValue] up:NO];
++				[_optionConsumedKeys addObject:physicalKey];
++				continue;
++			}
++		}
++		if (!up && (key.modifierFlags & UIKeyModifierAlternate) && !_remoteOptionDown &&
++		    usage != UIKeyboardHIDUsageKeyboardLeftShift && usage != UIKeyboardHIDUsageKeyboardRightShift &&
++		    usage != UIKeyboardHIDUsageKeyboardLeftControl && usage != UIKeyboardHIDUsageKeyboardRightControl)
++		{
++			[keyboard sendVirtualKey:VK_LMENU up:NO];
++			_remoteOptionDown = YES;
++		}
 +		int vk = VKFromHIDUsage(usage);
++		if (usage == UIKeyboardHIDUsageKeyboardLeftShift || usage == UIKeyboardHIDUsageKeyboardRightShift)
++		{
++			if (up) [_remoteShiftKeys removeObject:@(vk)];
++			else [_remoteShiftKeys addObject:@(vk)];
++		}
  		if (vk != 0)
  			[[RDPKeyboard getSharedRDPKeyboard] sendVirtualKey:vk up:up];
  	}
-@@ -491,6 +602,7 @@ - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)eve
+@@ -481,6 +679,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+ 		[super pressesBegan:presses withEvent:event];
+ }
+ 
++- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
++{
++	if (_hardwareKeyboardActive) [self handlePresses:presses up:YES];
++	else [super pressesCancelled:presses withEvent:event];
++}
++
+ - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
+ {
+ 	if (_hardwareKeyboardActive)
+@@ -491,6 +695,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  
  - (void)dealloc
  {
@@ -2240,11 +2577,14 @@ index c7e2f4134..92d0751c1 100644
  	[_displayLinkTarget clearView];
  	[_displayLink invalidate];
  	[_displayLink release];
-@@ -500,6 +612,7 @@ - (void)dealloc
+@@ -500,6 +705,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	[_commandQueue release];
  	[_metalDevice release];
  	[_cursorImageView release];
 +	[_commandMappedKeys release];
++	[_commandConsumedKeys release];
++	[_optionConsumedKeys release];
++	[_remoteShiftKeys release];
  	[super dealloc];
  }
  
@@ -2326,15 +2666,38 @@ index 5691e12f3..f00ef1305 100644
      list(APPEND SSL_ARGS -DOPENSSL_USE_STATIC_LIBS=OFF)
    else()
 diff --git a/client/iOS/cmake/ExternalOpenH264.cmake b/client/iOS/cmake/ExternalOpenH264.cmake
-index 972d71c0a..1d12763c5 100644
+index 972d71c0a..ccbd01cdf 100644
 --- a/client/iOS/cmake/ExternalOpenH264.cmake
 +++ b/client/iOS/cmake/ExternalOpenH264.cmake
-@@ -7,6 +7,9 @@ ExternalProject_Add(
+@@ -1,12 +1,29 @@
+ include(ExternalProject)
+ include(DepVersions)
+ 
+-set(IOS_FLAGS "ENABLEPIC=Yes OS=ios ARCH=arm64 SDK_MIN=${CMAKE_OSX_DEPLOYMENT_TARGET}")
++if(PLATFORM MATCHES "SIMULATOR")
++  set(_openh264_sdk "iphonesimulator")
++  set(_openh264_target "arm64-apple-ios${CMAKE_OSX_DEPLOYMENT_TARGET}-simulator")
++else()
++  set(_openh264_sdk "iphoneos")
++  set(_openh264_target "arm64-apple-ios${CMAKE_OSX_DEPLOYMENT_TARGET}")
++endif()
++execute_process(COMMAND xcrun --sdk ${_openh264_sdk} --show-sdk-path
++  OUTPUT_VARIABLE _openh264_sysroot OUTPUT_STRIP_TRAILING_WHITESPACE
++  COMMAND_ERROR_IS_FATAL ANY)
++# Command-line make variables override the upstream device-only arm64 SDK choice.
++# Keep each assignment separate and use the same SDK and target for compilation and linking.
++set(IOS_FLAGS ENABLEPIC=Yes OS=ios ARCH=arm64 SDK_MIN=${CMAKE_OSX_DEPLOYMENT_TARGET}
++  "CFLAGS=-O3 -DNDEBUG -Wall -fPIC -MMD -MP -DAPPLE_IOS -DGENERATED_VERSION_HEADER -isysroot ${_openh264_sysroot} -target ${_openh264_target}"
++  "LDFLAGS=-stdlib=libc++ -isysroot ${_openh264_sysroot} -target ${_openh264_target}")
+ ExternalProject_Add(
+   openh264 DOWNLOAD_EXTRACT_TIMESTAMP OFF GIT_REPOSITORY https://github.com/cisco/openh264.git GIT_TAG ${OPENH264_TAG}
    GIT_SHALLOW TRUE PATCH_COMMAND git am --3way ${CMAKE_CURRENT_LIST_DIR}/0002-openh264-pkgconfig-patch.patch
-   CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different <SOURCE_DIR> <BINARY_DIR>
-   BUILD_COMMAND make ${IOS_FLAGS} LDFLAGS=-static-libstdc++ -j libraries
+-  CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different <SOURCE_DIR> <BINARY_DIR>
+-  BUILD_COMMAND make ${IOS_FLAGS} LDFLAGS=-static-libstdc++ -j libraries
 -  INSTALL_COMMAND make ${IOS_FLAGS} PREFIX=${DEPS_INSTALL_DIR} LIBDIR_NAME=${CMAKE_INSTALL_LIBDIR}
 -                  SHAREDLIB_DIR=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR} -j install
++  CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy_directory <SOURCE_DIR> <BINARY_DIR>
++  BUILD_COMMAND make ${IOS_FLAGS} -j libraries
 +  INSTALL_COMMAND
 +    make ${IOS_FLAGS} PREFIX=${DEPS_INSTALL_DIR} LIBDIR_NAME=${CMAKE_INSTALL_LIBDIR}
 +         SHAREDLIB_DIR=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR} -j install

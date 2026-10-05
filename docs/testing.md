@@ -64,3 +64,27 @@ build. Once enabled in a test build directory, subsequent CTest runs include it.
 
 CTest registration lives in `tests/CMakeLists.txt`. Application builds continue
 to use the platform scripts and the pinned FreeRDP source tree.
+
+## iPadOS simulator tests
+
+Run `scripts/test-orbis-ipados.sh` on macOS with an available iPad simulator.
+The script builds the full iPad application and an optional app-hosted XCTest
+bundle, then runs it through Xcode. `ORBIS_SIMULATOR_DESTINATION` selects a
+specific simulator; `ORBIS_BUILD_DIR` selects the simulator build directory. XCTest result bundles are saved outside the repository
+under `~/.codex/artifacts/reports/orbis-ipados`; set
+`ORBIS_IPADOS_TEST_RESULT_PATH` to choose another result path.
+
+The suite exercises the actual UIKit profile editor and patched session adapter.
+It checks direct profiles, tunnel URL validation, hostname-bound credential
+preservation, logical RDP identity, asynchronous preparation, cancellation,
+transport errors, and the bundled changelog. Hardware-keyboard tests replace
+only the outgoing session input boundary, covering Command shortcuts,
+Option-Backspace, Option symbols, and Alt+Tab without a live remote desktop.
+
+Availability tests use local TCP fixtures to exercise fragmented RDP negotiation,
+non-RDP services on open ports, protocol rejection, direct and prepared transport
+destinations, timeouts, and cancellation. Library tests cover status after
+disconnecting, rechecking availability, and suspending checks while inactive.
+
+These tests are separate from the default macOS CTest suite because they require
+the full iPadOS dependency build and an installed simulator runtime.
