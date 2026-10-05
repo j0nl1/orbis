@@ -13,6 +13,8 @@
 #import "OrbisConnectionHealthCheck.h"
 #import "OrbisDirectTransport.h"
 #import "RDPSession.h"
+#import "OrbisDiagnostics.h"
+#import "ios_freerdp.h"
 #import "RDPSessionView.h"
 #import "RDPKeyboard.h"
 #import "Bookmark.h"
@@ -173,6 +175,11 @@
 	dispatch_async(dispatch_get_main_queue(), ^{ ready(self.destination, error); });
 }
 - (void)dealloc { [_session release]; [_ready release]; [_destination release]; [super dealloc]; }
+@end
+
+@interface RDPSession (OrbisDiagnosticsTesting)
+- (mfInfo *)mfi;
+- (void)sessionDidDisconnect;
 @end
 
 @interface OrbisTestRDPSession : RDPSession
@@ -799,6 +806,60 @@
 	OrbisTestRDPSession *session = [[[OrbisTestRDPSession alloc] initWithBookmark:bookmark] autorelease];
 	session.connectionTransport = transport;
 	return session;
+}
+
+- (NSArray *)diagnosticEventsNamed:(NSString *)name
+{
+	NSURL *directory = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+	    URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+	NSError *error = nil;
+	NSURL *url = [[OrbisDiagnostics sharedDiagnostics] exportToDirectory:directory error:&error];
+	XCTAssertNotNil(url); XCTAssertNil(error);
+	NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:url] options:0 error:nil];
+	NSMutableArray *events = [NSMutableArray array];
+	for (NSDictionary *event in snapshot[@"events"])
+		if ([event[@"event"] isEqual:name]) [events addObject:event];
+	[NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+	return events;
+}
+
+- (void)testNativeDisconnectDiagnosticsCaptureErrorStateBeforeTeardown
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	info->connection_state = TSXConnectionConnected;
+	freerdp_set_error_info(info->_context->rdp, 0x0000000B);
+	freerdp_set_last_error(info->_context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
+	[session recordRDPStop:OrbisRDPStopReceiveFailed waitError:7];
+	NSDictionary *values = [[self diagnosticEventsNamed:@"session.rdp_stopped"] lastObject][@"values"];
+	XCTAssertEqualObjects(values[@"loop_exit"], @(OrbisRDPStopReceiveFailed));
+	XCTAssertEqualObjects(values[@"code"], @7);
+	XCTAssertEqualObjects(values[@"rdp_error"], @(FREERDP_ERROR_CONNECT_TRANSPORT_FAILED));
+	XCTAssertEqualObjects(values[@"rdp_error_info"], @0x0000000B);
+	XCTAssertEqualObjects(values[@"connection_state"], @(TSXConnectionConnected));
+	info->connection_state = TSXConnectionDisconnected;
+}
+
+- (void)testUnexpectedAndIntentionalDisconnectionsAreDistinguishedAndDeduplicated
+{
+	OrbisTestTransport *transport = [[[OrbisTestTransport alloc] init] autorelease];
+	OrbisTestRDPSession *session = [self sessionWithTransport:transport];
+	[session connect];
+	transport.session.connectionError = [NSError errorWithDomain:NSPOSIXErrorDomain code:54
+	    userInfo:@{ NSLocalizedDescriptionKey : @"private transport details" }];
+	[session sessionDidDisconnect];
+	NSArray *events = [self diagnosticEventsNamed:@"session.disconnected"];
+	XCTAssertEqualObjects(events.lastObject[@"values"][@"intentional"], @NO);
+	XCTAssertTrue(transport.session.closed);
+	XCTAssertEqualObjects([[self diagnosticEventsNamed:@"transport.disconnected"] lastObject][@"values"][@"code"], @54);
+	[session sessionDidDisconnect];
+	XCTAssertEqual([self diagnosticEventsNamed:@"session.disconnected"].count, events.count);
+
+	OrbisTestRDPSession *cancelled = [self sessionWithTransport:transport];
+	[cancelled connect];
+	[cancelled disconnect];
+	events = [self diagnosticEventsNamed:@"session.disconnected"];
+	XCTAssertEqualObjects(events.lastObject[@"values"][@"intentional"], @YES);
 }
 
 - (void)testRDPWaitsForTransportReadiness

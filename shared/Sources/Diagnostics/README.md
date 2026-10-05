@@ -9,6 +9,12 @@ Events include timestamps, a launch identifier, app version/build, the running
 executable's Mach-O UUID, OS version, platform, and numeric context. Capture points
 cover connection attempts, established sessions, failure codes, disconnects,
 display changes, macOS fullscreen/screen transitions, and iPad workspace actions.
+iPad also records scene activation/background transitions and memory warnings.
+Before native RDP teardown, `session.rdp_stopped` captures `rdp_error`,
+`rdp_error_info`, the connection state, and the event-loop exit reason. The
+`session.disconnected` event records `intentional`: 1 for a requested disconnect,
+0 for an unsolicited termination. Transport errors are captured before closing
+the transport.
 The recorder excludes passwords, tokens, hostnames, account names, keyboard input,
 clipboard contents, raw error descriptions, and NSError userInfo. Only numeric
 values under the fixed context keys are accepted. Crash and hang reports retain
@@ -31,6 +37,22 @@ force-quitting or an ordinary session error does not necessarily produce a crash
 report. Event records are written during normal execution rather than inside
 unsafe crash signal handlers. Diagnostic recording failures do not interrupt RDP.
 
+An iPad session writes a small `active-session.plist` marker while connecting or
+connected, updating its foreground/background state. A normal disconnect or
+graceful app termination clears it. On the next launch, a surviving marker emits
+`app.previous_session_interrupted`, linked to `previous_launch_id`, and is removed.
+This indicates an interrupted session, not a confirmed crash: force-quitting,
+OS termination, or replacing a running app can also leave the marker. The event
+remains useful when the OS has not supplied a MetricKit report.
+
+Native `loop_exit` codes are: 0 disconnect requested by FreeRDP, 1 missing event
+handles, 2 wait failure (`code` contains the wait error), 3 receive/check failure,
+4 input loop ended, 5 connect failure, and 6 cancelled connection. These describe
+the exit path; they do not independently identify the cause. `connection_state`
+uses the adapter's TSXConnectionState values. Session marker states are 1
+connecting and 2 connected; app states are 0 unknown, 1 active, 2 inactive or
+scene disconnected, and 3 background.
+
 For NSError records, `error_kind` identifies these domains in order:
 0 NSCocoaErrorDomain, 1 NSPOSIXErrorDomain, 2 NSURLErrorDomain,
 3 com.dnexus.orbis.session, 4 com.dnexus.orbis.transport,
@@ -46,6 +68,7 @@ symbols, which may be unavailable in optimized dependency builds.
 
 Shared XCTest tests cover persistence, exclusion of secret data, concurrent
 writers, event rotation, diagnostic payload ingestion, deduplication, retention,
-and export errors. The same tests run on macOS and in the iPad app-hosted suite
+interrupted-session recovery, normal termination, malformed markers, and export
+errors. The same tests run on macOS and in the iPad app-hosted suite
 with injected system payloads. Live OS crash/hang delivery still requires testing
 on a real device; the tests do not deliberately crash the user's installed app.

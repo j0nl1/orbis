@@ -8,5 +8,7 @@
 - (void)start;
 - (void)recordEvent:(NSString *)event values:(NSDictionary<NSString *, NSNumber *> *)values;
 - (void)recordError:(NSError *)error event:(NSString *)event;
+// iPad has one remote session: 0 = idle, 1 = connecting, 2 = connected.
+- (void)setActiveSessionState:(NSUInteger)state;
 - (NSURL *)exportToDirectory:(NSURL *)directory error:(NSError **)error;
 @end

@@ -23,6 +23,9 @@ static const NSUInteger OrbisSystemReportCount = 10;
 	NSString *_launchID;
 	NSString *_binaryUUID;
 	BOOL _started;
+	NSUInteger _activeSessionState;
+	NSUInteger _applicationState;
+	NSString *_previousLaunchID;
 }
 
 + (instancetype)sharedDiagnostics
@@ -77,6 +80,7 @@ static const NSUInteger OrbisSystemReportCount = 10;
 		if (_started) return;
 		_started = YES;
 	}
+	[self recoverPreviousSession];
 	[self recordEvent:@"app.launch" values:nil];
 	MXMetricManager *manager = MXMetricManager.sharedManager;
 	[manager addSubscriber:self];
@@ -107,11 +111,78 @@ static const NSUInteger OrbisSystemReportCount = 10;
 	    @"architecture" : architecture, @"os" : NSProcessInfo.processInfo.operatingSystemVersionString };
 }
 
+- (NSURL *)sessionMarkerURL
+{
+	return [_directory URLByAppendingPathComponent:@"active-session.plist"];
+}
+
+- (void)writeSessionMarker
+{
+	NSFileManager *files = NSFileManager.defaultManager;
+	if (!_activeSessionState)
+	{
+		[files removeItemAtURL:[self sessionMarkerURL] error:nil];
+		return;
+	}
+	if (![self prepareDirectory:nil]) return;
+	NSDictionary *marker = @{ @"launch_id" : _launchID, @"session_state" : @(_activeSessionState),
+	    @"app_state" : @(_applicationState), @"timestamp" : @(NSDate.date.timeIntervalSince1970) };
+	NSData *data = [NSPropertyListSerialization dataWithPropertyList:marker
+	    format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+	NSURL *url = [self sessionMarkerURL];
+	if (![data writeToURL:url options:NSDataWritingAtomic error:nil]) return;
+	NSMutableDictionary *attributes = [@{ NSFilePosixPermissions : @0600 } mutableCopy];
+#if TARGET_OS_IPHONE
+	attributes[NSFileProtectionKey] = NSFileProtectionCompleteUntilFirstUserAuthentication;
+#endif
+	[files setAttributes:attributes ofItemAtPath:url.path error:nil];
+}
+
+- (void)setActiveSessionState:(NSUInteger)state
+{
+	if (state > 2) return;
+	@synchronized(self)
+	{
+		_activeSessionState = state;
+		[self writeSessionMarker];
+	}
+}
+
+- (void)recoverPreviousSession
+{
+	@synchronized(self)
+	{
+		NSData *data = [NSData dataWithContentsOfURL:[self sessionMarkerURL]];
+		id marker = data ? [NSPropertyListSerialization propertyListWithData:data
+		    options:NSPropertyListImmutable format:nil error:nil] : nil;
+		if ([marker isKindOfClass:NSDictionary.class])
+		{
+			id launch = marker[@"launch_id"], state = marker[@"session_state"], time = marker[@"timestamp"];
+			if ([launch isKindOfClass:NSString.class] && [[NSUUID alloc] initWithUUIDString:launch] &&
+			    ![launch isEqual:_launchID] && [state isKindOfClass:NSNumber.class] &&
+			    ([state doubleValue] == 1 || [state doubleValue] == 2) &&
+			    [time isKindOfClass:NSNumber.class] && isfinite([time doubleValue]))
+			{
+				_previousLaunchID = launch;
+				id app = marker[@"app_state"];
+				NSNumber *appState = [app isKindOfClass:NSNumber.class] && [app doubleValue] >= 0 && [app doubleValue] <= 3 && [app doubleValue] == floor([app doubleValue]) ? app : @0;
+				[self recordEvent:@"app.previous_session_interrupted" values:@{
+				    @"session_state" : state, @"app_state" : appState, @"previous_timestamp" : time }];
+				_previousLaunchID = nil;
+			}
+		}
+		_activeSessionState = 0;
+		[self writeSessionMarker];
+	}
+}
+
 - (void)recordEvent:(NSString *)event values:(NSDictionary<NSString *, NSNumber *> *)values
 {
 	// Restrict the schema to fixed numeric context, rather than arbitrary descriptions.
 	NSSet *allowed = [NSSet setWithArray:@[ @"code", @"rdp_error", @"width", @"height",
-	    @"display_count", @"action", @"enabled", @"transport", @"error_kind" ]];
+	    @"display_count", @"action", @"enabled", @"transport", @"error_kind",
+	    @"intentional", @"loop_exit", @"rdp_error_info", @"connection_state", @"session_state",
+	    @"app_state", @"previous_timestamp" ]];
 	NSMutableDictionary *context = [NSMutableDictionary dictionary];
 	for (NSString *key in values)
 	{
@@ -124,6 +195,8 @@ static const NSUInteger OrbisSystemReportCount = 10;
 	record[@"launch_id"] = _launchID;
 	record[@"event"] = event;
 	record[@"values"] = context;
+	if ([event isEqual:@"app.previous_session_interrupted"] && _previousLaunchID)
+		record[@"previous_launch_id"] = _previousLaunchID;
 	NSData *json = [NSJSONSerialization dataWithJSONObject:record options:NSJSONWritingSortedKeys error:nil];
 	if (!json || json.length > 4096) return;
 	NSMutableData *line = [json mutableCopy];
@@ -156,6 +229,12 @@ static const NSUInteger OrbisSystemReportCount = 10;
 		[files setAttributes:@{ NSFileProtectionKey : NSFileProtectionCompleteUntilFirstUserAuthentication }
 		    ofItemAtPath:current.path error:nil];
 #endif
+		if ([event isEqual:@"scene.active"]) _applicationState = 1;
+		else if ([event isEqual:@"scene.inactive"] || [event isEqual:@"scene.disconnected"]) _applicationState = 2;
+		else if ([event isEqual:@"scene.background"]) _applicationState = 3;
+		else if ([event isEqual:@"app.terminating"]) _activeSessionState = 0;
+		if ([event hasPrefix:@"scene."] || [event isEqual:@"app.terminating"])
+			[self writeSessionMarker];
 	}
 }
 

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- iPad diagnostics capture native RDP exit reasons, requested versus unexpected disconnects, scene lifecycle and memory warnings, and sessions interrupted before the next launch.
 - Alt (Option) + the physical key left of 1 toggles remote GNOME Activities on iPad hardware keyboards, without repeated toggles while holding the key.
 - Local macOS and iPad diagnostics with session events, numeric error codes, available crash and hang call stacks, and a JSON export. Reports remain on the device until exported.
 - iPad keyboard workspace shortcuts: Alt + Shift + Left/Right switches workspaces, and Alt + Shift + Up toggles Activities. Settings can disable the shortcuts. Trackpad swipes always scroll the remote desktop.
@@ -19,6 +20,7 @@
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- A thin black border around the iPad remote desktop separates remote screen edges from iPadOS window resizing corners. Automatic resolution follows the inset viewport.
 - Local macOS updates can reuse a configured signing identity to preserve Keychain authorization across builds.
 - Add Virtual Display is available in the macOS Session menu, without a session toolbar.
 - iPadOS connection forms group endpoint, Access token, account, and connection options, accept tunnel HTTPS URLs, and preserve saved credentials.

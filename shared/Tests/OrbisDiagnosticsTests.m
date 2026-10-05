@@ -4,6 +4,7 @@
 #import "OrbisDiagnostics.h"
 
 @interface OrbisDiagnostics (Testing)
+- (void)recoverPreviousSession;
 - (void)didReceiveDiagnosticPayloads:(NSArray *)payloads;
 @end
 
@@ -162,5 +163,68 @@
 	NSError *error;
 	XCTAssertNil([self.diagnostics exportToDirectory:[self.root URLByAppendingPathComponent:@"export"] error:&error]);
 	XCTAssertNotNil(error);
+}
+- (void)testInterruptedSessionRetainsPreviousLaunchAndBackgroundStateOnlyOnce
+{
+	[self.diagnostics recordEvent:@"app.launch" values:nil];
+	[self.diagnostics setActiveSessionState:2];
+	[self.diagnostics recordEvent:@"scene.background" values:nil];
+	NSArray *before = [self snapshot][@"events"];
+	NSString *previousLaunch = before[0][@"launch_id"];
+	NSURL *store = [self.root URLByAppendingPathComponent:@"store"];
+	NSURL *marker = [store URLByAppendingPathComponent:@"active-session.plist"];
+	XCTAssertTrue([NSFileManager.defaultManager fileExistsAtPath:marker.path]);
+	self.diagnostics = [[OrbisDiagnostics alloc] initWithDirectoryURL:store];
+	[self.diagnostics recoverPreviousSession];
+	[self.diagnostics recoverPreviousSession];
+	NSArray *events = [self snapshot][@"events"];
+	XCTAssertEqual(events.count, 3u);
+	NSDictionary *interrupted = events.lastObject;
+	XCTAssertEqualObjects(interrupted[@"event"], @"app.previous_session_interrupted");
+	XCTAssertEqualObjects(interrupted[@"previous_launch_id"], previousLaunch);
+	XCTAssertNotEqualObjects(interrupted[@"launch_id"], previousLaunch);
+	XCTAssertEqualObjects(interrupted[@"values"][@"session_state"], @2);
+	XCTAssertEqualObjects(interrupted[@"values"][@"app_state"], @3);
+	XCTAssertGreaterThan([interrupted[@"values"][@"previous_timestamp"] doubleValue], 0);
+	XCTAssertFalse([NSFileManager.defaultManager fileExistsAtPath:marker.path]);
+}
+- (void)testNormalSessionEndAndGracefulTerminationDoNotReportInterruption
+{
+	NSURL *store = [self.root URLByAppendingPathComponent:@"store"];
+	for (NSNumber *terminate in @[@NO, @YES])
+	{
+		[self.diagnostics setActiveSessionState:1];
+		if (terminate.boolValue) [self.diagnostics recordEvent:@"app.terminating" values:nil];
+		else [self.diagnostics setActiveSessionState:0];
+		self.diagnostics = [[OrbisDiagnostics alloc] initWithDirectoryURL:store];
+		[self.diagnostics recoverPreviousSession];
+	}
+	NSArray *events = [self snapshot][@"events"];
+	XCTAssertEqual(events.count, 1u);
+	XCTAssertEqualObjects(events.firstObject[@"event"], @"app.terminating");
+}
+- (void)testMalformedSessionMarkersAreIgnoredAndRemoved
+{
+	NSURL *store = [self.root URLByAppendingPathComponent:@"store"];
+	[NSFileManager.defaultManager createDirectoryAtURL:store withIntermediateDirectories:YES attributes:nil error:nil];
+	NSURL *marker = [store URLByAppendingPathComponent:@"active-session.plist"];
+	for (id malformed in @[@"invalid", @{ @"launch_id" : @"private-host", @"session_state" : @2, @"timestamp" : @100 },
+	    @{ @"launch_id" : NSUUID.UUID.UUIDString, @"session_state" : @1.5, @"timestamp" : @100 }])
+	{
+		NSData *data = [NSPropertyListSerialization dataWithPropertyList:malformed format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+		[data writeToURL:marker atomically:YES];
+		[self.diagnostics recoverPreviousSession];
+		XCTAssertFalse([NSFileManager.defaultManager fileExistsAtPath:marker.path]);
+	}
+	XCTAssertEqual([[self snapshot][@"events"] count], 0u);
+}
+- (void)testDisconnectContextPersistsWithoutFreeFormTransportDetails
+{
+	NSDictionary *context = @{ @"intentional" : @0, @"loop_exit" : @3, @"rdp_error" : @123,
+	    @"rdp_error_info" : @456, @"connection_state" : @2, @"code" : @0 };
+	NSMutableDictionary *values = [context mutableCopy];
+	values[@"description"] = @"private transport address";
+	[self.diagnostics recordEvent:@"session.rdp_stopped" values:(id)values];
+	XCTAssertEqualObjects([self snapshot][@"events"][0][@"values"], context);
 }
 @end

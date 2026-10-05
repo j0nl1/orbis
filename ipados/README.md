@@ -70,5 +70,13 @@ physical keyboard behavior needs device verification.
 
 Settings → Diagnostics → Export Diagnostics shares the local JSON history, with
 recent session events, numeric error codes, and available MetricKit crash or hang
-reports. Nothing is uploaded automatically. See the shared Diagnostics README for
+reports. Disconnection records distinguish requested disconnects from unexpected
+ones and include native RDP error state before teardown. Scene state and memory
+warnings provide context. If the app disappears with an active session, the next
+launch records an interrupted session; this alone does not confirm a crash.
+Nothing is uploaded automatically. See the shared Diagnostics README for
 retention, excluded data, OS report delivery, and matching debugging symbols.
+
+The remote desktop has an 8-point black border on all sides, separating its edges
+from iPadOS window resizing corners. Automatic resolution follows the smaller
+viewport; manually configured resolutions remain unchanged.
