@@ -3,10 +3,15 @@
 ## Unreleased
 
 ### Added
+- Cloudflare Access service-token connections on iPadOS, using the shared transport adapters and separate hostname-bound Keychain credentials.
+- An offline changelog in iPadOS About Orbis and a simulator XCTest suite for connection editing, transport lifecycle, and hardware keyboard input.
 - An offline changelog in About Orbis, alongside open-source acknowledgements.
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- iPadOS connection forms group endpoint, Access token, account, and connection options, accept tunnel HTTPS URLs, and preserve saved credentials.
+- iPadOS hardware keyboards support Option-Backspace word deletion and Option symbols while retaining remote Alt+Tab.
+- The iPadOS library has a labeled New connection action, and failed connections show transport or authentication details after returning to the library.
 - Option-Backspace now deletes the previous word in remote Linux text fields by sending Control-Backspace.
 - A simpler connections toolbar with a labeled New connection action.
 - A compact connection status icon beside the computer name.
@@ -17,6 +22,9 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- iPadOS connection indicators check RDP availability independently of session state, including after disconnecting.
+- iPadOS Command-Backspace sends Forward Delete without Control, including when Command is released before Backspace.
+- OpenH264 simulator builds use the simulator SDK and target consistently and remain compatible with the supported CMake version.
 - GitHub release lookup in the automatic release workflow.
 
 ### Removed

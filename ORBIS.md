@@ -52,13 +52,14 @@ need a warning.
 RDP is a TCP protocol. Access Service Auth headers authenticate the HTTPS
 WebSocket handshake; RDP bytes then travel inside binary WebSocket messages.
 
-The macOS client includes a **Cloudflare Tunnel** connection mode:
+Both clients include a Cloudflare connection mode:
 
 1. Run an origin `cloudflared` connector and publish a hostname with an RDP
    service, such as `rdp://127.0.0.1:3389`.
 2. Protect that hostname with an Access application and a **Service Auth** policy
    allowing the intended service token.
-3. Select **Cloudflare Tunnel** in the Orbis connection editor. Enter the published
+3. Select **Cloudflare Tunnel** on macOS or **Cloudflare** on iPadOS in the
+   Orbis connection editor. Enter the published
    address in **Tunnel URL** (for example, `https://rdp.example.com`), then enter
    **CF-Access-Client-Id**, **CF-Access-Client-Secret**, and the usual RDP account.
    A hostname without `https://` is also accepted. Paths, queries, credentials,
@@ -87,14 +88,13 @@ logical server identity. Binary forwarding and the FreeRDP route are covered by
 native tests; an actual GNOME login and desktop handoff still requires live
 end-to-end validation.
 
-The iPad client currently uses the private-network approach:
+A system-managed private network remains available on either platform:
 
 1. Publish the private network through Cloudflare Tunnel.
 2. Enrol the iPad in Cloudflare One and connect with WARP.
-3. Enter the private hostname or IP address in the Orbis profile.
+3. Select **Direct RDP** on iPadOS and enter the private hostname or IP address.
 
 The iPad then uses an ordinary RDP connection over that authenticated route.
-Its UI and session adapter do not yet expose the macOS Service Auth mode.
 
 References:
 
@@ -111,6 +111,9 @@ Linux desktop:
 | --- | --- |
 | Command+A/C/F/L/N/P/R/S/T/V/W/X/Z | Control+A/C/F/L/N/P/R/S/T/V/W/X/Z |
 | Command+Backspace | Forward Delete |
+| Option+Backspace | Control+Backspace (delete previous word) |
+| Option and Shift+Option symbols | Characters from the local keyboard layout |
+| Option+Tab | Alt+Tab |
 
 The Command key itself is not sent as the Windows/Super key. Other physical keys
 continue through FreeRDP's normal hardware-keyboard path.

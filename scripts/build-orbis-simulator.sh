@@ -15,6 +15,7 @@ cmake \
   -DCMAKE_TOOLCHAIN_FILE="$freerdp_source_dir/cmake/ios.toolchain.cmake" \
   -DPLATFORM=SIMULATORARM64 \
   -DDEPLOYMENT_TARGET=26.0 \
+  -DORBIS_BUILD_IPADOS_TESTS="${ORBIS_BUILD_IPADOS_TESTS:-OFF}" \
   -DCMAKE_BUILD_TYPE=Debug
 
 env \

@@ -12,6 +12,8 @@
 #import "Bookmark.h"
 #import "ConnectionParams.h"
 #import "OrbisCredentialStore.h"
+#import "OrbisTransportFactory.h"
+#import "OrbisConnectionHealthCheck.h"
 #import "OrbisAboutController.h"
 #import "OrbisProfile.h"
 #import "OrbisProfileEditorController.h"
@@ -25,6 +27,14 @@ static NSString *const OrbisCardStatusLabelKey = @"status-label";
 static NSString *const OrbisCardStatusIconKey = @"status-icon";
 static NSString *const OrbisCardActivityIndicatorKey = @"activity-indicator";
 static NSString *const OrbisCardConnectButtonKey = @"connect-button";
+static NSString *const OrbisCardProfileIdentifierKey = @"profile-identifier";
+
+typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
+	OrbisProfileHealthUnknown,
+	OrbisProfileHealthChecking,
+	OrbisProfileHealthAvailable,
+	OrbisProfileHealthUnavailable
+};
 
 @interface OrbisController () <OrbisProfileEditorDelegate>
 {
@@ -41,6 +51,10 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	BOOL _didAttemptAutomaticConnection;
 	BOOL _isStartingConnection;
 	BOOL _isPresentingPasswordPrompt;
+	NSMutableDictionary *_profileHealth;
+	NSMutableDictionary *_healthChecks;
+	NSTimer *_healthTimer;
+	BOOL _libraryVisible;
 }
 
 - (void)addProfilePressed:(id)sender;
@@ -49,7 +63,6 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 - (void)profileSelected:(OrbisProfile *)profile;
 - (void)connectPressed:(id)sender;
 - (void)showConnectionDetails;
-- (void)refreshConnectionsPressed:(id)sender;
 - (void)showAboutPressed:(id)sender;
 - (void)refreshProfileUI;
 - (UIView *)connectionCardForProfile:(OrbisProfile *)profile;
@@ -68,6 +81,12 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 - (void)setConnectionBusy:(BOOL)busy status:(NSString *)status;
 - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message;
 - (void)sessionDidEnd:(NSNotification *)notification;
+- (void)startHealthMonitoring;
+- (void)stopHealthMonitoring;
+- (void)refreshConnectionHealth;
+- (void)healthTimerFired:(NSTimer *)timer;
+- (void)applicationDidBecomeActive:(NSNotification *)notification;
+- (void)applicationWillResignActive:(NSNotification *)notification;
 
 @end
 
@@ -78,6 +97,8 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	[super viewDidLoad];
 	_profileStore = [[OrbisProfileStore alloc] init];
 	_profileCardViews = [[NSMutableDictionary alloc] init];
+	_profileHealth = [[NSMutableDictionary alloc] init];
+	_healthChecks = [[NSMutableDictionary alloc] init];
 	_expandedProfileIdentifier = [[[_profileStore selectedProfile] identifier] copy];
 	_connectionStatus = [@"Ready to connect" copy];
 
@@ -105,20 +126,10 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	[headerButtonConfiguration setCornerStyle:UIButtonConfigurationCornerStyleCapsule];
 	[headerButtonConfiguration setContentInsets:NSDirectionalEdgeInsetsMake(11.0, 11.0, 11.0, 11.0)];
 
-	UIButton *refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-	UIButtonConfiguration *refreshConfiguration = [headerButtonConfiguration copy];
-	[refreshConfiguration setImage:[UIImage systemImageNamed:@"arrow.clockwise"]];
-	[refreshButton setConfiguration:refreshConfiguration];
-	[refreshConfiguration release];
-	[refreshButton addTarget:self
-	                  action:@selector(refreshConnectionsPressed:)
-	        forControlEvents:UIControlEventTouchUpInside];
-	[refreshButton setAccessibilityLabel:@"Refresh connections"];
-	[[refreshButton widthAnchor] constraintEqualToConstant:46.0].active = YES;
-	[[refreshButton heightAnchor] constraintEqualToConstant:46.0].active = YES;
-
 	UIButton *addButton = [UIButton buttonWithType:UIButtonTypeSystem];
 	UIButtonConfiguration *addConfiguration = [headerButtonConfiguration copy];
+	[addConfiguration setTitle:@"New connection"];
+	[addConfiguration setImagePadding:6.0];
 	[addConfiguration setImage:[UIImage systemImageNamed:@"plus"]];
 	[addButton setConfiguration:addConfiguration];
 	[addConfiguration release];
@@ -126,7 +137,7 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	              action:@selector(addProfilePressed:)
 	    forControlEvents:UIControlEventTouchUpInside];
 	[addButton setAccessibilityLabel:@"Add connection"];
-	[[addButton widthAnchor] constraintEqualToConstant:46.0].active = YES;
+	[addButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 	[[addButton heightAnchor] constraintEqualToConstant:46.0].active = YES;
 
 	UIButton *infoButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -142,7 +153,7 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	[[infoButton heightAnchor] constraintEqualToConstant:46.0].active = YES;
 
 	UIStackView *appHeader = [[[UIStackView alloc]
-	    initWithArrangedSubviews:@[ titleStack, refreshButton, addButton, infoButton ]] autorelease];
+	    initWithArrangedSubviews:@[ titleStack, addButton, infoButton ]] autorelease];
 	[appHeader setAxis:UILayoutConstraintAxisHorizontal];
 	[appHeader setAlignment:UIStackViewAlignmentCenter];
 	[appHeader setSpacing:10.0];
@@ -228,11 +239,16 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	                                         selector:@selector(sessionDidEnd:)
 	                                             name:TSXSessionDidFailToConnectNotification
 	                                           object:nil];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationDidBecomeActive:)
+	    name:UIApplicationDidBecomeActiveNotification object:nil];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillResignActive:)
+	    name:UIApplicationWillResignActiveNotification object:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
 	[super viewWillAppear:animated];
+	_libraryVisible = YES;
 	[[self navigationController] setNavigationBarHidden:YES animated:animated];
 	[self refreshProfileUI];
 }
@@ -240,6 +256,7 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 - (void)viewDidAppear:(BOOL)animated
 {
 	[super viewDidAppear:animated];
+	[self startHealthMonitoring];
 	if ([[[[NSProcessInfo processInfo] environment] objectForKey:@"ORBIS_DISABLE_AUTOCONNECT"]
 	        boolValue])
 	{
@@ -261,23 +278,86 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	}
 }
 
-- (void)refreshConnectionsPressed:(id)sender
+- (void)viewWillDisappear:(BOOL)animated
 {
-	(void)sender;
-	OrbisProfileStore *freshStore = [[OrbisProfileStore alloc] init];
-	[_profileStore release];
-	_profileStore = freshStore;
-	if (![_profileStore profileWithIdentifier:_expandedProfileIdentifier])
-	{
-		[_expandedProfileIdentifier release];
-		_expandedProfileIdentifier = nil;
-	}
-	[self setConnectionBusy:NO status:@"Connections refreshed"];
-	[self refreshProfileUI];
+	[super viewWillDisappear:animated];
+	_libraryVisible = NO;
+	[self stopHealthMonitoring];
+}
 
-	UISelectionFeedbackGenerator *feedback =
-	    [[[UISelectionFeedbackGenerator alloc] init] autorelease];
-	[feedback selectionChanged];
+- (void)applicationDidBecomeActive:(NSNotification *)notification
+{
+	(void)notification;
+	[self startHealthMonitoring];
+}
+
+- (void)applicationWillResignActive:(NSNotification *)notification
+{
+	(void)notification;
+	[self stopHealthMonitoring];
+}
+
+- (void)startHealthMonitoring
+{
+	if (!_libraryVisible || _isStartingConnection || _healthTimer ||
+	    [[UIApplication sharedApplication] applicationState] != UIApplicationStateActive)
+		return;
+	[_profileHealth removeAllObjects];
+	_healthTimer = [[NSTimer timerWithTimeInterval:30.0 target:self
+	    selector:@selector(healthTimerFired:) userInfo:nil repeats:YES] retain];
+	[[NSRunLoop mainRunLoop] addTimer:_healthTimer forMode:NSRunLoopCommonModes];
+	[self refreshConnectionHealth];
+}
+
+- (void)healthTimerFired:(NSTimer *)timer
+{
+	(void)timer;
+	[self refreshConnectionHealth];
+}
+
+- (void)stopHealthMonitoring
+{
+	[_healthTimer invalidate];
+	[_healthTimer release];
+	_healthTimer = nil;
+	for (NSString *identifier in _healthChecks)
+	{
+		[[_healthChecks objectForKey:identifier] cancel];
+		if ([[_profileHealth objectForKey:identifier] integerValue] == OrbisProfileHealthChecking)
+			[_profileHealth removeObjectForKey:identifier];
+	}
+	[_healthChecks removeAllObjects];
+}
+
+- (OrbisConnectionHealthCheck *)newHealthCheckForProfile:(OrbisProfile *)profile
+{
+	id<OrbisConnectionTransport> transport = [OrbisTransportFactory transportForProfile:profile error:nil];
+	return [[OrbisConnectionHealthCheck alloc] initWithProfile:profile transport:transport timeout:8.0];
+}
+
+- (void)refreshConnectionHealth
+{
+	if (!_healthTimer || !_libraryVisible || _isStartingConnection || [_healthChecks count])
+		return;
+	__block OrbisController *controller = self;
+	for (OrbisProfile *profile in [_profileStore profiles])
+	{
+		NSString *identifier = [profile identifier];
+		if (![_profileHealth objectForKey:identifier])
+			[_profileHealth setObject:@(OrbisProfileHealthChecking) forKey:identifier];
+		OrbisConnectionHealthCheck *check = [self newHealthCheckForProfile:profile];
+		[_healthChecks setObject:check forKey:identifier];
+		[check startWithCompletion:^(BOOL available) {
+			[controller->_profileHealth setObject:@(available ? OrbisProfileHealthAvailable : OrbisProfileHealthUnavailable)
+			    forKey:identifier];
+			[controller->_healthChecks removeObjectForKey:identifier];
+			NSDictionary *views = [controller->_profileCardViews objectForKey:identifier];
+			[controller prepareStatusForCardViews:views selected:[identifier isEqualToString:
+			    [[controller->_profileStore selectedProfile] identifier]]];
+		}];
+		[check release];
+	}
+	[self setConnectionBusy:_isStartingConnection status:_connectionStatus];
 }
 
 - (void)showAboutPressed:(id)sender
@@ -327,7 +407,7 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	[title setAdjustsFontForContentSizeCategory:YES];
 	[title setTextColor:[UIColor labelColor]];
 
-	NSString *displayStatus = selected ? _connectionStatus : @"Disconnected";
+	NSString *displayStatus = @"Not checked";
 	UIImageSymbolConfiguration *statusSymbolConfiguration =
 	    [UIImageSymbolConfiguration configurationWithPointSize:13.0
 	                                                   weight:UIImageSymbolWeightSemibold];
@@ -550,6 +630,7 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 		[content addArrangedSubview:details];
 
 		[_profileCardViews setObject:@{
+			OrbisCardProfileIdentifierKey : profileIdentifier,
 			OrbisCardViewKey : card,
 			OrbisCardDetailsKey : details,
 			OrbisCardChevronKey : chevron,
@@ -643,18 +724,39 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	    [cardViews objectForKey:OrbisCardActivityIndicatorKey];
 	UIButton *connectButton = [cardViews objectForKey:OrbisCardConnectButtonKey];
 
-	if (selected)
+	NSString *identifier = [cardViews objectForKey:OrbisCardProfileIdentifierKey];
+	OrbisProfileHealth health = identifier ? [[_profileHealth objectForKey:identifier] integerValue] : OrbisProfileHealthUnknown;
+	BOOL connecting = selected && _isStartingConnection;
+	BOOL checking = connecting || health == OrbisProfileHealthChecking;
+	NSString *status = @"Not checked";
+	NSString *symbol = @"questionmark.circle";
+	UIColor *color = [UIColor secondaryLabelColor];
+	if (connecting)
+		status = _connectionStatus ?: @"Connecting…";
+	else if (health == OrbisProfileHealthChecking)
+		status = @"Checking…";
+	else if (health == OrbisProfileHealthAvailable)
 	{
-		[statusLabel setText:_connectionStatus];
-		return;
+		status = @"Available";
+		symbol = @"checkmark.circle.fill";
+		color = [UIColor systemGreenColor];
 	}
-
-	[statusLabel setText:@"Disconnected"];
-	[statusIcon setHidden:NO];
-	[statusIcon setImage:[UIImage systemImageNamed:@"wifi.slash"]];
-	[statusIcon setTintColor:[UIColor systemOrangeColor]];
-	[activity stopAnimating];
-	[connectButton setEnabled:YES];
+	else if (health == OrbisProfileHealthUnavailable)
+	{
+		status = @"Unavailable";
+		symbol = @"wifi.slash";
+		color = [UIColor systemRedColor];
+	}
+	[statusLabel setText:status];
+	[statusLabel setAccessibilityHint:@"Availability of the remote desktop service"];
+	[statusIcon setImage:[UIImage systemImageNamed:symbol]];
+	[statusIcon setTintColor:color];
+	[statusIcon setHidden:checking];
+	if (checking)
+		[activity startAnimating];
+	else
+		[activity stopAnimating];
+	[connectButton setEnabled:!connecting];
 }
 
 - (void)applyPresentationToCardViews:(NSDictionary *)cardViews
@@ -773,6 +875,7 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 - (BOOL)profileEditor:(OrbisProfileEditorController *)editor
        didSaveProfile:(OrbisProfile *)profile
              password:(NSString *)password
+      cloudflareToken:(NSDictionary *)cloudflareToken
 {
 	if ([password length] > 0)
 	{
@@ -790,7 +893,22 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 			return NO;
 		}
 	}
+	if (cloudflareToken)
+	{
+		NSError *error = nil;
+		if (![OrbisCredentialStore setCloudflareClientID:cloudflareToken[@"clientID"]
+		    secret:cloudflareToken[@"secret"] forProfile:profile error:&error])
+		{
+			UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Keychain Error"
+			    message:[error localizedDescription] preferredStyle:UIAlertControllerStyleAlert];
+			[alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+			[editor presentViewController:alert animated:YES completion:nil];
+			return NO;
+		}
+	}
 	[_profileStore saveProfile:profile];
+	[self stopHealthMonitoring];
+	[_profileHealth removeAllObjects];
 	[_expandedProfileIdentifier release];
 	_expandedProfileIdentifier = [[profile identifier] copy];
 	[self refreshProfileUI];
@@ -831,8 +949,14 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 		                             OrbisProfile *deleting =
 		                                 [_profileStore profileWithIdentifier:identifier];
 		                             NSError *error = nil;
-		                             [OrbisCredentialStore deletePasswordForProfile:deleting error:&error];
+		                             if (![OrbisCredentialStore deleteCredentialsForProfile:deleting error:&error])
+		                             {
+			                             [self showErrorWithTitle:@"Keychain Error" message:[error localizedDescription]];
+			                             return;
+		                             }
 		                             [_profileStore deleteProfileWithIdentifier:identifier];
+		                             [self stopHealthMonitoring];
+		                             [_profileHealth removeAllObjects];
 		                             [_expandedProfileIdentifier release];
 		                             _expandedProfileIdentifier =
 		                                 [[[_profileStore selectedProfile] identifier] copy];
@@ -919,11 +1043,13 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	NSString *certificate = [profile acceptAllCertificates] ? @"Accepted automatically"
 	                                                             : @"Ask when untrusted";
 	NSString *automatic = [profile connectAutomatically] ? @"Yes" : @"No";
+	NSString *transport = [[profile transportType] isEqualToString:OrbisTransportTypeCloudflare]
+		? [NSString stringWithFormat:@"Cloudflare (%@)", [profile transportHostname]] : [profile transportType];
 	NSString *message = [NSString
-	    stringWithFormat:@"%@:%lu\nAccount: %@\nCertificate: %@\nAuto-connect: %@\n\nThe password "
+	    stringWithFormat:@"%@:%lu\nAccount: %@\nTransport: %@\nCertificate: %@\nAuto-connect: %@\n\nThe password "
 	                     @"is stored only in this iPad's Keychain.",
 	                     [profile host], (unsigned long)[profile port], [profile username],
-	                     certificate, automatic];
+	                     transport, certificate, automatic];
 	UIAlertController *alert = [UIAlertController alertControllerWithTitle:[profile name]
 	                                                               message:message
 	                                                        preferredStyle:
@@ -1016,6 +1142,10 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 	OrbisProfile *profile = [_profileStore selectedProfile];
 	if (!profile)
 		return;
+	NSError *transportError = nil;
+	id<OrbisConnectionTransport> transport = [OrbisTransportFactory transportForProfile:profile error:&transportError];
+	if (!transport)
+		return [self showErrorWithTitle:@"Connection Transport" message:[transportError localizedDescription]];
 	NSError *certificateError = nil;
 	if (![self discardStoredCertificateForProfile:profile error:&certificateError])
 	{
@@ -1049,6 +1179,7 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 		return;
 	}
 
+	[session setConnectionTransport:transport];
 	RDPSessionViewController *controller = [[[RDPSessionViewController alloc]
 	    initWithNibName:@"RDPSessionView"
 	            bundle:nil
@@ -1060,35 +1191,18 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 - (void)setConnectionBusy:(BOOL)busy status:(NSString *)status
 {
 	_isStartingConnection = busy;
+	if (busy)
+		[self stopHealthMonitoring];
 	NSString *newStatus = [status copy];
 	[_connectionStatus release];
 	_connectionStatus = newStatus;
-	[_statusLabel setText:status];
-	[_connectButton setEnabled:!busy];
-	if (busy)
+	for (NSString *identifier in _profileCardViews)
 	{
-		[_statusIconView setHidden:YES];
-		[_activityIndicator startAnimating];
+		[self prepareStatusForCardViews:[_profileCardViews objectForKey:identifier]
+		    selected:[identifier isEqualToString:[[_profileStore selectedProfile] identifier]]];
 	}
-	else
-	{
-		[_statusIconView setHidden:NO];
-		[_activityIndicator stopAnimating];
-		NSString *symbol = @"checkmark.circle.fill";
-		UIColor *color = [UIColor systemGreenColor];
-		if ([status isEqualToString:@"Connection failed"])
-		{
-			symbol = @"exclamationmark.triangle.fill";
-			color = [UIColor systemRedColor];
-		}
-		else if ([status isEqualToString:@"Disconnected"])
-		{
-			symbol = @"wifi.slash";
-			color = [UIColor systemOrangeColor];
-		}
-		[_statusIconView setImage:[UIImage systemImageNamed:symbol]];
-		[_statusIconView setTintColor:color];
-	}
+	if (!busy)
+		[self startHealthMonitoring];
 }
 
 - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message
@@ -1106,13 +1220,17 @@ static NSString *const OrbisCardConnectButtonKey = @"connect-button";
 
 - (void)sessionDidEnd:(NSNotification *)notification
 {
-	BOOL failed = [[notification name] isEqualToString:TSXSessionDidFailToConnectNotification];
-	[self setConnectionBusy:NO status:(failed ? @"Connection failed" : @"Disconnected")];
+	(void)notification;
+	[self stopHealthMonitoring];
+	[self setConnectionBusy:NO status:nil];
 }
 
 - (void)dealloc
 {
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
+	[self stopHealthMonitoring];
+	[_profileHealth release];
+	[_healthChecks release];
 	[_profileStore release];
 	[_connectionsStack release];
 	[_statusLabel release];

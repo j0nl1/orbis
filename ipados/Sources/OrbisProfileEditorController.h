@@ -8,7 +8,8 @@
 @protocol OrbisProfileEditorDelegate <NSObject>
 - (BOOL)profileEditor:(OrbisProfileEditorController *)editor
        didSaveProfile:(OrbisProfile *)profile
-             password:(NSString *)password;
+             password:(NSString *)password
+      cloudflareToken:(NSDictionary *)cloudflareToken;
 @end
 
 @interface OrbisProfileEditorController : UITableViewController <UITextFieldDelegate>
@@ -24,6 +25,14 @@
 	UISwitch *_automaticSwitch;
 	NSArray *_fieldCells;
 	NSArray *_optionCells;
+	UISegmentedControl *_transportControl;
+	UITextField *_gatewayHostnameField;
+	UITextField *_clientIDField;
+	UITextField *_clientSecretField;
+	NSArray *_accessCells;
+	NSArray *_accountCells;
+	NSString *_savedTokenHost;
+	NSString *_savedTokenClientID;
 	BOOL _hasSavedPassword;
 	BOOL _isReplacingPassword;
 	BOOL _shouldFocusNameField;
