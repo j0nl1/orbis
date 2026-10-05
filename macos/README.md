@@ -75,10 +75,3 @@ has its own mode. Resize events are coalesced after the drag ends, and a size
 change received while the server is responding is applied after confirmation.
 Requests respect the same server limits as manual changes and retain the other
 remote display's resolution and arrangement.
-
-On macOS 27, dragging a fullscreen Space between physical monitors can leave the
-source desktop black in Mission Control. Orbis attempts automatic recovery by
-recreating the affected window's native fullscreen presentation after the window
-is visible on its destination. The transfer still uses the native drag gesture;
-recovery can add a brief fullscreen animation. This workaround needs validation
-on the affected Mac and does not change Mission Control or system preferences.

@@ -23,13 +23,6 @@
 
 static NSString *const OrbisSessionErrorDomain = @"com.dnexus.orbis.session";
 
-typedef NS_ENUM(NSUInteger, OrbisFullScreenRecoveryStage) {
-	OrbisFullScreenRecoveryIdle,
-	OrbisFullScreenRecoveryExiting,
-	OrbisFullScreenRecoveryPositioned,
-	OrbisFullScreenRecoveryEntering
-};
-
 _Static_assert(FREERDP_ERROR_CONNECT_FAILED == ORBIS_FREERDP_CONNECT_FAILED,
                "Orbis retry policy must match FreeRDP's connection-failed code");
 _Static_assert(ERRINFO_NONE == ORBIS_ERRINFO_NONE,
@@ -59,12 +52,6 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)displayControlCaps:(uint32_t)count area:(uint64_t)area;
 - (void)setConnectingStatus:(NSString *)status;
 - (BOOL)layoutForActiveResolution:(NSSize)resolution result:(OrbisDisplayLayout *)layout;
-- (NSArray *)physicalScreens;
-- (BOOL)shouldRecoverFullScreenAfterScreenChange;
-- (void)performPendingFullScreenRecovery;
-- (void)restoreRecoveredFullScreen;
-- (void)finishFullScreenRecovery;
-- (void)fullScreenRecoveryTimedOut;
 - (BOOL)canChangeDisplayResolution;
 - (BOOL)layoutForResolution:(NSSize)resolution display:(NSInteger)index result:(OrbisDisplayLayout *)layout;
 - (BOOL)canSetDisplayResolution:(NSSize)resolution display:(NSInteger)index;
@@ -72,11 +59,6 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)scheduleWindowResolutions;
 - (void)displayCapabilitiesChanged;
 @end
-
-static uint32_t OrbisWindowScreenID(NSWindow *window)
-{
-	return [[[[window screen] deviceDescription] objectForKey:@"NSScreenNumber"] unsignedIntValue];
-}
 
 @implementation OrbisRemoteView
 @synthesize sessionController;
@@ -354,6 +336,9 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 		[[_connectingOverlay animator] setAlphaValue:0.0];
 	} completionHandler:^{
 		[_connectingOverlay setHidden:YES];
+		[_connectingOverlay removeFromSuperview];
+		[_connectingStatusLabel release]; _connectingStatusLabel = nil;
+		[_connectingOverlay release]; _connectingOverlay = nil;
 	}];
 }
 
@@ -538,7 +523,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 {
 	[_displayLock lock]; BOOL supported = _displayChannel && _displayMaxMonitors >= 2; [_displayLock unlock];
 	return supported && _wasConnected && !_stopping && !_displayChangePending &&
-	    !_secondaryWindow && !_closingSecondaryWindow && !_fullScreenRecoveryWindow;
+	    !_secondaryWindow && !_closingSecondaryWindow;
 }
 
 - (NSInteger)activeRemoteDisplayIndex
@@ -580,7 +565,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 - (BOOL)canChangeDisplayResolution
 {
     if (!_wasConnected || _stopping || _displayChangePending || _closingSecondaryWindow ||
-        _fullScreenRecoveryWindow || !_displayLayout.count) return NO;
+        !_displayLayout.count) return NO;
     [_displayLock lock];
     DispClientContext *channel = _displayChannel;
     BOOL supported = channel && channel->SendMonitorLayout && _displayMaxMonitors >= _displayLayout.count;
@@ -682,7 +667,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)applyWindowResolutions
 {
-    if (![self canChangeDisplayResolution] || [_pendingFullScreenRecoveries count]) return;
+    if (![self canChangeDisplayResolution]) return;
     for (NSInteger index = 0; index < 2; index++)
     {
         NSUInteger bit = 1UL << index;
@@ -799,18 +784,13 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)removeSecondaryWindow
 {
-	BOOL waitingForTransition = _fullScreenRecoveryWindow == _secondaryWindow &&
-	    (_fullScreenRecoveryStage == OrbisFullScreenRecoveryExiting || _fullScreenRecoveryStage == OrbisFullScreenRecoveryEntering);
-	if (_secondaryWindow) [_pendingFullScreenRecoveries removeObject:_secondaryWindow];
-	if (_fullScreenRecoveryWindow == _secondaryWindow) [self finishFullScreenRecovery];
-	_secondaryMacScreenID = 0;
 	[_secondaryView detachFromDisplaySource];
 	[_secondaryView setSessionController:nil];
 	[_secondaryView release]; _secondaryView = nil;
-	if (_secondaryWindow && (waitingForTransition || ([_secondaryWindow styleMask] & NSWindowStyleMaskFullScreen)))
+	if (_secondaryWindow && ([_secondaryWindow styleMask] & NSWindowStyleMaskFullScreen))
 	{
 		_closingSecondaryWindow = _secondaryWindow; _secondaryWindow = nil;
-		if (!waitingForTransition) [_closingSecondaryWindow toggleFullScreen:nil];
+		[_closingSecondaryWindow toggleFullScreen:nil];
 	}
 	else
 	{
@@ -891,155 +871,29 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	if (_windowResolutionDirty) [self scheduleWindowResolutions];
 }
 
-- (NSArray *)physicalScreens
-{
-	return [NSScreen screens];
-}
-
-- (BOOL)shouldRecoverFullScreenAfterScreenChange
-{
-	return [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion == 27;
-}
-
 - (void)windowDidChangeScreen:(NSNotification *)notification
 {
-	NSWindow *window = [notification object];
-	uint32_t *previous = window == _window ? &_primaryMacScreenID :
-	    window == _secondaryWindow ? &_secondaryMacScreenID : NULL;
-	uint32_t current = OrbisWindowScreenID(window);
-	if (!previous || !current) return;
-	uint32_t old = *previous;
-	*previous = current;
 	[self windowDidResize:notification];
-	if (!old || old == current || _stopping || !_wasConnected || ![self shouldRecoverFullScreenAfterScreenChange] ||
-	    window == _fullScreenRecoveryWindow || !([window styleMask] & NSWindowStyleMaskFullScreen)) return;
-	if (!_pendingFullScreenRecoveries) _pendingFullScreenRecoveries = [[NSMutableArray alloc] init];
-	if (![_pendingFullScreenRecoveries containsObject:window]) [_pendingFullScreenRecoveries addObject:window];
-	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingFullScreenRecovery) object:nil];
-	[self performSelector:@selector(performPendingFullScreenRecovery) withObject:nil afterDelay:0.6];
-}
-
-- (void)windowDidChangeOcclusionState:(NSNotification *)notification
-{
-	(void)notification;
-	if (!_stopping && [_pendingFullScreenRecoveries count])
-	{
-		[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingFullScreenRecovery) object:nil];
-		[self performSelector:@selector(performPendingFullScreenRecovery) withObject:nil afterDelay:0.6];
-	}
-}
-
-- (void)performPendingFullScreenRecovery
-{
-	if (_stopping || _fullScreenRecoveryWindow) return;
-	for (NSWindow *window in [[_pendingFullScreenRecoveries copy] autorelease])
-	{
-		if ((window != _window && window != _secondaryWindow) || !([window styleMask] & NSWindowStyleMaskFullScreen))
-		{
-			[_pendingFullScreenRecoveries removeObject:window];
-			continue;
-		}
-		// Wait until the real window is visible again after Mission Control.
-		if (![window isOnActiveSpace] || !([window occlusionState] & NSWindowOcclusionStateVisible)) continue;
-		[_pendingFullScreenRecoveries removeObject:window];
-		_fullScreenRecoveryWindow = [window retain];
-		_fullScreenRecoveryScreenID = OrbisWindowScreenID(window);
-		_fullScreenRecoveryStage = OrbisFullScreenRecoveryExiting;
-		// Recreate only this window's native full-screen presentation. Moving a
-		// Space in macOS 27 can leave the source desktop black; repainting the
-		// remote view cannot repair that system-owned surface.
-		[self performSelector:@selector(fullScreenRecoveryTimedOut) withObject:nil afterDelay:12.0];
-		[window toggleFullScreen:nil];
-		return;
-	}
-}
-
-- (void)restoreRecoveredFullScreen
-{
-	if (_stopping || !_fullScreenRecoveryWindow || _fullScreenRecoveryStage != OrbisFullScreenRecoveryPositioned) return;
-	_fullScreenRecoveryStage = OrbisFullScreenRecoveryEntering;
-	[_fullScreenRecoveryWindow toggleFullScreen:nil];
-}
-
-- (void)finishFullScreenRecovery
-{
-	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(restoreRecoveredFullScreen) object:nil];
-	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(fullScreenRecoveryTimedOut) object:nil];
-	[_fullScreenRecoveryWindow release]; _fullScreenRecoveryWindow = nil;
-	_fullScreenRecoveryStage = OrbisFullScreenRecoveryIdle; _fullScreenRecoveryScreenID = 0;
-	if (_windowResolutionDirty) [self scheduleWindowResolutions];
-	if (!_stopping && [_pendingFullScreenRecoveries count])
-	{
-		[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingFullScreenRecovery) object:nil];
-		[self performSelector:@selector(performPendingFullScreenRecovery) withObject:nil afterDelay:0.6];
-	}
-}
-
-- (void)fullScreenRecoveryTimedOut
-{
-	[self finishFullScreenRecovery];
 }
 
 - (void)windowDidEnterFullScreen:(NSNotification *)notification
 {
-	NSWindow *window = [notification object];
-	if (window == _window) _primaryMacScreenID = OrbisWindowScreenID(window);
-	else if (window == _secondaryWindow) _secondaryMacScreenID = OrbisWindowScreenID(window);
-	if (window == _fullScreenRecoveryWindow) [self finishFullScreenRecovery];
 	[self windowDidResize:notification];
-	if (window == _closingSecondaryWindow || (window == _window && _stopping))
-	{
-		[window toggleFullScreen:nil];
-		return;
-	}
 	if (_connectionPending && !_stopping)
 		[self beginConnection];
 }
 
 - (void)windowDidFailToEnterFullScreen:(NSWindow *)window
 {
-	if (window == _fullScreenRecoveryWindow) [self finishFullScreenRecovery];
-	if (window == _closingSecondaryWindow || (window == _window && _stopping))
-	{
-		[self windowDidExitFullScreen:[NSNotification notificationWithName:NSWindowDidExitFullScreenNotification object:window]];
-		return;
-	}
+	(void)window;
 	if (_connectionPending && !_stopping)
 		[self beginConnection];
 }
 
-- (void)windowDidFailToExitFullScreen:(NSWindow *)window
-{
-	if (window == _fullScreenRecoveryWindow) [self finishFullScreenRecovery];
-	if (window == _closingSecondaryWindow || (window == _window && _stopping))
-		[self windowDidExitFullScreen:[NSNotification notificationWithName:NSWindowDidExitFullScreenNotification object:window]];
-}
-
 - (void)windowDidExitFullScreen:(NSNotification *)notification
 {
+	[self windowDidResize:notification];
 	NSWindow *window = [notification object];
-	if (window == _fullScreenRecoveryWindow)
-	{
-		if (!_stopping && _fullScreenRecoveryStage == OrbisFullScreenRecoveryExiting)
-		{
-			NSScreen *target = nil;
-			for (NSScreen *screen in [self physicalScreens])
-				if ([[[screen deviceDescription] objectForKey:@"NSScreenNumber"] unsignedIntValue] == _fullScreenRecoveryScreenID) { target = screen; break; }
-			if (target)
-			{
-				NSRect area = [target visibleFrame];
-				NSRect frame = [window frame];
-				frame.size.width = MIN(frame.size.width, area.size.width);
-				frame.size.height = MIN(frame.size.height, area.size.height);
-				frame.origin = NSMakePoint(NSMidX(area) - frame.size.width / 2, NSMidY(area) - frame.size.height / 2);
-				_fullScreenRecoveryStage = OrbisFullScreenRecoveryPositioned;
-				[window setFrame:frame display:YES];
-				[self performSelector:@selector(restoreRecoveredFullScreen) withObject:nil afterDelay:0];
-				return;
-			}
-		}
-		[self finishFullScreenRecovery];
-	}
 	if (window == _closingSecondaryWindow)
 	{
 		[_closingSecondaryWindow setDelegate:nil]; [_closingSecondaryWindow orderOut:nil];
@@ -1203,12 +1057,6 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	if (_stopping)
 		return;
 	_stopping = YES;
-	BOOL waitingForRecoveryTransition = _fullScreenRecoveryWindow == _window &&
-	    (_fullScreenRecoveryStage == OrbisFullScreenRecoveryExiting || _fullScreenRecoveryStage == OrbisFullScreenRecoveryEntering);
-	// Secondary teardown must see its pending native transition before it is cancelled.
-	if (_fullScreenRecoveryWindow != _secondaryWindow) [self finishFullScreenRecovery];
-	[_pendingFullScreenRecoveries removeAllObjects];
-	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performPendingFullScreenRecovery) object:nil];
 	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applyWindowResolutions) object:nil];
 	_windowResolutionDirty = 0;
 	[_displayChangeTimer invalidate]; [_displayChangeTimer release]; _displayChangeTimer = nil;
@@ -1235,7 +1083,6 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[self disposeConnectionContext];
 
 	[(OrbisRemoteView *)_remoteView setSessionController:nil];
-	if (waitingForRecoveryTransition) return;
 	if (([_window styleMask] & NSWindowStyleMaskFullScreen) != 0)
 	{
 		[_window toggleFullScreen:nil];
@@ -1281,7 +1128,6 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[_connectingStatusLabel release];
 	[_connectingOverlay release];
 	[_displayLock release];
-	[_pendingFullScreenRecoveries release];
 	[_remoteView release];
 	[_window release];
 	[_password release];

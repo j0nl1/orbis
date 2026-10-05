@@ -25,11 +25,9 @@ static NSWindow *resolutionFixtureWindow;
 - (void)addVirtualDisplay:(id)sender;
 - (void)desktopDidResize:(NSNotification *)notification;
 - (void)displayChangeTimedOut:(NSTimer *)timer;
-- (void)performPendingFullScreenRecovery;
-- (void)restoreRecoveredFullScreen;
-- (NSArray *)physicalScreens;
-- (BOOL)shouldRecoverFullScreenAfterScreenChange;
 - (void)applyWindowResolutions;
+- (void)buildConnectingOverlay;
+- (void)remoteViewDidPresentFirstFrame:(NSNotification *)notification;
 @end
 
 static NSUInteger failures;
@@ -184,127 +182,6 @@ static void Require(BOOL value, const char *message)
 
 @end
 
-@interface OrbisRecoveryScreen : NSScreen
-@property(nonatomic) NSRect fixtureFrame;
-@property(nonatomic) uint32_t fixtureID;
-@end
-@implementation OrbisRecoveryScreen
-@synthesize fixtureFrame, fixtureID;
-- (NSRect)frame { return fixtureFrame; }
-- (NSRect)visibleFrame { return fixtureFrame; }
-- (NSDictionary *)deviceDescription { return @{ @"NSScreenNumber": @(fixtureID) }; }
-@end
-
-/* Keep AppKit's asynchronous animation at the boundary; exercise real delegate handling. */
-@interface OrbisRecoveryWindow : NSWindow
-@property(nonatomic, retain) NSScreen *fixtureScreen;
-@property(nonatomic) BOOL fixtureFullScreen;
-@property(nonatomic) NSUInteger toggleCount;
-@property(nonatomic) NSUInteger placementCount;
-@property(nonatomic) NSRect placementFrame;
-@end
-@implementation OrbisRecoveryWindow
-@synthesize fixtureScreen, fixtureFullScreen, toggleCount, placementCount, placementFrame;
-- (NSRect)frame { return fixtureScreen && placementFrame.size.width ? placementFrame : [super frame]; }
-- (NSScreen *)screen { return fixtureScreen; }
-- (NSWindowStyleMask)styleMask
-{
-    return [super styleMask] | (fixtureFullScreen ? NSWindowStyleMaskFullScreen : 0);
-}
-- (void)toggleFullScreen:(id)sender { (void)sender; toggleCount++; }
-- (NSWindowOcclusionState)occlusionState { return NSWindowOcclusionStateVisible; }
-- (BOOL)isOnActiveSpace { return YES; }
-- (void)setFrame:(NSRect)frame display:(BOOL)display
-{
-    placementCount++;
-    placementFrame = frame;
-    if (!fixtureScreen) [super setFrame:frame display:display];
-}
-- (void)dealloc { [fixtureScreen release]; [super dealloc]; }
-@end
-
-@interface OrbisRecoveryFixtureController : OrbisDisplayFixtureController
-@property(nonatomic, retain) NSArray *fixtureScreens;
-- (void)useRecoveryWindow:(OrbisRecoveryWindow *)window secondary:(BOOL)secondary;
-@end
-@implementation OrbisRecoveryFixtureController
-@synthesize fixtureScreens;
-- (NSArray *)physicalScreens { return fixtureScreens; }
-- (BOOL)shouldRecoverFullScreenAfterScreenChange { return YES; }
-- (void)useRecoveryWindow:(OrbisRecoveryWindow *)window secondary:(BOOL)secondary
-{
-    if (secondary)
-    {
-        [_secondaryWindow release]; _secondaryWindow = [window retain];
-        OrbisDisplayLayoutMake(1280, 800, 1024, 768, OrbisMonitorRight, true, &_displayLayout);
-    }
-    else { [_window release]; _window = [window retain]; }
-}
-- (void)dealloc { [fixtureScreens release]; [super dealloc]; }
-@end
-
-static void CheckFullScreenRecovery(void)
-{
-    Require([OrbisSessionController instancesRespondToSelector:@selector(performPendingFullScreenRecovery)],
-        "A full-screen monitor transfer must have automatic recovery without a menu action");
-    if (![OrbisSessionController instancesRespondToSelector:@selector(performPendingFullScreenRecovery)]) return;
-    for (NSUInteger scenario = 0; scenario < 5; scenario++)
-    {
-        OrbisRecoveryScreen *source = [[[OrbisRecoveryScreen alloc] init] autorelease];
-        source.fixtureID = 1; source.fixtureFrame = NSMakeRect(0, 0, 1920, 1080);
-        OrbisRecoveryScreen *target = [[[OrbisRecoveryScreen alloc] init] autorelease];
-        target.fixtureID = 2; target.fixtureFrame = NSMakeRect(200, 1080, 2560, 1440);
-        OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease]; profile.name = @"Recovery fixture";
-        OrbisRecoveryFixtureController *controller = [[OrbisRecoveryFixtureController alloc]
-            initWithProfile:profile password:nil transport:[[[OrbisDirectTransport alloc] init] autorelease]];
-        [controller prepareFixture]; controller.fixtureScreens = @[source, target];
-        OrbisRecoveryWindow *window = [[[OrbisRecoveryWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
-            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO] autorelease];
-        [window setReleasedWhenClosed:NO]; window.fixtureScreen = source; window.fixtureFullScreen = YES;
-        [controller useRecoveryWindow:window secondary:scenario == 1];
-        NSNotification *entered = [NSNotification notificationWithName:NSWindowDidEnterFullScreenNotification object:window];
-        [controller windowDidEnterFullScreen:entered];
-        [controller windowDidChangeScreen:[NSNotification notificationWithName:NSWindowDidChangeScreenNotification object:window]];
-        [controller performPendingFullScreenRecovery];
-        Require(window.toggleCount == 0, "Entering full screen or staying on the same monitor must not trigger recovery");
-        NSUInteger placements = window.placementCount;
-        window.fixtureScreen = target;
-        [controller windowDidChangeScreen:[NSNotification notificationWithName:NSWindowDidChangeScreenNotification object:window]];
-        [controller performPendingFullScreenRecovery];
-        Require(window.toggleCount == 1 && window.placementCount == placements,
-            "A physical monitor change exits full screen before repositioning the existing window");
-        [controller performPendingFullScreenRecovery];
-        Require(window.toggleCount == 1, "Duplicate screen or occlusion events must not overlap recovery transitions");
-        if (scenario == 2)
-        {
-            [controller windowDidFailToExitFullScreen:window];
-            Require(window.placementCount == placements && ![controller isStopped],
-                "A failed native exit leaves the original presentation and session intact");
-        }
-        else
-        {
-            if (scenario == 3) [controller stop];
-            window.fixtureFullScreen = NO;
-            [controller windowDidExitFullScreen:[NSNotification notificationWithName:NSWindowDidExitFullScreenNotification object:window]];
-            [controller restoreRecoveredFullScreen];
-            if (scenario == 3)
-                Require(window.toggleCount == 1 && window.placementCount == placements,
-                    "Stopping during recovery must not reopen or move the remote window");
-            else
-            {
-                Require(window.toggleCount == 2 && NSPointInRect(NSMakePoint(NSMidX(window.frame), NSMidY(window.frame)), target.frame),
-                    "Recovery re-enters native full screen on the destination monitor after exit completes");
-                if (scenario == 4) [controller windowDidFailToEnterFullScreen:window];
-                else { window.fixtureFullScreen = YES; [controller windowDidEnterFullScreen:entered]; }
-                Require(![controller isStopped] && [controller currentLayout].monitors[0].width == 1280,
-                    "Native recovery retains the remote session and resolution for either display");
-            }
-        }
-        window.fixtureFullScreen = NO;
-        [controller stop]; [controller release];
-    }
-}
-
 static void ConfirmResolution(OrbisDisplayFixtureController *controller)
 {
     int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
@@ -316,6 +193,27 @@ static void ConfirmResolution(OrbisDisplayFixtureController *controller)
     }
     [controller setPixelSize:NSMakeSize(maxX - minX, maxY - minY)];
     [controller desktopDidResize:nil];
+}
+
+static void CheckConnectingOverlayRemoval(void)
+{
+    OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease]; profile.name = @"Overlay fixture";
+    OrbisDisplayFixtureController *controller = [[OrbisDisplayFixtureController alloc]
+        initWithProfile:profile password:nil transport:[[[OrbisDirectTransport alloc] init] autorelease]];
+    [controller prepareFixture]; [controller buildConnectingOverlay];
+    NSWindow *window = [controller primaryWindow];
+    NSView *remote = [window.contentView.subviews firstObject];
+    NSView *overlay = [[window.contentView.subviews lastObject] retain];
+    Require(overlay != remote && overlay.superview == window.contentView, "Loading must cover the remote view before its first frame");
+    [controller remoteViewDidPresentFirstFrame:[NSNotification notificationWithName:MRDPViewDidPresentFirstFrameNotification object:remote]];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1.0];
+    while (overlay.superview && [deadline timeIntervalSinceNow] > 0)
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    Require(overlay.superview == nil && window.contentView.subviews.count == 1 && remote.superview == window.contentView,
+        "The first remote frame must remove the loading overlay completely after its fade finishes");
+    [controller remoteViewDidPresentFirstFrame:[NSNotification notificationWithName:MRDPViewDidPresentFirstFrameNotification object:remote]];
+    Require(window.contentView.subviews.count == 1, "A repeated first-frame notification must not restore the loading overlay");
+    [overlay release]; [controller stop]; [controller release];
 }
 
 static void CheckAutomaticWindowResolution(OrbisAppDelegate *delegate, NSMenu *menu)
@@ -558,8 +456,8 @@ int main(void)
             [controller release]; [profile release];
         }
         CheckResolutionMenu(delegate, resolutionMenu);
-        CheckFullScreenRecovery();
         CheckAutomaticWindowResolution(delegate, resolutionMenu);
+        CheckConnectingOverlayRemoval();
         [delegate release]; [pointerEvents release];
         if (originalSettings) [[NSUserDefaults standardUserDefaults] setObject:originalSettings forKey:@"OrbisDisplaySettings.v1"];
         else [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OrbisDisplaySettings.v1"];
