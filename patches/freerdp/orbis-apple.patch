@@ -1428,9 +1428,10 @@ diff --git a/client/iOS/AppDelegate.m b/client/iOS/AppDelegate.m
  	 Called when the application is about to terminate.
  	 Save data if appropriate.
 diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
+index b1cc404..0ca5a74 100644
 --- a/client/iOS/CMakeLists.txt
 +++ b/client/iOS/CMakeLists.txt
-@@ -30,6 +30,11 @@
+@@ -30,6 +30,11 @@ project(iFreeRDP VERSION ${FREERDP_DEFAULT_PROJECT_VERSION})
  message("project ${PROJECT_NAME} is using version ${PROJECT_VERSION}")
  
  get_filename_component(FREERDP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
@@ -1442,7 +1443,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
  
  list(APPEND CMAKE_MODULE_PATH ${FREERDP_SOURCE_DIR}/cmake/)
  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/)
-@@ -53,17 +58,17 @@
+@@ -53,17 +58,17 @@ include(GNUInstallDirs)
  set(CMAKE_INSTALL_LIBDIR Frameworks)
  set(CMAKE_INSTALL_BINDIR MacOS)
  
@@ -1463,7 +1464,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
  
  message("sysroot:    ${CMAKE_SYSROOT}")
  message("target:     ${CMAKE_OSX_DEPLOYMENT_TARGET}")
-@@ -85,6 +90,12 @@
+@@ -85,6 +90,12 @@ include_directories(SYSTEM ${IOS_CLIENT_FREERDP_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_MISC_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_MODELS_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_VIEWS_DIR})
@@ -1476,7 +1477,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
  
  # Dependencies
  include(ExternalDeps)
-@@ -115,6 +126,18 @@
+@@ -115,6 +126,17 @@ set(SRCS
      Controllers/CredentialsEditorController.m
      Controllers/CredentialsInputController.h
      Controllers/CredentialsInputController.m
@@ -1484,8 +1485,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisController.m
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettings.h
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettings.m
-+    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadWorkspaceGesture.h
-+    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadWorkspaceGesture.m
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadWorkspaceShortcuts.h
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettingsController.h
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettingsController.m
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisConnectionHealthCheck.h
@@ -1495,7 +1495,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
      Controllers/EditorBaseController.h
      Controllers/EditorBaseController.m
      Controllers/EditorSelectionController.h
-@@ -123,14 +146,14 @@
+@@ -123,14 +145,14 @@ set(SRCS
      Controllers/EncryptionController.m
      Controllers/MainTabBarController.h
      Controllers/MainTabBarController.m
@@ -1512,7 +1512,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
      FreeRDP/ios_cliprdr.h
      FreeRDP/ios_cliprdr.m
      FreeRDP/ios_freerdp_events.h
-@@ -155,6 +178,21 @@
+@@ -155,6 +177,21 @@ set(SRCS
      Models/Encryptor.m
      Models/GlobalDefaults.h
      Models/GlobalDefaults.m
@@ -1534,7 +1534,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
      Models/RDPKeyboard.h
      Models/RDPKeyboard.m
      Models/RDPSession.h
-@@ -204,10 +242,8 @@
+@@ -204,10 +241,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
      Resources/EditSubEditTableViewCell.xib
      Resources/EditTextTableViewCell.xib
      Resources/MainWindow.xib
@@ -1545,7 +1545,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
  )
  
  set(IOS_CLIENT_RESOURCES_PNGS
-@@ -224,6 +260,7 @@
+@@ -224,6 +259,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
      Resources/alert-window-landscape.png
      Resources/alert-window.png
      Resources/cancel_button_background.png
@@ -1553,7 +1553,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
      Resources/Default@2x.png
      Resources/Default-568h@2x.png
      Resources/Default-Landscape@2x~ipad.png
-@@ -287,6 +324,17 @@
+@@ -287,6 +323,17 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
  find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
  find_library(WEBKIT_FRAMEWORK WebKit REQUIRED)
  find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
@@ -1571,22 +1571,20 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
  
  set(EXTRA_LIBS
      ${FOUNDATION_FRAMEWORK}
-@@ -298,9 +346,11 @@
+@@ -298,9 +345,11 @@ set(EXTRA_LIBS
      ${SYSTEMCONFIGURATION_FRAMEWORK}
      ${WEBKIT_FRAMEWORK}
      ${GAMECONTROLLER_FRAMEWORK}
--)
--
--set(RESOURCES ${IOS_CLIENT_RESOURCES_XIBS} ${IOS_CLIENT_RESOURCES_PNGS} ${IOS_CLIENT_RESOURCES_DIR}/about_page
 +    ${NETWORK_FRAMEWORK}
 +    ${METRICKIT_FRAMEWORK}
-+)
-+
+ )
+ 
+-set(RESOURCES ${IOS_CLIENT_RESOURCES_XIBS} ${IOS_CLIENT_RESOURCES_PNGS} ${IOS_CLIENT_RESOURCES_DIR}/about_page
 +set(RESOURCES ${ORBIS_IPADOS_APP_DIR}/../CHANGELOG.md ${IOS_CLIENT_RESOURCES_XIBS} ${IOS_CLIENT_RESOURCES_PNGS} ${IOS_CLIENT_RESOURCES_DIR}/about_page
                ${IOS_CLIENT_RESOURCES_DIR}/en.lproj ${IOS_CLIENT_DIR}/Defaults.plist
  )
  
-@@ -325,7 +375,11 @@
+@@ -325,7 +374,11 @@ add_executable(
  add_dependencies(${PROJECT_NAME} freerdp)
  
  set_target_properties(
@@ -1599,11 +1597,10 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
                               RESOURCE "${RESOURCES}"
  )
  
-@@ -346,6 +400,26 @@
-   get_target_property(_ios_winpr_runtime_location winpr3-lib IMPORTED_LOCATION)
+@@ -347,6 +400,26 @@ if(TARGET winpr3-lib)
    list(APPEND _ios_embed_frameworks "${_ios_winpr_runtime_location}")
  endif()
-+
+ 
 +# FreeRDP links these third-party runtimes transitively. Xcode does not copy
 +# transitive dylib dependencies automatically, so include the exact install
 +# names referenced by the three FreeRDP libraries above.
@@ -1623,10 +1620,11 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
 +     "${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libopenh264.8.dylib"
 +     "${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/png.framework"
 +)
- 
++
  if(AVCODEC_LIBRARIES MATCHES "\\.framework/")
    get_filename_component(_ios_ffmpeg_framework "${AVCODEC_LIBRARIES}" DIRECTORY)
-@@ -358,3 +432,11 @@
+   list(APPEND _ios_embed_frameworks "${_ios_ffmpeg_framework}")
+@@ -358,3 +431,11 @@ if(_ios_embed_frameworks)
                                 XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
    )
  endif()
@@ -1639,6 +1637,7 @@ diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
 +  add_subdirectory(${ORBIS_IPADOS_APP_DIR}/Tests ${CMAKE_CURRENT_BINARY_DIR}/orbis-tests)
 +endif()
 diff --git a/client/iOS/Controllers/RDPSessionViewController.h b/client/iOS/Controllers/RDPSessionViewController.h
+index c5a018e..417ceab 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.h
 +++ b/client/iOS/Controllers/RDPSessionViewController.h
 @@ -18,7 +18,7 @@
@@ -1650,17 +1649,17 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.h b/client/iOS/Cont
  {
  	// scrollview that hosts the rdp session view
  	IBOutlet UIScrollView *_session_scrollview;
-@@ -54,6 +54,9 @@
+@@ -54,6 +54,8 @@
  	BOOL _advanced_keyboard_visible;
  	BOOL _requesting_advanced_keyboard;
  	CGSize _last_session_viewport_size;
 +	CGSize _last_requested_remote_size;
 +	BOOL _session_connected;
-+	OrbisIPadWorkspaceGesture *_workspaceGesture;
  
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
+index b6d378c..3352890 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
 @@ -10,21 +10,22 @@
@@ -1778,11 +1777,8 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:NO animated:animated];
  	else
-@@ -234,14 +245,20 @@
- 
- - (void)dealloc
+@@ -236,12 +247,17 @@
  {
-+	[_workspaceGesture release];
  	// remove any observers
  	[[NSNotificationCenter defaultCenter] removeObserver:self];
 +	[NSObject cancelPreviousPerformRequestsWithTarget:self
@@ -1799,11 +1795,17 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  	[_session release];
  	[super dealloc];
  }
-@@ -361,36 +378,86 @@
+@@ -361,36 +377,86 @@
  
  - (void)session:(RDPSession *)session didFailToConnect:(int)reason
  {
 -	// remove and release connecting view
+-	[_connecting_indicator_view stopAnimating];
+-	[_connecting_view removeFromSuperview];
+-	[_connecting_view autorelease];
+-
+-	// return to bookmark list
+-	[[self navigationController] popViewControllerAnimated:YES];
 +	(void)reason;
 +	[self hideConnectingView];
 +	UINavigationController *navigation = [self navigationController];
@@ -1822,10 +1824,23 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
 +			presentError();
 +		}];
 +	else presentError();
-+}
-+
-+- (void)sessionWillConnect:(RDPSession *)session
-+{
+ }
+ 
+ - (void)sessionWillConnect:(RDPSession *)session
+ {
+-	// load connecting view
+-	[[NSBundle mainBundle] loadNibNamed:@"RDPConnectingView" owner:self options:nil];
+-
+-	// set strings
+-	[_lbl_connecting setText:NSLocalizedString(@"Connecting", @"Connecting progress view - label")];
+-	[_cancel_connect_button setTitle:NSLocalizedString(@"Cancel", @"Cancel Button")
+-	                        forState:UIControlStateNormal];
+-
+-	// center view and give it round corners
+-	[_connecting_view setCenter:[[self view] center]];
+-	[[_connecting_view layer] setCornerRadius:10];
+-
+-	// display connecting view and start indicator
 +	(void)session;
 +	[self hideConnectingView];
 +	[_session_scrollview setHidden:YES];
@@ -1856,7 +1871,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
 +	[connectingStack setTranslatesAutoresizingMaskIntoConstraints:NO];
 +
 +	[_connecting_view addSubview:connectingStack];
-+	[[self view] addSubview:_connecting_view];
+ 	[[self view] addSubview:_connecting_view];
 +	[NSLayoutConstraint activateConstraints:@[
 +		[[_connecting_view leadingAnchor] constraintEqualToAnchor:[[self view] leadingAnchor]],
 +		[[_connecting_view trailingAnchor] constraintEqualToAnchor:[[self view] trailingAnchor]],
@@ -1865,44 +1880,21 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
 +		[[connectingStack centerXAnchor] constraintEqualToAnchor:[_connecting_view centerXAnchor]],
 +		[[connectingStack centerYAnchor] constraintEqualToAnchor:[_connecting_view centerYAnchor]],
 +	]];
-+	[_connecting_indicator_view startAnimating];
-+}
-+
+ 	[_connecting_indicator_view startAnimating];
+ }
+ 
 +- (void)hideConnectingView
 +{
- 	[_connecting_indicator_view stopAnimating];
- 	[_connecting_view removeFromSuperview];
--	[_connecting_view autorelease];
--
--	// return to bookmark list
--	[[self navigationController] popViewControllerAnimated:YES];
--}
--
--- (void)sessionWillConnect:(RDPSession *)session
--{
--	// load connecting view
--	[[NSBundle mainBundle] loadNibNamed:@"RDPConnectingView" owner:self options:nil];
--
--	// set strings
--	[_lbl_connecting setText:NSLocalizedString(@"Connecting", @"Connecting progress view - label")];
--	[_cancel_connect_button setTitle:NSLocalizedString(@"Cancel", @"Cancel Button")
--	                        forState:UIControlStateNormal];
--
--	// center view and give it round corners
--	[_connecting_view setCenter:[[self view] center]];
--	[[_connecting_view layer] setCornerRadius:10];
--
--	// display connecting view and start indicator
--	[[self view] addSubview:_connecting_view];
--	[_connecting_indicator_view startAnimating];
++	[_connecting_indicator_view stopAnimating];
++	[_connecting_view removeFromSuperview];
 +	[_connecting_indicator_view release];
 +	_connecting_indicator_view = nil;
 +	[_connecting_view release];
 +	_connecting_view = nil;
 +	_lbl_connecting = nil;
 +	_cancel_connect_button = nil;
- }
- 
++}
++
  - (void)sessionDidConnect:(RDPSession *)session
  {
 +	_session_connected = YES;
@@ -1910,7 +1902,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  	// register keyboard notification handlers
  	[[NSNotificationCenter defaultCenter] addObserver:self
  	                                         selector:@selector(keyboardWillShow:)
-@@ -419,11 +486,7 @@
+@@ -419,11 +485,7 @@
  	                                             name:GCKeyboardDidDisconnectNotification
  	                                           object:nil];
  	[self hardwareKeyboardChanged:nil];
@@ -1923,7 +1915,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  
  	// check if session settings changed ...
  	// The 2nd width check is to ignore changes in resolution settings due to the RDVH display bug
-@@ -451,10 +514,17 @@
+@@ -451,10 +513,17 @@
  
  - (void)sessionWillDisconnect:(RDPSession *)session
  {
@@ -1941,7 +1933,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  	// return to bookmark list
  	[[self navigationController] popViewControllerAnimated:YES];
  }
-@@ -492,13 +562,28 @@
+@@ -492,13 +561,28 @@
  	if (!_has_cursor_view_position)
  		(void)[self currentCursorViewPosition];
  
@@ -1973,7 +1965,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  }
  
  - (void)session:(RDPSession *)session didSetRemoteCursor:(RDPCursor *)cursor
-@@ -553,26 +638,58 @@
+@@ -553,26 +637,58 @@
  
  - (void)session:(RDPSession *)session verifyCertificateWithParams:(NSMutableDictionary *)params
  {
@@ -2046,15 +2038,15 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  
  	CGFloat maxDimension = MAX(size.width, size.height);
  	if (maxDimension > 4096.0f)
-@@ -584,7 +701,40 @@
+@@ -584,9 +700,42 @@
  
  	size.width = MAX(64.0f, size.width);
  	size.height = MAX(64.0f, size.height);
 +	size.width = floorf(size.width / 2.0f) * 2.0f;
 +	size.height = floorf(size.height / 2.0f) * 2.0f;
  	return size;
-+}
-+
+ }
+ 
 +- (BOOL)automaticallyMatchesViewport
 +{
 +	ConnectionParams *parameters = [_session params];
@@ -2084,15 +2076,15 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
 +
 +	_last_requested_remote_size = requestedSize;
 +	[_session requestDesktopSize:requestedSize];
- }
- 
- #pragma mark - Keyboard Toolbar Handlers
-@@ -700,6 +850,15 @@
- 			_requesting_advanced_keyboard = YES;
- 		[self toggleKeyboard:nil];
- 	}
 +}
 +
+ #pragma mark - Keyboard Toolbar Handlers
+ 
+ - (void)showAdvancedKeyboardAnimated
+@@ -702,6 +851,15 @@
+ 	}
+ }
+ 
 +- (IBAction)matchIPadResolution:(id)sender
 +{
 +	(void)sender;
@@ -2100,10 +2092,12 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
 +	_last_requested_remote_size = CGSizeZero;
 +	[self fitSessionViewToViewport];
 +	[self queueViewportResize];
- }
- 
++}
++
  - (IBAction)disconnectSession:(id)sender
-@@ -902,20 +1061,42 @@
+ {
+ 	[_session disconnect];
+@@ -902,20 +1060,30 @@
  
  - (void)handleScroll:(UIPanGestureRecognizer *)gesture
  {
@@ -2111,18 +2105,6 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
 -	if (fabs(delta) < GetScrollGestureDelta())
 +	if (!_session_connected) return;
 +	CGPoint delta = [gesture translationInView:_session_view];
-+	if (gesture.allowedScrollTypesMask == UIScrollTypeMaskContinuous)
-+	{
-+		if (!_workspaceGesture) _workspaceGesture = [[OrbisIPadWorkspaceGesture alloc] init];
-+		OrbisIPadWorkspaceAction action = [_workspaceGesture updateWithTranslation:delta
-+		    state:gesture.state modifiers:gesture.modifierFlags
-+		    enabled:[[_session params] boolForKey:@"workspace_gestures"]];
-+		if (action != OrbisIPadWorkspaceScroll)
-+		{
-+			if (action > OrbisIPadWorkspacePending) [_session_view performWorkspaceGesture:action];
-+			return;
-+		}
-+	}
 +	if (gesture.state == UIGestureRecognizerStateCancelled || gesture.state == UIGestureRecognizerStateFailed)
  		return;
 -
@@ -2154,7 +2136,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  }
  
  - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
-@@ -998,35 +1179,9 @@
+@@ -998,35 +1166,9 @@
  
  - (void)showSessionToolbar:(BOOL)show
  {
@@ -2193,7 +2175,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  }
  
  - (UIToolbar *)keyboardToolbar
-@@ -1143,7 +1298,11 @@
+@@ -1143,7 +1285,11 @@
  	UIPanGestureRecognizer *scrollRecognizer =
  	    [[[UIPanGestureRecognizer alloc] initWithTarget:self
  	                                             action:@selector(handleScroll:)] autorelease];
@@ -2206,7 +2188,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  	[scrollRecognizer setDelegate:self];
  
  	// double long press gesture recognizer
-@@ -1163,6 +1322,8 @@
+@@ -1163,6 +1309,8 @@
  
  	// Reserve one finger for the mouse; two fingers still pan/zoom the viewport.
  	[[_session_scrollview panGestureRecognizer] setMinimumNumberOfTouches:2];
@@ -2215,7 +2197,7 @@ diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Cont
  
  	// add gestures to scroll view
  	[_session_scrollview addGestureRecognizer:singleTapRecognizer];
-@@ -1171,6 +1332,7 @@
+@@ -1171,6 +1319,7 @@
  	[_session_scrollview addGestureRecognizer:hoverRecognizer];
  	[_session_scrollview addGestureRecognizer:secondaryTapRecognizer];
  	[_session_scrollview addGestureRecognizer:scrollRecognizer];
@@ -2753,13 +2735,14 @@ index febf4472a..76957170e 100644
  }
  
 diff --git a/client/iOS/Views/RDPSessionView.h b/client/iOS/Views/RDPSessionView.h
+index 722bccc..41b32e1 100644
 --- a/client/iOS/Views/RDPSessionView.h
 +++ b/client/iOS/Views/RDPSessionView.h
 @@ -10,19 +10,29 @@
  
  #import <UIKit/UIKit.h>
  #import "RDPSession.h"
-+#import "OrbisIPadWorkspaceGesture.h"
++#import "OrbisIPadWorkspaceShortcuts.h"
  
  @class RDPCursor;
 +@class RDPSessionView;
@@ -2778,7 +2761,7 @@ diff --git a/client/iOS/Views/RDPSessionView.h b/client/iOS/Views/RDPSessionView
 +@property(nonatomic, assign) id<RDPSessionViewPresentationDelegate> presentationDelegate;
  
  - (void)setSession:(RDPSession *)session;
-+- (void)performWorkspaceGesture:(OrbisIPadWorkspaceAction)action;
++- (void)performWorkspaceAction:(OrbisIPadWorkspaceAction)action;
  - (void)prepareForBitmapContextChange;
  - (void)setNeedsDisplayInRemoteRect:(CGRect)rect;
 +- (void)setNeedsDisplayForRemoteFrameInRect:(CGRect)rect;
@@ -2786,6 +2769,7 @@ diff --git a/client/iOS/Views/RDPSessionView.h b/client/iOS/Views/RDPSessionView
  - (void)setRemoteCursorPosition:(CGPoint)position;
  - (void)showRemoteCursor;
 diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView.m
+index c7e2f41..25a00d9 100644
 --- a/client/iOS/Views/RDPSessionView.m
 +++ b/client/iOS/Views/RDPSessionView.m
 @@ -9,6 +9,7 @@
@@ -2863,19 +2847,19 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
  	[_desktopTexture release];
  	_desktopTexture = nil;
  }
-@@ -275,6 +299,12 @@
- 	_pendingDirtyRect = _hasPendingDirtyRect ? CGRectUnion(_pendingDirtyRect, rect) : rect;
- 	_hasPendingDirtyRect = YES;
+@@ -277,6 +301,12 @@
  	[self scheduleRender];
-+}
-+
+ }
+ 
 +- (void)setNeedsDisplayForRemoteFrameInRect:(CGRect)rect
 +{
 +	_hasReceivedRemoteFrame = YES;
 +	[self setNeedsDisplayInRemoteRect:rect];
- }
- 
++}
++
  - (void)scheduleRender
+ {
+ 	if ([self window] && _displayLink && _hasPendingDirtyRect)
 @@ -360,6 +390,23 @@
  	[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
  	[encoder endEncoding];
@@ -2900,7 +2884,7 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
  	[commandBuffer commit];
  
  	if (!_hasPendingDirtyRect)
-@@ -454,6 +501,64 @@
+@@ -454,6 +501,61 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	}
  }
  
@@ -2929,24 +2913,22 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
 +	}
 +}
 +
-+- (void)performWorkspaceGesture:(OrbisIPadWorkspaceAction)action
++- (void)performWorkspaceAction:(OrbisIPadWorkspaceAction)action
 +{
 +	BOOL activities = action == OrbisIPadWorkspaceActivities;
-+	BOOL previous = action == OrbisIPadWorkspacePrevious || action == OrbisIPadWorkspaceMovePrevious;
-+	BOOL move = action == OrbisIPadWorkspaceMovePrevious || action == OrbisIPadWorkspaceMoveNext;
-+	if (!activities && !previous && action != OrbisIPadWorkspaceNext && action != OrbisIPadWorkspaceMoveNext)
++	BOOL previous = action == OrbisIPadWorkspacePrevious;
++	if (!activities && !previous && action != OrbisIPadWorkspaceNext)
 +		return;
 +	RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
 +	if (_commandControlDown || keyboard.ctrlPressed || keyboard.winPressed) return;
 +	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"workspace.action" values:@{ @"action" : @(action) }];
-+	// Local Alt selects the gesture, but must not modify the remote Super shortcut.
++	// Local Alt and Shift select the action without modifying the remote Super shortcut.
 +	BOOL restoreAlt = _remoteOptionDown || keyboard.altPressed;
 +	NSArray *shifts = [_remoteShiftKeys allObjects];
 +	if (restoreAlt) [keyboard sendVirtualKey:VK_LMENU up:YES];
 +	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:YES];
 +	if (keyboard.shiftPressed && ![shifts containsObject:@(VK_LSHIFT)])
 +		[keyboard sendVirtualKey:VK_LSHIFT up:YES];
-+	if (move) [keyboard sendVirtualKey:VK_LSHIFT up:NO];
 +	[keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:NO];
 +	if (!activities)
 +	{
@@ -2955,7 +2937,6 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
 +		[keyboard sendVirtualKey:key up:YES];
 +	}
 +	[keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:YES];
-+	if (move) [keyboard sendVirtualKey:VK_LSHIFT up:YES];
 +	if (keyboard.shiftPressed && ![shifts containsObject:@(VK_LSHIFT)])
 +		[keyboard sendVirtualKey:VK_LSHIFT up:NO];
 +	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:NO];
@@ -2965,7 +2946,7 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
  - (BOOL)canBecomeFirstResponder
  {
  	return _hardwareKeyboardActive;
-@@ -467,7 +572,146 @@
+@@ -467,7 +569,160 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		if (key == nil)
  			continue;
  
@@ -3052,18 +3033,32 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
 +			[_optionConsumedKeys removeObject:physicalKey];
 +			continue;
 +		}
++		BOOL workspaceArrow = usage == UIKeyboardHIDUsageKeyboardLeftArrow ||
++		    usage == UIKeyboardHIDUsageKeyboardRightArrow || usage == UIKeyboardHIDUsageKeyboardUpArrow;
++		// Consume repeats even when the modifiers are released before the arrow.
++		if (!up && workspaceArrow && [_optionConsumedKeys containsObject:physicalKey]) continue;
 +		if (!up && (key.modifierFlags & UIKeyModifierAlternate) &&
 +		    !(key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierControl)))
 +		{
++			BOOL shortcutsEnabled = [[_session params] boolForKey:@"workspace_shortcuts"];
++			if (shortcutsEnabled && workspaceArrow && (key.modifierFlags & UIKeyModifierShift))
++			{
++				OrbisIPadWorkspaceAction action = usage == UIKeyboardHIDUsageKeyboardUpArrow ?
++				    OrbisIPadWorkspaceActivities : (usage == UIKeyboardHIDUsageKeyboardLeftArrow ?
++				    OrbisIPadWorkspacePrevious : OrbisIPadWorkspaceNext);
++				[self performWorkspaceAction:action];
++				[_optionConsumedKeys addObject:physicalKey];
++				continue;
++			}
 +			NSString *unmodified = key.charactersIgnoringModifiers;
 +			BOOL activitiesKey = (usage == UIKeyboardHIDUsageKeyboardGraveAccentAndTilde &&
 +			    ![unmodified isEqualToString:@"<"] && ![unmodified isEqualToString:@">"]) ||
 +			    (usage == UIKeyboardHIDUsageKeyboardNonUSBackslash && unmodified.length == 1 &&
 +			     [unmodified rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"ºª§±"]].location != NSNotFound);
-+			if (activitiesKey && !(key.modifierFlags & UIKeyModifierShift))
++			if (shortcutsEnabled && activitiesKey && !(key.modifierFlags & UIKeyModifierShift))
 +			{
 +				if (![_optionConsumedKeys containsObject:physicalKey])
-+					[self performWorkspaceGesture:OrbisIPadWorkspaceActivities];
++					[self performWorkspaceAction:OrbisIPadWorkspaceActivities];
 +				[_optionConsumedKeys addObject:physicalKey];
 +				continue;
 +			}
@@ -3113,7 +3108,7 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
  		if (vk != 0)
  			[[RDPKeyboard getSharedRDPKeyboard] sendVirtualKey:vk up:up];
  	}
-@@ -481,6 +713,12 @@
+@@ -481,6 +736,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		[super pressesBegan:presses withEvent:event];
  }
  
@@ -3126,7 +3121,7 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
  - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
  {
  	if (_hardwareKeyboardActive)
-@@ -491,6 +729,7 @@
+@@ -491,6 +752,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  
  - (void)dealloc
  {
@@ -3134,7 +3129,7 @@ diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView
  	[_displayLinkTarget clearView];
  	[_displayLink invalidate];
  	[_displayLink release];
-@@ -500,6 +739,10 @@
+@@ -500,6 +762,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	[_commandQueue release];
  	[_metalDevice release];
  	[_cursorImageView release];

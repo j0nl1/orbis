@@ -5,7 +5,7 @@
 ### Added
 - Alt (Option) + the physical key left of 1 toggles remote GNOME Activities on iPad hardware keyboards, without repeated toggles while holding the key.
 - Local macOS and iPad diagnostics with session events, numeric error codes, available crash and hang call stacks, and a JSON export. Reports remain on the device until exported.
-- iPad trackpad workspace gestures: swipe sideways with two fingers to switch workspaces, Alt + swipe up to open Activities, and Alt + Shift + swipe sideways to move the active window. Settings can restore normal horizontal scrolling.
+- iPad keyboard workspace shortcuts: Alt + Shift + Left/Right switches workspaces, and Alt + Shift + Up toggles Activities. Settings can disable the shortcuts. Trackpad swipes always scroll the remote desktop.
 - iPad remote sessions keep the display awake while connecting or connected in the foreground, restoring automatic screen lock after disconnecting, a failed connection, or leaving the app.
 - Global iPad display settings with automatic and custom resolutions, plus suggested resolutions matching the current iPad window’s proportions. Manual resolutions remain fixed across rotation and window resizing.
 - Optional macOS fullscreen input capture forwards physical keys, system shortcuts, mouse buttons, and input-generating macros to the active remote desktop. Control + Option + Command + Esc releases capture.

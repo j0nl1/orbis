@@ -75,9 +75,9 @@
 	[self updateResolutionPresets];
 	[self automaticChanged:nil];
 	_workspaceSwitch = [[UISwitch alloc] init];
-	_workspaceSwitch.on = _settings.workspaceGesturesEnabled;
-	_workspaceSwitch.accessibilityIdentifier = @"trackpad-workspace-gestures";
-	_workspaceCell = [[self cellWithTitle:@"Workspace gestures" control:_workspaceSwitch] retain];
+	_workspaceSwitch.on = _settings.workspaceShortcutsEnabled;
+	_workspaceSwitch.accessibilityIdentifier = @"keyboard-workspace-shortcuts";
+	_workspaceCell = [[self cellWithTitle:@"Workspace shortcuts" control:_workspaceSwitch] retain];
 }
 
 - (void)viewDidLayoutSubviews
@@ -142,7 +142,7 @@
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-	(void)tableView; return section == 0 ? @"Remote resolution" : (section == 1 ? @"Trackpad" : @"Diagnostics");
+	(void)tableView; return section == 0 ? @"Remote resolution" : (section == 1 ? @"Keyboard" : @"Diagnostics");
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
@@ -150,7 +150,7 @@
 	if (section == 2)
 		return @"Export recent session events, error codes, and available crash or hang reports. Diagnostics stay on this device until you share them.";
 	if (section == 1)
-		return @"Swipe two fingers left or right to switch workspaces. Hold Alt (Option) and swipe up for Activities, or Alt + Shift and swipe sideways to move the active window. Alt + the key left of 1 also opens Activities. Uses GNOME keyboard shortcuts. Turn off to restore horizontal scrolling. Applies to new connections.";
+		return @"Alt (Option) + Shift + Left or Right switches workspaces. Alt + Shift + Up toggles Activities. Alt + the key left of 1 also toggles Activities. Uses GNOME keyboard shortcuts. Trackpad swipes scroll normally. Applies to new connections.";
 	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed.";
 }
 
@@ -210,7 +210,7 @@
 	[self.view endEditing:YES];
 	_settings.width = _automaticSwitch.on ? 0 : [self dimensionFromField:_widthField];
 	_settings.height = _automaticSwitch.on ? 0 : [self dimensionFromField:_heightField];
-	_settings.workspaceGesturesEnabled = _workspaceSwitch.on;
+	_settings.workspaceShortcutsEnabled = _workspaceSwitch.on;
 	NSError *error = nil;
 	if ([_settings saveWithError:&error])
 		return [self dismissViewControllerAnimated:YES completion:nil];

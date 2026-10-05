@@ -53,23 +53,20 @@ connection fails, or the app becomes inactive. Returning to an ongoing session
 keeps the display awake again. Connection availability checks do not prevent
 screen lock.
 
-Trackpad workspace gestures are enabled by default for new connections and can be
-disabled in Settings. Swipe two fingers left or right without clicking to switch
-workspaces; hold Alt (Option) and swipe up to open Activities. Alt + Shift with a
-sideways swipe moves the active window to the neighboring workspace. The adapter
-sends GNOME's Super + Page Up/Down, Super, and Super + Shift + Page Up/Down shortcuts.
-Alt (Option) + the physical key immediately left of 1 also toggles Activities
-without a gesture; key repeats trigger it only once per press.
-GNOME's dynamic workspace behavior creates an additional empty workspace when a
-window moves into the final empty workspace; Orbis does not create workspaces
-through RDP. Customized shortcuts or other Linux desktops may behave differently.
+Hardware keyboard workspace shortcuts are enabled by default for new connections
+and can be disabled in Settings. Alt (Option) + Shift + Left/Right switches
+workspaces; Alt + Shift + Up toggles Activities. Alt + the physical key immediately
+left of 1 also toggles Activities. Each shortcut triggers once per key press;
+repeats and releases stay consumed even when Alt is released before the arrow.
+The adapter sends GNOME's Super + Page Up/Down and Super shortcuts, temporarily
+releasing and restoring held Alt and physical Shift keys. Customized GNOME
+shortcuts or other Linux desktops may behave differently.
 
-Each continuous swipe selects one direction and triggers at most one action.
-Ordinary vertical scrolling and discrete mouse wheels remain remote scrolling;
-disabling the option restores horizontal trackpad scrolling. Alt and physical
-Shift states are preserved around the generated shortcut. Three-finger trackpad
-system gestures remain handled by iPadOS. Tests cover synthetic gesture sequences
-and resulting RDP key events; physical trackpad behavior needs device verification.
+Trackpad swipes and discrete mouse wheels always scroll the remote desktop,
+including horizontal scrolling. Workspace swipe recognition and its preferences
+have been removed. Three-finger system gestures remain handled by iPadOS.
+Tests cover synthetic keyboard input, modifier restoration, and wheel events;
+physical keyboard behavior needs device verification.
 
 Settings → Diagnostics → Export Diagnostics shares the local JSON history, with
 recent session events, numeric error codes, and available MetricKit crash or hang
