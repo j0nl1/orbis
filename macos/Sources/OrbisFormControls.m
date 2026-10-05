@@ -52,4 +52,3 @@ void OrbisConfigureFormField(NSTextField *field, NSString *identifier)
 	[field setFocusRingType:NSFocusRingTypeExterior];
 	[field setAccessibilityIdentifier:identifier];
 }
-
