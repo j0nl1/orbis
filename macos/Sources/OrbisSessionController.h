@@ -24,6 +24,14 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 	OrbisDisplaySettings *_displaySettings;
 	NSString *_password;
 	NSWindow *_window, *_secondaryWindow, *_closingSecondaryWindow;
+	uint32_t _primaryMacScreenID, _secondaryMacScreenID;
+	NSMutableArray *_pendingFullScreenRecoveries;
+	NSWindow *_fullScreenRecoveryWindow;
+	uint32_t _fullScreenRecoveryScreenID;
+	NSUInteger _fullScreenRecoveryStage;
+	BOOL _displayMatchesWindow[2];
+	NSUInteger _windowResolutionDirty;
+	BOOL _pendingResolutionIsAutomatic;
 	id _secondaryView;
 	NSLock *_displayLock;
 	void *_displayChannel;
@@ -68,5 +76,7 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 - (BOOL)canChangeActiveDisplayResolution;
 - (BOOL)canSetActiveDisplayResolution:(NSSize)resolution;
 - (void)setActiveDisplayResolution:(NSSize)resolution;
+- (BOOL)activeDisplayMatchesWindow;
+- (void)setActiveDisplayMatchesWindow:(BOOL)enabled;
 
 @end

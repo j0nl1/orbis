@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Automatic remote resolution sizing in Window → Resolution, following each window's size and monitor changes.
 - A Window → Resolution menu for changing the active remote display during a session, with standard presets and Match Mac Screen.
 - macOS virtual second displays in a separate window, using the existing RDP session when the server supports Display Control.
 - Global display settings beside New connection, with initial resolutions and a draggable monitor arrangement.
@@ -12,6 +13,7 @@
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- macOS 27 fullscreen monitor transfers attempt automatic recovery while retaining the native Mission Control drag gesture.
 - Local macOS updates can reuse a configured signing identity to preserve Keychain authorization across builds.
 - Add Virtual Display is available in the macOS Session menu, without a session toolbar.
 - iPadOS connection forms group endpoint, Access token, account, and connection options, accept tunnel HTTPS URLs, and preserve saved credentials.

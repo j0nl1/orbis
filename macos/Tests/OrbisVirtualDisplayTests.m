@@ -25,10 +25,16 @@ static NSWindow *resolutionFixtureWindow;
 - (void)addVirtualDisplay:(id)sender;
 - (void)desktopDidResize:(NSNotification *)notification;
 - (void)displayChangeTimedOut:(NSTimer *)timer;
+- (void)performPendingFullScreenRecovery;
+- (void)restoreRecoveredFullScreen;
+- (NSArray *)physicalScreens;
+- (BOOL)shouldRecoverFullScreenAfterScreenChange;
+- (void)applyWindowResolutions;
 @end
 
 static NSUInteger failures;
 static UINT32 sentCount;
+static NSUInteger layoutSendCalls;
 static NSMutableArray *pointerEvents;
 BOOL OrbisRecordDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 flags, INT32 x, INT32 y)
 {
@@ -63,6 +69,7 @@ static UINT CaptureLayout(DispClientContext *channel, UINT32 count, DISPLAY_CONT
 {
     (void)channel;
     sentCount = count;
+    layoutSendCalls++;
     memcpy(sentMonitors, monitors, count * sizeof(*monitors));
     return CHANNEL_RC_OK;
 }
@@ -177,6 +184,127 @@ static void Require(BOOL value, const char *message)
 
 @end
 
+@interface OrbisRecoveryScreen : NSScreen
+@property(nonatomic) NSRect fixtureFrame;
+@property(nonatomic) uint32_t fixtureID;
+@end
+@implementation OrbisRecoveryScreen
+@synthesize fixtureFrame, fixtureID;
+- (NSRect)frame { return fixtureFrame; }
+- (NSRect)visibleFrame { return fixtureFrame; }
+- (NSDictionary *)deviceDescription { return @{ @"NSScreenNumber": @(fixtureID) }; }
+@end
+
+/* Keep AppKit's asynchronous animation at the boundary; exercise real delegate handling. */
+@interface OrbisRecoveryWindow : NSWindow
+@property(nonatomic, retain) NSScreen *fixtureScreen;
+@property(nonatomic) BOOL fixtureFullScreen;
+@property(nonatomic) NSUInteger toggleCount;
+@property(nonatomic) NSUInteger placementCount;
+@property(nonatomic) NSRect placementFrame;
+@end
+@implementation OrbisRecoveryWindow
+@synthesize fixtureScreen, fixtureFullScreen, toggleCount, placementCount, placementFrame;
+- (NSRect)frame { return fixtureScreen && placementFrame.size.width ? placementFrame : [super frame]; }
+- (NSScreen *)screen { return fixtureScreen; }
+- (NSWindowStyleMask)styleMask
+{
+    return [super styleMask] | (fixtureFullScreen ? NSWindowStyleMaskFullScreen : 0);
+}
+- (void)toggleFullScreen:(id)sender { (void)sender; toggleCount++; }
+- (NSWindowOcclusionState)occlusionState { return NSWindowOcclusionStateVisible; }
+- (BOOL)isOnActiveSpace { return YES; }
+- (void)setFrame:(NSRect)frame display:(BOOL)display
+{
+    placementCount++;
+    placementFrame = frame;
+    if (!fixtureScreen) [super setFrame:frame display:display];
+}
+- (void)dealloc { [fixtureScreen release]; [super dealloc]; }
+@end
+
+@interface OrbisRecoveryFixtureController : OrbisDisplayFixtureController
+@property(nonatomic, retain) NSArray *fixtureScreens;
+- (void)useRecoveryWindow:(OrbisRecoveryWindow *)window secondary:(BOOL)secondary;
+@end
+@implementation OrbisRecoveryFixtureController
+@synthesize fixtureScreens;
+- (NSArray *)physicalScreens { return fixtureScreens; }
+- (BOOL)shouldRecoverFullScreenAfterScreenChange { return YES; }
+- (void)useRecoveryWindow:(OrbisRecoveryWindow *)window secondary:(BOOL)secondary
+{
+    if (secondary)
+    {
+        [_secondaryWindow release]; _secondaryWindow = [window retain];
+        OrbisDisplayLayoutMake(1280, 800, 1024, 768, OrbisMonitorRight, true, &_displayLayout);
+    }
+    else { [_window release]; _window = [window retain]; }
+}
+- (void)dealloc { [fixtureScreens release]; [super dealloc]; }
+@end
+
+static void CheckFullScreenRecovery(void)
+{
+    Require([OrbisSessionController instancesRespondToSelector:@selector(performPendingFullScreenRecovery)],
+        "A full-screen monitor transfer must have automatic recovery without a menu action");
+    if (![OrbisSessionController instancesRespondToSelector:@selector(performPendingFullScreenRecovery)]) return;
+    for (NSUInteger scenario = 0; scenario < 5; scenario++)
+    {
+        OrbisRecoveryScreen *source = [[[OrbisRecoveryScreen alloc] init] autorelease];
+        source.fixtureID = 1; source.fixtureFrame = NSMakeRect(0, 0, 1920, 1080);
+        OrbisRecoveryScreen *target = [[[OrbisRecoveryScreen alloc] init] autorelease];
+        target.fixtureID = 2; target.fixtureFrame = NSMakeRect(200, 1080, 2560, 1440);
+        OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease]; profile.name = @"Recovery fixture";
+        OrbisRecoveryFixtureController *controller = [[OrbisRecoveryFixtureController alloc]
+            initWithProfile:profile password:nil transport:[[[OrbisDirectTransport alloc] init] autorelease]];
+        [controller prepareFixture]; controller.fixtureScreens = @[source, target];
+        OrbisRecoveryWindow *window = [[[OrbisRecoveryWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
+            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO] autorelease];
+        [window setReleasedWhenClosed:NO]; window.fixtureScreen = source; window.fixtureFullScreen = YES;
+        [controller useRecoveryWindow:window secondary:scenario == 1];
+        NSNotification *entered = [NSNotification notificationWithName:NSWindowDidEnterFullScreenNotification object:window];
+        [controller windowDidEnterFullScreen:entered];
+        [controller windowDidChangeScreen:[NSNotification notificationWithName:NSWindowDidChangeScreenNotification object:window]];
+        [controller performPendingFullScreenRecovery];
+        Require(window.toggleCount == 0, "Entering full screen or staying on the same monitor must not trigger recovery");
+        NSUInteger placements = window.placementCount;
+        window.fixtureScreen = target;
+        [controller windowDidChangeScreen:[NSNotification notificationWithName:NSWindowDidChangeScreenNotification object:window]];
+        [controller performPendingFullScreenRecovery];
+        Require(window.toggleCount == 1 && window.placementCount == placements,
+            "A physical monitor change exits full screen before repositioning the existing window");
+        [controller performPendingFullScreenRecovery];
+        Require(window.toggleCount == 1, "Duplicate screen or occlusion events must not overlap recovery transitions");
+        if (scenario == 2)
+        {
+            [controller windowDidFailToExitFullScreen:window];
+            Require(window.placementCount == placements && ![controller isStopped],
+                "A failed native exit leaves the original presentation and session intact");
+        }
+        else
+        {
+            if (scenario == 3) [controller stop];
+            window.fixtureFullScreen = NO;
+            [controller windowDidExitFullScreen:[NSNotification notificationWithName:NSWindowDidExitFullScreenNotification object:window]];
+            [controller restoreRecoveredFullScreen];
+            if (scenario == 3)
+                Require(window.toggleCount == 1 && window.placementCount == placements,
+                    "Stopping during recovery must not reopen or move the remote window");
+            else
+            {
+                Require(window.toggleCount == 2 && NSPointInRect(NSMakePoint(NSMidX(window.frame), NSMidY(window.frame)), target.frame),
+                    "Recovery re-enters native full screen on the destination monitor after exit completes");
+                if (scenario == 4) [controller windowDidFailToEnterFullScreen:window];
+                else { window.fixtureFullScreen = YES; [controller windowDidEnterFullScreen:entered]; }
+                Require(![controller isStopped] && [controller currentLayout].monitors[0].width == 1280,
+                    "Native recovery retains the remote session and resolution for either display");
+            }
+        }
+        window.fixtureFullScreen = NO;
+        [controller stop]; [controller release];
+    }
+}
+
 static void ConfirmResolution(OrbisDisplayFixtureController *controller)
 {
     int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
@@ -188,6 +316,70 @@ static void ConfirmResolution(OrbisDisplayFixtureController *controller)
     }
     [controller setPixelSize:NSMakeSize(maxX - minX, maxY - minY)];
     [controller desktopDidResize:nil];
+}
+
+static void CheckAutomaticWindowResolution(OrbisAppDelegate *delegate, NSMenu *menu)
+{
+    NSMenuItem *automatic = nil;
+    for (NSMenuItem *item in menu.itemArray)
+        if ([item.title isEqualToString:@"Automatically Match Window"]) automatic = item;
+    Require(automatic != nil, "The resolution menu must expose automatic window sizing");
+    if (!automatic) return;
+    Require(![delegate validateMenuItem:automatic], "Automatic sizing is disabled outside a connected remote window");
+    OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease]; profile.name = @"Automatic sizing fixture";
+    OrbisDisplayFixtureController *controller = [[OrbisDisplayFixtureController alloc]
+        initWithProfile:profile password:nil transport:[[[OrbisDirectTransport alloc] init] autorelease]];
+    [controller prepareFixture];
+    object_setIvar(delegate, class_getInstanceVariable([OrbisAppDelegate class], "_sessionController"), controller);
+    NSWindow *primary = [controller primaryWindow]; resolutionFixtureWindow = primary;
+    DispClientContext channel = {0}; channel.SendMonitorLayout = CaptureLayout;
+    [controller displayChannelConnected:&channel]; [controller displayControlCaps:2 area:8192ULL * 8192 * 2];
+    [controller setActiveDisplayMatchesWindow:YES];
+    [primary setContentSize:NSMakeSize(1401, 901)];
+    NSNotification *resized = [NSNotification notificationWithName:NSWindowDidResizeNotification object:primary];
+    layoutSendCalls = 0;
+    [controller windowDidResize:resized]; [controller applyWindowResolutions];
+    Require(layoutSendCalls == 1 && sentMonitors[0].Width == 1400 && sentMonitors[0].Height == 901,
+        "Automatic sizing uses final content bounds in points and rounds widths to even pixels");
+    [primary setContentSize:NSMakeSize(1600, 1000)];
+    [controller windowDidResize:resized]; [controller applyWindowResolutions];
+    Require(layoutSendCalls == 1, "Resizing during a pending server response must not overlap display requests");
+    ConfirmResolution(controller); [controller applyWindowResolutions];
+    Require(layoutSendCalls == 2 && sentMonitors[0].Width == 1600 && sentMonitors[0].Height == 1000,
+        "A pending automatic resize keeps the newest window size for the next confirmation");
+    ConfirmResolution(controller);
+    Require([controller activeDisplayMatchesWindow], "Automatic confirmations must retain automatic mode");
+    [controller setActiveDisplayResolution:NSMakeSize(1600, 1000)];
+    [primary setContentSize:NSMakeSize(1800, 1100)];
+    [controller windowDidResize:resized]; [controller applyWindowResolutions];
+    Require(![controller activeDisplayMatchesWindow] && layoutSendCalls == 2,
+        "Choosing even the current fixed preset stops automatic resizing without another server request");
+    [controller addVirtualDisplay:nil]; ConfirmResolution(controller);
+    NSWindow *second = [controller secondWindow]; resolutionFixtureWindow = second;
+    [controller setActiveDisplayMatchesWindow:YES];
+    [second setContentSize:NSMakeSize(1001, 701)];
+    resolutionFixtureWindow = primary;
+    [controller windowDidResize:[NSNotification notificationWithName:NSWindowDidResizeNotification object:second]];
+    [controller applyWindowResolutions];
+    Require(sentCount == 2 && sentMonitors[0].Width == 1600 && sentMonitors[0].Height == 1000 &&
+        sentMonitors[1].Width == 1000 && sentMonitors[1].Height == 701,
+        "An unfocused secondary window resizes only its own remote monitor, preserving the primary");
+    ConfirmResolution(controller); resolutionFixtureWindow = second;
+    Require([delegate validateMenuItem:automatic] && automatic.state == NSControlStateValueOn,
+        "The automatic mode checkmark follows the focused display");
+    [NSApp sendAction:automatic.action to:automatic.target from:automatic];
+    Require(![controller activeDisplayMatchesWindow], "The real menu action can disable automatic sizing for one display");
+    [controller setActiveDisplayMatchesWindow:YES];
+    [controller displayControlCaps:2 area:1];
+    [second setContentSize:NSMakeSize(1200, 800)];
+    NSUInteger priorRequests = layoutSendCalls;
+    [controller windowDidResize:[NSNotification notificationWithName:NSWindowDidResizeNotification object:second]];
+    [controller applyWindowResolutions];
+    Require(layoutSendCalls == priorRequests && controller.errorCount == 0,
+        "Automatic requests respect the server's advertised area without repeated error dialogs");
+    resolutionFixtureWindow = nil; [controller stop];
+    object_setIvar(delegate, class_getInstanceVariable([OrbisAppDelegate class], "_sessionController"), nil);
+    [controller release];
 }
 
 static void CheckResolutionMenu(OrbisAppDelegate *delegate, NSMenu *menu)
@@ -366,6 +558,8 @@ int main(void)
             [controller release]; [profile release];
         }
         CheckResolutionMenu(delegate, resolutionMenu);
+        CheckFullScreenRecovery();
+        CheckAutomaticWindowResolution(delegate, resolutionMenu);
         [delegate release]; [pointerEvents release];
         if (originalSettings) [[NSUserDefaults standardUserDefaults] setObject:originalSettings forKey:@"OrbisDisplaySettings.v1"];
         else [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OrbisDisplaySettings.v1"];

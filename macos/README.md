@@ -66,3 +66,19 @@ only after the server restarts its graphics pipeline or confirms a desktop resiz
 a timeout requests the previous layout and leaves the session open. See
 [Microsoft's Display Control overview](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/bdc90b21-4b14-43bc-9c03-b7fecbfc6a1f)
 for the server response sequence.
+
+**Window → Resolution → Automatically Match Window** keeps the focused remote
+display at its window's content size, including native fullscreen on another Mac
+monitor. Automatic initial sizing enables this mode when a session starts.
+Choosing a fixed resolution disables it for that display. Each remote display
+has its own mode. Resize events are coalesced after the drag ends, and a size
+change received while the server is responding is applied after confirmation.
+Requests respect the same server limits as manual changes and retain the other
+remote display's resolution and arrangement.
+
+On macOS 27, dragging a fullscreen Space between physical monitors can leave the
+source desktop black in Mission Control. Orbis attempts automatic recovery by
+recreating the affected window's native fullscreen presentation after the window
+is visible on its destination. The transfer still uses the native drag gesture;
+recovery can add a brief fullscreen animation. This workaround needs validation
+on the affected Mac and does not change Mission Control or system preferences.

@@ -24,6 +24,8 @@
 - (BOOL)canChangeActiveDisplayResolution { return NO; }
 - (BOOL)canSetActiveDisplayResolution:(NSSize)resolution { (void)resolution; return NO; }
 - (void)setActiveDisplayResolution:(NSSize)resolution { (void)resolution; }
+- (BOOL)activeDisplayMatchesWindow { return NO; }
+- (void)setActiveDisplayMatchesWindow:(BOOL)enabled { (void)enabled; }
 @end
 
 static void Require(BOOL condition, const char *message)

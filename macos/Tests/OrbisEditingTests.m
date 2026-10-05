@@ -36,6 +36,8 @@ static NSUInteger failures;
 - (BOOL)canChangeActiveDisplayResolution { return NO; }
 - (BOOL)canSetActiveDisplayResolution:(NSSize)resolution { (void)resolution; return NO; }
 - (void)setActiveDisplayResolution:(NSSize)resolution { (void)resolution; }
+- (BOOL)activeDisplayMatchesWindow { return NO; }
+- (void)setActiveDisplayMatchesWindow:(BOOL)enabled { (void)enabled; }
 @end
 
 @interface OrbisAppDelegate (EditingTests)

@@ -164,6 +164,9 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
         [item setTarget:self];
     }
     [resolutions addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *automatic = [resolutions addItemWithTitle:@"Automatically Match Window"
+        action:@selector(toggleAutomaticResolution:) keyEquivalent:@""];
+    [automatic setTarget:self];
     NSMenuItem *match = [resolutions addItemWithTitle:@"Match Mac Screen" action:@selector(matchScreenResolution:)
         keyEquivalent:@""];
     [match setTarget:self];
@@ -201,6 +204,12 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
     [_sessionController setActiveDisplayResolution:[_sessionController activeScreenResolution]];
 }
 
+- (void)toggleAutomaticResolution:(id)sender
+{
+    (void)sender;
+    [_sessionController setActiveDisplayMatchesWindow:![_sessionController activeDisplayMatchesWindow]];
+}
+
 - (void)disconnectSession:(id)sender
 {
 	(void)sender;
@@ -217,6 +226,11 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem
 {
+    if ([menuItem action] == @selector(toggleAutomaticResolution:))
+    {
+        [menuItem setState:[_sessionController activeDisplayMatchesWindow] ? NSControlStateValueOn : NSControlStateValueOff];
+        return [_sessionController canChangeActiveDisplayResolution];
+    }
     if ([menuItem action] == @selector(changeDisplayResolution:))
     {
         NSSize resolution = [[menuItem representedObject] sizeValue];
