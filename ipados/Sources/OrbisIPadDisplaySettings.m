@@ -2,6 +2,7 @@
 #import "OrbisIPadDisplaySettings.h"
 #import "ConnectionParams.h"
 #include "OrbisDisplayLayout.h"
+#include <math.h>
 
 static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.v1";
 
@@ -10,19 +11,31 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 	NSUserDefaults *_defaults;
 }
 
-+ (NSArray<NSNumber *> *)supportedScales
++ (NSArray<NSArray<NSNumber *> *> *)resolutionsForPixelWidth:(NSUInteger)width height:(NSUInteger)height
 {
-	return @[ @100, @125, @150, @175, @200 ];
+	if (!width || !height) return @[];
+	// Keep the window aspect ratio; round to even pixels for the RDP display protocol.
+	double limit = MIN(1.0, 8192.0 / MAX(width, height));
+	NSMutableArray *resolutions = [NSMutableArray array];
+	for (NSNumber *fraction in @[ @1.0, @0.85, @0.75, @0.60, @0.50 ])
+	{
+		double factor = limit * fraction.doubleValue;
+		NSUInteger w = (NSUInteger)(round(width * factor / 2.0) * 2.0);
+		NSUInteger h = (NSUInteger)(round(height * factor / 2.0) * 2.0);
+		NSArray *size = @[ @(w), @(h) ];
+		if (OrbisDisplayResolutionIsValid((uint32_t)w, (uint32_t)h) && ![resolutions containsObject:size])
+			[resolutions addObject:size];
+	}
+	return resolutions;
 }
 
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults
 {
 	if (!(self = [super init])) return nil;
 	_defaults = [defaults retain];
-	_desktopScale = 100;
 	id saved = [defaults objectForKey:OrbisIPadDisplaySettingsKey];
 	if (![saved isKindOfClass:[NSDictionary class]]) return self;
-	id width = saved[@"width"], height = saved[@"height"], scale = saved[@"desktopScale"];
+	id width = saved[@"width"], height = saved[@"height"];
 	if ([width isKindOfClass:[NSNumber class]] && [height isKindOfClass:[NSNumber class]] &&
 	    [width doubleValue] == [width unsignedIntegerValue] &&
 	    [height doubleValue] == [height unsignedIntegerValue] &&
@@ -32,7 +45,6 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 		_width = [width unsignedIntegerValue];
 		_height = [height unsignedIntegerValue];
 	}
-	if ([[self.class supportedScales] containsObject:scale]) _desktopScale = [scale unsignedIntegerValue];
 	return self;
 }
 
@@ -44,16 +56,14 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 	if (!self.automaticResolution && (_width > 8192 || _height > 8192 ||
 	    !OrbisDisplayResolutionIsValid((uint32_t)_width, (uint32_t)_height)))
 		message = @"Enter a width and height between 200 and 8192 pixels. Width must be even.";
-	else if (![[self.class supportedScales] containsObject:@(_desktopScale)])
-		message = @"Choose one of the supported desktop scales.";
 	if (message)
 	{
 		if (error) *error = [NSError errorWithDomain:@"com.dnexus.orbis.display" code:1
 		    userInfo:@{ NSLocalizedDescriptionKey : message }];
 		return NO;
 	}
-	[_defaults setObject:@{ @"width" : @(_width), @"height" : @(_height),
-	    @"desktopScale" : @(_desktopScale) } forKey:OrbisIPadDisplaySettingsKey];
+	[_defaults setObject:@{ @"width" : @(_width), @"height" : @(_height) }
+	    forKey:OrbisIPadDisplaySettingsKey];
 	return YES;
 }
 
@@ -61,7 +71,6 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 {
 	[parameters setInt:(int)_width forKey:@"width"];
 	[parameters setInt:(int)_height forKey:@"height"];
-	[parameters setInt:(int)_desktopScale forKey:@"desktop_scale_factor"];
 	[parameters setBool:self.automaticResolution forKey:@"match_window_resolution"];
 }
 

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #import "OrbisIPadDisplaySettingsController.h"
 #import "OrbisIPadDisplaySettings.h"
+#include <math.h>
 
 @implementation OrbisIPadDisplaySettingsController
 {
@@ -9,9 +10,8 @@
 	UITextField *_widthField;
 	UITextField *_heightField;
 	UIButton *_presetButton;
-	UIButton *_scaleButton;
 	NSArray *_resolutionCells;
-	UITableViewCell *_scaleCell;
+	CGSize _presetPixelSize;
 }
 
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults
@@ -58,58 +58,55 @@
 	_automaticSwitch.on = _settings.automaticResolution;
 	_automaticSwitch.accessibilityIdentifier = @"display-automatic-resolution";
 	[_automaticSwitch addTarget:self action:@selector(automaticChanged:) forControlEvents:UIControlEventValueChanged];
-	_widthField = [[self dimensionField:_settings.automaticResolution ? 1920 : _settings.width identifier:@"display-width"] retain];
-	_heightField = [[self dimensionField:_settings.automaticResolution ? 1080 : _settings.height identifier:@"display-height"] retain];
+	_widthField = [[self dimensionField:_settings.width identifier:@"display-width"] retain];
+	_heightField = [[self dimensionField:_settings.height identifier:@"display-height"] retain];
 	_presetButton = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
 	_presetButton.frame = CGRectMake(0, 0, 160, 44);
 	[_presetButton setTitle:@"Choose resolution" forState:UIControlStateNormal];
+	_presetButton.showsMenuAsPrimaryAction = YES;
+	_resolutionCells = [[NSArray alloc] initWithObjects:
+	    [self cellWithTitle:@"Automatically match window" control:_automaticSwitch],
+	    [self cellWithTitle:@"Suggested" control:_presetButton],
+	    [self cellWithTitle:@"Width" control:_widthField],
+	    [self cellWithTitle:@"Height" control:_heightField], nil];
+	[self updateResolutionPresets];
+	[self automaticChanged:nil];
+}
+
+- (void)viewDidLayoutSubviews
+{
+	[super viewDidLayoutSubviews];
+	[self updateResolutionPresets];
+}
+
+- (void)updateResolutionPresets
+{
+	UIWindow *window = self.view.window;
+	UIScreen *screen = window ? window.screen : [UIScreen mainScreen];
+	CGSize bounds = window ? window.bounds.size : screen.bounds.size;
+	CGFloat scale = screen.nativeScale;
+	CGSize pixels = CGSizeMake(round(bounds.width * scale), round(bounds.height * scale));
+	if (CGSizeEqualToSize(pixels, _presetPixelSize)) return;
+	_presetPixelSize = pixels;
+	NSArray *sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:(NSUInteger)pixels.width
+	    height:(NSUInteger)pixels.height];
+	if (_automaticSwitch.on && sizes.count)
+	{
+		_widthField.text = [sizes[0][0] stringValue];
+		_heightField.text = [sizes[0][1] stringValue];
+	}
 	__block OrbisIPadDisplaySettingsController *controller = self;
-	NSMutableArray *presets = [NSMutableArray array];
-	for (NSArray *size in @[ @[ @1280, @720 ], @[ @1920, @1080 ], @[ @2560, @1440 ],
-	    @[ @2732, @2048 ], @[ @3840, @2160 ] ])
+	NSMutableArray *actions = [NSMutableArray array];
+	for (NSArray *size in sizes)
 	{
 		NSString *title = [NSString stringWithFormat:@"%@ × %@", size[0], size[1]];
-		[presets addObject:[UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *action) {
+		[actions addObject:[UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *action) {
 			(void)action;
 			controller->_widthField.text = [size[0] stringValue];
 			controller->_heightField.text = [size[1] stringValue];
 		}]];
 	}
-	_presetButton.menu = [UIMenu menuWithChildren:presets];
-	_presetButton.showsMenuAsPrimaryAction = YES;
-	_resolutionCells = [[NSArray alloc] initWithObjects:
-	    [self cellWithTitle:@"Automatically match window" control:_automaticSwitch],
-	    [self cellWithTitle:@"Presets" control:_presetButton],
-	    [self cellWithTitle:@"Width" control:_widthField],
-	    [self cellWithTitle:@"Height" control:_heightField], nil];
-	_scaleButton = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
-	_scaleButton.frame = CGRectMake(0, 0, 100, 44);
-	_scaleButton.accessibilityIdentifier = @"display-desktop-scale";
-	_scaleButton.accessibilityLabel = @"Desktop scale";
-	_scaleButton.showsMenuAsPrimaryAction = YES;
-	_scaleCell = [[self cellWithTitle:@"Desktop scale" control:_scaleButton] retain];
-	[self updateScaleMenu];
-	[self automaticChanged:nil];
-}
-
-- (void)updateScaleMenu
-{
-	[_scaleButton setTitle:[NSString stringWithFormat:@"%lu%%", (unsigned long)_settings.desktopScale]
-	    forState:UIControlStateNormal];
-	__block OrbisIPadDisplaySettingsController *controller = self;
-	NSMutableArray *actions = [NSMutableArray array];
-	for (NSNumber *scale in [OrbisIPadDisplaySettings supportedScales])
-	{
-		UIAction *action = [UIAction actionWithTitle:[NSString stringWithFormat:@"%@%%", scale]
-		    image:nil identifier:nil handler:^(UIAction *selected) {
-			(void)selected;
-			controller->_settings.desktopScale = scale.unsignedIntegerValue;
-			[controller updateScaleMenu];
-		}];
-		action.state = scale.unsignedIntegerValue == _settings.desktopScale ? UIMenuElementStateOn : UIMenuElementStateOff;
-		[actions addObject:action];
-	}
-	_scaleButton.menu = [UIMenu menuWithChildren:actions];
+	_presetButton.menu = [UIMenu menuWithChildren:actions];
 }
 
 - (void)automaticChanged:(id)sender
@@ -120,24 +117,24 @@
 	    [UIColor tertiaryLabelColor] : [UIColor labelColor];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 1; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-	(void)tableView; return section == 0 ? _resolutionCells.count : 1;
+	(void)tableView; (void)section; return _resolutionCells.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path
 {
-	(void)tableView; return path.section == 0 ? _resolutionCells[path.row] : _scaleCell;
+	(void)tableView; return _resolutionCells[path.row];
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-	(void)tableView; return section == 0 ? @"Remote resolution" : @"Linux display scale";
+	(void)tableView; (void)section; return @"Remote resolution";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
 	(void)tableView;
-	return section == 0 ? @"Applies to new connections to any computer. Automatic follows rotation and window resizing. A manual resolution stays fixed." :
-	    @"Requests larger text and apps on the remote desktop. Some Linux servers may ignore this setting. Pinch zoom on the iPad is independent.";
+	(void)section;
+	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed.";
 }
 
 - (NSUInteger)dimensionFromField:(UITextField *)field
@@ -171,7 +168,7 @@
 
 - (void)dealloc
 {
-	[_presetButton release]; [_scaleButton release]; [_resolutionCells release]; [_scaleCell release];
+	[_presetButton release]; [_resolutionCells release];
 	[_settings release]; [_automaticSwitch release]; [_widthField release]; [_heightField release];
 	[super dealloc];
 }

@@ -2362,7 +2362,7 @@ index 131fdc135..51169e12f 100644
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
  
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
-index 0fde5e3..e1cdaa3 100644
+index 0fde5e33b..dc7580db3 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
 @@ -12,6 +12,9 @@
@@ -2403,21 +2403,7 @@ index 0fde5e3..e1cdaa3 100644
  	// Screen Size is set on connect (we need a valid delegate in case the user choose an automatic
  	// screen size)
  
-@@ -213,6 +223,13 @@ static void freeArguments(int argc, char **argv)
- 		if (!addArgument(&argc, &argv, "/h:%d", [_params intForKey:@"height"]))
- 			goto out_free;
- 
-+	if ([_params hasValueForKey:@"desktop_scale_factor"])
-+	{
-+		const int scale = [_params intForKey:@"desktop_scale_factor"];
-+		if (scale < 100 || scale > 500 || !addArgument(&argc, &argv, "/scale-desktop:%d", scale))
-+			goto out_free;
-+	}
-+
- 	// security
- 	switch ([_params intForKey:@"security"])
- 	{
-@@ -260,6 +277,19 @@ static void freeArguments(int argc, char **argv)
+@@ -260,6 +270,19 @@ static void freeArguments(int argc, char **argv)
  	if (0 != status)
  		goto out_free;
  
@@ -2437,7 +2423,7 @@ index 0fde5e3..e1cdaa3 100644
  	freeArguments(argc, argv);
  	[self mfi]->session = self;
  	return self;
-@@ -276,7 +306,11 @@ out_free:
+@@ -276,7 +299,11 @@ out_free:
  	[_name release];
  	[_params release];
  	[_ui_request_completed release];
@@ -2449,7 +2435,7 @@ index 0fde5e3..e1cdaa3 100644
  	[super dealloc];
  }
  
-@@ -290,6 +324,37 @@ out_free:
+@@ -290,6 +317,37 @@ out_free:
  
  - (void)connect
  {
@@ -2487,7 +2473,7 @@ index 0fde5e3..e1cdaa3 100644
  	// Set Screen Size to automatic if width or height are still 0
  	rdpSettings *settings = _freerdp->context->settings;
  
-@@ -313,7 +378,7 @@ out_free:
+@@ -313,7 +371,7 @@ out_free:
  	// TODO: This is a hack to ensure connections to RDVH with 16bpp don't have an odd screen
  	// resolution width
  	//       Otherwise this could result in screen corruption ..
@@ -2496,7 +2482,7 @@ index 0fde5e3..e1cdaa3 100644
  	{
  		const UINT32 w = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) & (~1);
  		(void)freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
-@@ -324,13 +389,21 @@ out_free:
+@@ -324,13 +382,21 @@ out_free:
  
  - (void)disconnect
  {
@@ -2519,7 +2505,7 @@ index 0fde5e3..e1cdaa3 100644
  		return;
  	}
  }
-@@ -382,6 +455,20 @@ out_free:
+@@ -382,6 +448,20 @@ out_free:
  		ios_events_send([self mfi], eventDescriptor);
  }
  
@@ -2540,7 +2526,7 @@ index 0fde5e3..e1cdaa3 100644
  #pragma mark -
  #pragma mark Server events (main thread)
  
-@@ -508,8 +595,30 @@ out_free:
+@@ -508,8 +588,30 @@ out_free:
  		[[self delegate] sessionDidConnect:self];
  }
  
@@ -2571,7 +2557,7 @@ index 0fde5e3..e1cdaa3 100644
  	[[NSNotificationCenter defaultCenter]
  	    postNotificationName:TSXSessionDidFailToConnectNotification
  	                  object:self];
-@@ -520,6 +629,9 @@ out_free:
+@@ -520,6 +622,9 @@ out_free:
  
  - (void)sessionDidDisconnect
  {

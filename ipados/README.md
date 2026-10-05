@@ -40,8 +40,9 @@ fixed; Match iPad Resolution in the session menu enables automatic sizing for
 that session.
 Manual dimensions must be 200–8192 pixels, with an even width.
 
-Linux display scale defaults to 100%, with 125%, 150%, 175%, and 200% options.
-New connections request this remote desktop scale through RDP. The server decides
-whether to apply it to text and applications; local pinch zoom and image fitting
-remain independent. Settings changes apply on the next connection. The iPad uses
-one remote display.
+Suggested resolutions are generated from the current iPad window's pixel size,
+with smaller alternatives preserving its proportions within pixel rounding.
+Suggestions update when the window rotates or resizes; the Settings sheet's own
+size does not determine them. Custom dimensions remain available. Settings changes
+apply on the next connection. Legacy desktop scale preferences are ignored and
+removed on the next save. The iPad uses one remote display.

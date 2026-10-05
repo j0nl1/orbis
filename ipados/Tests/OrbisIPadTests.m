@@ -17,6 +17,7 @@
 #import "Bookmark.h"
 #import "ConnectionParams.h"
 #include <winpr/input.h>
+#include <math.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -198,19 +199,17 @@
 	return defaults;
 }
 
-- (void)testDisplayDefaultsKeepAutomaticResolutionAndNormalLinuxScale
+- (void)testDisplayDefaultsKeepAutomaticResolution
 {
 	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:[self displayDefaults]] autorelease];
 	XCTAssertTrue(settings.automaticResolution);
-	XCTAssertEqual(settings.desktopScale, 100u);
-	XCTAssertEqualObjects([OrbisIPadDisplaySettings supportedScales], (@[ @100, @125, @150, @175, @200 ]));
 }
 
 - (void)testGlobalDisplaySettingsReachNewSessionsWithOneDesktop
 {
 	NSUserDefaults *defaults = [self displayDefaults];
 	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	settings.width = 2560; settings.height = 1440; settings.desktopScale = 150;
+	settings.width = 2560; settings.height = 1440;
 	XCTAssertTrue([settings saveWithError:nil]);
 	for (NSString *host in @[ @"first.local", @"second.local" ])
 	{
@@ -224,7 +223,7 @@
 		rdpSettings *rdp = [session getSessionParams];
 		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopWidth), 2560u);
 		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopHeight), 1440u);
-		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopScaleFactor), 150u);
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopScaleFactor), 100u);
 		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DeviceScaleFactor), 100u);
 		XCTAssertFalse(freerdp_settings_get_bool(rdp, FreeRDP_UseMultimon));
 		XCTAssertFalse([session.params boolForKey:@"match_window_resolution"]);
@@ -235,7 +234,7 @@
 {
 	NSUserDefaults *defaults = [self displayDefaults];
 	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	settings.width = 1920; settings.height = 1080; settings.desktopScale = 200;
+	settings.width = 1920; settings.height = 1080;
 	XCTAssertTrue([settings saveWithError:nil]);
 	for (NSArray *size in @[ @[ @1919, @1080 ], @[ @0, @1080 ], @[ @1920, @199 ], @[ @8194, @1080 ], @[ @(NSUIntegerMax), @1080 ] ])
 	{
@@ -244,10 +243,8 @@
 		XCTAssertFalse([settings saveWithError:&error]);
 		XCTAssertNotNil(error);
 	}
-	settings.width = 1920; settings.height = 1080; settings.desktopScale = 250;
-	XCTAssertFalse([settings saveWithError:nil]);
 	OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	XCTAssertEqual(loaded.width, 1920u); XCTAssertEqual(loaded.height, 1080u); XCTAssertEqual(loaded.desktopScale, 200u);
+	XCTAssertEqual(loaded.width, 1920u); XCTAssertEqual(loaded.height, 1080u);
 }
 
 - (void)testCorruptSavedDisplayValuesFallBackToSafeDefaults
@@ -259,7 +256,86 @@
 		[defaults setObject:saved forKey:@"OrbisIPadDisplaySettings.v1"];
 		OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
 		XCTAssertTrue(settings.automaticResolution);
-		XCTAssertEqual(settings.desktopScale, 100u);
+	}
+}
+
+- (void)testLegacyScaleIsIgnoredWithoutLosingTheSavedResolution
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	[defaults setObject:@{ @"width" : @2048, @"height" : @1536, @"desktopScale" : @200 }
+	    forKey:@"OrbisIPadDisplaySettings.v1"];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertEqual(settings.width, 2048u); XCTAssertEqual(settings.height, 1536u);
+	ConnectionParams *params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
+	[settings applyToConnectionParameters:params];
+	XCTAssertFalse([params hasValueForKey:@"desktop_scale_factor"]);
+	XCTAssertTrue([settings saveWithError:nil]);
+	XCTAssertNil([[defaults dictionaryForKey:@"OrbisIPadDisplaySettings.v1"] objectForKey:@"desktopScale"]);
+}
+
+- (void)testSuggestedResolutionsFollowDifferentIPadAndWindowProportions
+{
+	for (NSArray *pixels in @[ @[ @2732, @2048 ], @[ @2048, @2732 ], @[ @2420, @1668 ],
+	    @[ @2360, @1640 ], @[ @1366, @2048 ] ])
+	{
+		NSUInteger width = [pixels[0] unsignedIntegerValue], height = [pixels[1] unsignedIntegerValue];
+		NSArray *sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:width height:height];
+		XCTAssertEqual(sizes.count, 5u);
+		XCTAssertEqualObjects(sizes.firstObject, pixels);
+		XCTAssertEqual([[NSSet setWithArray:sizes] count], sizes.count);
+		for (NSArray *size in sizes)
+		{
+			NSUInteger w = [size[0] unsignedIntegerValue], h = [size[1] unsignedIntegerValue];
+			XCTAssertEqual(w % 2, 0u);
+			XCTAssertGreaterThanOrEqual(w, 200u); XCTAssertGreaterThanOrEqual(h, 200u);
+			XCTAssertLessThanOrEqual(w, width); XCTAssertLessThanOrEqual(h, height);
+			// Each dimension can differ by at most one pixel after rounding.
+			XCTAssertEqualWithAccuracy((double)w / h, (double)width / height,
+			    2.0 / MIN(w, h));
+		}
+	}
+}
+
+- (void)testSuggestionsUseTheIPadWindowRatherThanTheSettingsSheet
+{
+	OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc]
+	    initWithDefaults:[self displayDefaults]] autorelease];
+	[editor loadViewIfNeeded];
+	UIWindow *window = [[[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 1024, 768)] autorelease];
+	[window addSubview:editor.view];
+	editor.view.frame = CGRectMake(0, 0, 620, 620);
+	[editor viewDidLayoutSubviews];
+	UIButton *button = [editor valueForKey:@"presetButton"];
+	NSArray *sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:(NSUInteger)round(1024 * window.screen.nativeScale)
+	    height:(NSUInteger)round(768 * window.screen.nativeScale)];
+	NSString *expected = [NSString stringWithFormat:@"%@ × %@", sizes[0][0], sizes[0][1]];
+	XCTAssertEqualObjects([button.menu.children.firstObject title], expected);
+	XCTAssertEqual([editor numberOfSectionsInTableView:editor.tableView], 1);
+	[[editor valueForKey:@"automaticSwitch"] setOn:NO];
+	[[editor valueForKey:@"widthField"] setText:@"1112"];
+	[[editor valueForKey:@"heightField"] setText:@"834"];
+	window.frame = CGRectMake(0, 0, 480, 768);
+	[editor viewDidLayoutSubviews];
+	sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:(NSUInteger)round(480 * window.screen.nativeScale)
+	    height:(NSUInteger)round(768 * window.screen.nativeScale)];
+	expected = [NSString stringWithFormat:@"%@ × %@", sizes[0][0], sizes[0][1]];
+	XCTAssertEqualObjects([button.menu.children.firstObject title], expected);
+	XCTAssertEqualObjects([[editor valueForKey:@"widthField"] text], @"1112");
+	XCTAssertEqualObjects([[editor valueForKey:@"heightField"] text], @"834");
+	[editor.view removeFromSuperview];
+}
+
+- (void)testSuggestedResolutionsStayInsideRDPBounds
+{
+	XCTAssertEqual([OrbisIPadDisplaySettings resolutionsForPixelWidth:0 height:2048].count, 0u);
+	XCTAssertEqual([OrbisIPadDisplaySettings resolutionsForPixelWidth:100 height:100].count, 0u);
+	XCTAssertEqual([OrbisIPadDisplaySettings resolutionsForPixelWidth:200 height:200].count, 1u);
+	NSArray *sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:16384 height:12288];
+	XCTAssertEqualObjects(sizes.firstObject, (@[ @8192, @6144 ]));
+	for (NSArray *size in sizes)
+	{
+		XCTAssertLessThanOrEqual([size[0] unsignedIntegerValue], 8192u);
+		XCTAssertLessThanOrEqual([size[1] unsignedIntegerValue], 8192u);
 	}
 }
 
