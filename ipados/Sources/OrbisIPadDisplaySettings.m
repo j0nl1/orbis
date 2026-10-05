@@ -33,8 +33,11 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 {
 	if (!(self = [super init])) return nil;
 	_defaults = [defaults retain];
+	_workspaceGesturesEnabled = YES;
 	id saved = [defaults objectForKey:OrbisIPadDisplaySettingsKey];
 	if (![saved isKindOfClass:[NSDictionary class]]) return self;
+	if ([saved[@"workspaceGesturesEnabled"] isKindOfClass:[NSNumber class]])
+		_workspaceGesturesEnabled = [saved[@"workspaceGesturesEnabled"] boolValue];
 	id width = saved[@"width"], height = saved[@"height"];
 	if ([width isKindOfClass:[NSNumber class]] && [height isKindOfClass:[NSNumber class]] &&
 	    [width doubleValue] == [width unsignedIntegerValue] &&
@@ -62,7 +65,8 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 		    userInfo:@{ NSLocalizedDescriptionKey : message }];
 		return NO;
 	}
-	[_defaults setObject:@{ @"width" : @(_width), @"height" : @(_height) }
+	[_defaults setObject:@{ @"width" : @(_width), @"height" : @(_height),
+	    @"workspaceGesturesEnabled" : @(_workspaceGesturesEnabled) }
 	    forKey:OrbisIPadDisplaySettingsKey];
 	return YES;
 }
@@ -72,6 +76,7 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 	[parameters setInt:(int)_width forKey:@"width"];
 	[parameters setInt:(int)_height forKey:@"height"];
 	[parameters setBool:self.automaticResolution forKey:@"match_window_resolution"];
+	[parameters setBool:_workspaceGesturesEnabled forKey:@"workspace_gestures"];
 }
 
 - (void)dealloc { [_defaults release]; [super dealloc]; }

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- iPad trackpad workspace gestures: swipe sideways with two fingers to switch workspaces, Alt + swipe up to open Activities, and Alt + Shift + swipe sideways to move the active window. Settings can restore normal horizontal scrolling.
 - iPad remote sessions keep the display awake while connecting or connected in the foreground, restoring automatic screen lock after disconnecting, a failed connection, or leaving the app.
 - Global iPad display settings with automatic and custom resolutions, plus suggested resolutions matching the current iPad window’s proportions. Manual resolutions remain fixed across rotation and window resizing.
 - Optional macOS fullscreen input capture forwards physical keys, system shortcuts, mouse buttons, and input-generating macros to the active remote desktop. Control + Option + Command + Esc releases capture.

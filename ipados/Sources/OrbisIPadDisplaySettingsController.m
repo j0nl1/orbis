@@ -12,6 +12,8 @@
 	UIButton *_presetButton;
 	NSArray *_resolutionCells;
 	CGSize _presetPixelSize;
+	UISwitch *_workspaceSwitch;
+	UITableViewCell *_workspaceCell;
 }
 
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults
@@ -71,6 +73,10 @@
 	    [self cellWithTitle:@"Height" control:_heightField], nil];
 	[self updateResolutionPresets];
 	[self automaticChanged:nil];
+	_workspaceSwitch = [[UISwitch alloc] init];
+	_workspaceSwitch.on = _settings.workspaceGesturesEnabled;
+	_workspaceSwitch.accessibilityIdentifier = @"trackpad-workspace-gestures";
+	_workspaceCell = [[self cellWithTitle:@"Workspace gestures" control:_workspaceSwitch] retain];
 }
 
 - (void)viewDidLayoutSubviews
@@ -117,23 +123,24 @@
 	    [UIColor tertiaryLabelColor] : [UIColor labelColor];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 1; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 2; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-	(void)tableView; (void)section; return _resolutionCells.count;
+	(void)tableView; return section == 0 ? _resolutionCells.count : 1;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path
 {
-	(void)tableView; return _resolutionCells[path.row];
+	(void)tableView; return path.section == 0 ? _resolutionCells[path.row] : _workspaceCell;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-	(void)tableView; (void)section; return @"Remote resolution";
+	(void)tableView; return section == 0 ? @"Remote resolution" : @"Trackpad";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
 	(void)tableView;
-	(void)section;
+	if (section == 1)
+		return @"Swipe two fingers left or right to switch workspaces. Hold Alt (Option) and swipe up for Activities, or Alt + Shift and swipe sideways to move the active window. Uses GNOME keyboard shortcuts. Turn off to restore horizontal scrolling. Applies to new connections.";
 	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed.";
 }
 
@@ -152,6 +159,7 @@
 	[self.view endEditing:YES];
 	_settings.width = _automaticSwitch.on ? 0 : [self dimensionFromField:_widthField];
 	_settings.height = _automaticSwitch.on ? 0 : [self dimensionFromField:_heightField];
+	_settings.workspaceGesturesEnabled = _workspaceSwitch.on;
 	NSError *error = nil;
 	if ([_settings saveWithError:&error])
 		return [self dismissViewControllerAnimated:YES completion:nil];
@@ -169,6 +177,7 @@
 - (void)dealloc
 {
 	[_presetButton release]; [_resolutionCells release];
+	[_workspaceSwitch release]; [_workspaceCell release];
 	[_settings release]; [_automaticSwitch release]; [_widthField release]; [_heightField release];
 	[super dealloc];
 }
