@@ -39,6 +39,10 @@ fullscreen. Window resizing scales the image without changing its saved remote
 resolution. Closing the second window requests monitor removal and keeps the
 primary session open; the window disappears when removal is confirmed.
 
+In windowed mode, the native macOS title bar keeps the close, minimize, and
+fullscreen controls above the remote desktop. Automatic resolution sizing uses
+the content area below the title bar.
+
 The action requires the server's Display Control channel and support for at least
 two monitors. Advertised monitor area limits are checked before sending a layout.
 A ten-second resize deadline reports unsupported changes and requests the previous

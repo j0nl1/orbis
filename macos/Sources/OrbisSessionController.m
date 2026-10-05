@@ -166,13 +166,12 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	_window = [[NSWindow alloc]
 	    initWithContentRect:fullscreenFrame
 	              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-	                        NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable |
-	                        NSWindowStyleMaskFullSizeContentView
+	                        NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
 	                backing:NSBackingStoreBuffered
 	                  defer:NO];
 	[_window setTitle:[_profile name]];
-	[_window setTitleVisibility:NSWindowTitleHidden];
-	[_window setTitlebarAppearsTransparent:YES];
+	[_window setTitleVisibility:NSWindowTitleVisible];
+	[_window setTitlebarAppearsTransparent:NO];
 	[_window setBackgroundColor:[NSColor blackColor]];
 	[_window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
 	[_window setDelegate:self];
