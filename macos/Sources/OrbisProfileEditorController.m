@@ -1,39 +1,11 @@
 /* SPDX-License-Identifier: MIT */
 
 #import "OrbisProfileEditorController.h"
+#import "OrbisFormControls.h"
 
 #import "OrbisProfile.h"
 #import "OrbisCredentialStore.h"
 #import "OrbisTunnelBridge.h"
-
-static NSRect OrbisCenteredTextRect(NSRect rect, NSFont *font)
-{
-	CGFloat height = ceil([font ascender] - [font descender] + [font leading]);
-	if (NSHeight(rect) > height)
-	{
-		rect.origin.y += floor((NSHeight(rect) - height) / 2.0);
-		rect.size.height = height;
-	}
-	return rect;
-}
-
-@interface OrbisCenteredTextFieldCell : NSTextFieldCell
-@end
-@implementation OrbisCenteredTextFieldCell
-- (NSRect)drawingRectForBounds:(NSRect)bounds
-{
-	return OrbisCenteredTextRect([super drawingRectForBounds:bounds], [self font]);
-}
-@end
-
-@interface OrbisCenteredSecureTextFieldCell : NSSecureTextFieldCell
-@end
-@implementation OrbisCenteredSecureTextFieldCell
-- (NSRect)drawingRectForBounds:(NSRect)bounds
-{
-	return OrbisCenteredTextRect([super drawingRectForBounds:bounds], [self font]);
-}
-@end
 
 static NSTextField *OrbisEditorLabel(NSString *title)
 {
@@ -41,29 +13,6 @@ static NSTextField *OrbisEditorLabel(NSString *title)
 	[label setFont:[NSFont systemFontOfSize:12.0 weight:NSFontWeightMedium]];
 	[label setTextColor:[NSColor secondaryLabelColor]];
 	return label;
-}
-
-static void OrbisConfigureEditorField(NSTextField *field, NSString *identifier)
-{
-	Class cellClass = [field isKindOfClass:[NSSecureTextField class]]
-	    ? [OrbisCenteredSecureTextFieldCell class] : [OrbisCenteredTextFieldCell class];
-	NSTextFieldCell *cell = [[[cellClass alloc] initTextCell:[field stringValue]] autorelease];
-	NSTextFieldCell *originalCell = [field cell];
-	[cell setPlaceholderString:[originalCell placeholderString]];
-	[cell setEditable:[originalCell isEditable]];
-	[cell setSelectable:[originalCell isSelectable]];
-	[cell setScrollable:[originalCell isScrollable]];
-	[cell setUsesSingleLineMode:[originalCell usesSingleLineMode]];
-	[cell setDrawsBackground:[originalCell drawsBackground]];
-	[cell setBackgroundColor:[originalCell backgroundColor]];
-	[cell setTextColor:[originalCell textColor]];
-	[field setCell:cell];
-	[field setBezeled:YES];
-	[field setBezelStyle:NSTextFieldRoundedBezel];
-	[field setControlSize:NSControlSizeLarge];
-	[field setFont:[NSFont systemFontOfSize:13.0]];
-	[field setFocusRingType:NSFocusRingTypeExterior];
-	[field setAccessibilityIdentifier:identifier];
 }
 
 static NSStackView *OrbisEditorFieldGroup(NSString *title, NSView *field)
@@ -147,26 +96,26 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	_nameField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_nameField setPlaceholderString:@"e.g. Workstation"];
 	[_nameField setStringValue:[_profile name] ?: @""];
-	OrbisConfigureEditorField(_nameField, @"profile-name-field");
+	OrbisConfigureFormField(_nameField, @"profile-name-field");
 
 	_hostField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_hostField setPlaceholderString:@"IP address or hostname"];
 	[_hostField setStringValue:[_profile host] ?: @""];
-	OrbisConfigureEditorField(_hostField, @"profile-host-field");
+	OrbisConfigureFormField(_hostField, @"profile-host-field");
 
 	_portField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_portField setPlaceholderString:@"3389"];
 	[_portField setStringValue:[NSString stringWithFormat:@"%lu", (unsigned long)[_profile port]]];
-	OrbisConfigureEditorField(_portField, @"profile-port-field");
+	OrbisConfigureFormField(_portField, @"profile-port-field");
 
 	_usernameField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_usernameField setPlaceholderString:@"Remote account"];
 	[_usernameField setStringValue:[_profile username] ?: @""];
-	OrbisConfigureEditorField(_usernameField, @"profile-username-field");
+	OrbisConfigureFormField(_usernameField, @"profile-username-field");
 
 	_passwordField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
 	[_passwordField setPlaceholderString:(_hasStoredPassword ? @"••••••••" : @"Optional")];
-	OrbisConfigureEditorField(_passwordField, @"profile-password-field");
+	OrbisConfigureFormField(_passwordField, @"profile-password-field");
 
 	_transportField = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
 	[_transportField addItemsWithTitles:@[ @"Native RDP", @"Cloudflare Tunnel" ]];
@@ -179,13 +128,14 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[_gatewayHostnameField setPlaceholderString:@"https://rdp.example.com"];
 	if ([[_profile transportType] isEqualToString:OrbisTransportTypeCloudflare])
 		[_gatewayHostnameField setStringValue:[_profile transportHostname]];
-	OrbisConfigureEditorField(_gatewayHostnameField, @"profile-gateway-hostname-field");
+	OrbisConfigureFormField(_gatewayHostnameField, @"profile-gateway-hostname-field");
 	_clientIDField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_clientIDField setPlaceholderString:@"Service Token Client ID"];
-	OrbisConfigureEditorField(_clientIDField, @"profile-client-id-field");
+	OrbisConfigureFormField(_clientIDField, @"profile-client-id-field");
 	_clientSecretField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
-	OrbisConfigureEditorField(_clientSecretField, @"profile-client-secret-field");
-	NSDictionary *token = [OrbisCredentialStore cloudflareTokenForProfile:_profile error:nil];
+	OrbisConfigureFormField(_clientSecretField, @"profile-client-secret-field");
+	NSDictionary *token = [[_profile transportType] isEqualToString:OrbisTransportTypeCloudflare]
+	    ? [OrbisCredentialStore cloudflareTokenForProfile:_profile error:nil] : nil;
 	_savedTokenHost = token ? [[[_profile transportHostname] lowercaseString] copy] : nil;
 	_savedTokenClientID = [token[@"clientID"] copy];
 	[_clientIDField setStringValue:_savedTokenClientID ?: @""];
@@ -262,22 +212,7 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[options setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[options setAlignment:NSLayoutAttributeLeading];
 	[options setSpacing:8.0];
-	NSView *primaryResolution = [self resolutionGroupWithTitle:@"Primary display resolution"
-	    width:[_profile primaryWidth] height:[_profile primaryHeight]
-	    mode:&_primaryResolutionMode widthField:&_primaryWidthField heightField:&_primaryHeightField];
-	NSView *secondaryResolution = [self resolutionGroupWithTitle:@"Second display resolution"
-	    width:[_profile secondaryWidth] height:[_profile secondaryHeight]
-	    mode:&_secondaryResolutionMode widthField:&_secondaryWidthField heightField:&_secondaryHeightField];
-	_monitorArrangementField = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-	[_monitorArrangementField addItemsWithTitles:@[ @"Right of primary", @"Left of primary", @"Above primary", @"Below primary" ]];
-	[_monitorArrangementField selectItemAtIndex:[_profile monitorArrangement]];
-	[_monitorArrangementField setAccessibilityIdentifier:@"profile-monitor-arrangement"];
-	NSView *arrangement = OrbisEditorFieldGroup(@"Monitor arrangement", _monitorArrangementField);
-	NSTextField *displayHint = [NSTextField wrappingLabelWithString:
-	    @"Start with one display. Add a virtual second display from Session → Add Virtual Display. Manual resolutions use pixels; resizing a window scales its display."];
-	[displayHint setFont:[NSFont systemFontOfSize:12.0]];
-	[displayHint setTextColor:[NSColor secondaryLabelColor]];
-	NSStackView *preferences = OrbisEditorSection(@"Options", @[ options, primaryResolution, secondaryResolution, arrangement, displayHint ]);
+	NSStackView *preferences = OrbisEditorSection(@"Options", @[ options ]);
 
 	NSStackView *stack = [NSStackView stackViewWithViews:@[
 		header, nameGroup, transportGroup, _endpointGroup, _gatewayHostnameGroup, _accessGroup,
@@ -320,60 +255,6 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 		[[stack topAnchor] constraintEqualToAnchor:[_formView topAnchor] constant:30.0]
 	]];
 	[self transportChanged:nil];
-}
-
-- (NSView *)resolutionGroupWithTitle:(NSString *)title width:(NSUInteger)width height:(NSUInteger)height
-                               mode:(NSPopUpButton **)mode widthField:(NSTextField **)widthField
-                        heightField:(NSTextField **)heightField
-{
-	*mode = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-	[*mode addItemsWithTitles:@[ @"Automatic", @"Manual" ]];
-	[*mode selectItemAtIndex:width ? 1 : 0];
-	[*mode setTarget:self]; [*mode setAction:@selector(resolutionModeChanged:)];
-	NSString *prefix = [title hasPrefix:@"Primary"] ? @"primary" : @"secondary";
-	[*mode setAccessibilityIdentifier:[NSString stringWithFormat:@"profile-%@-resolution-mode", prefix]];
-	*widthField = [[NSTextField alloc] initWithFrame:NSZeroRect];
-	*heightField = [[NSTextField alloc] initWithFrame:NSZeroRect];
-	[*widthField setStringValue:[NSString stringWithFormat:@"%lu", (unsigned long)(width ?: 1920)]];
-	[*heightField setStringValue:[NSString stringWithFormat:@"%lu", (unsigned long)(height ?: 1080)]];
-	OrbisConfigureEditorField(*widthField, [NSString stringWithFormat:@"profile-%@-width", prefix]);
-	OrbisConfigureEditorField(*heightField, [NSString stringWithFormat:@"profile-%@-height", prefix]);
-	[*widthField setAccessibilityLabel:@"Width in pixels"];
-	[*heightField setAccessibilityLabel:@"Height in pixels"];
-	[*widthField setEnabled:width != 0]; [*heightField setEnabled:width != 0];
-	NSStackView *row = [NSStackView stackViewWithViews:@[ *mode, *widthField, [NSTextField labelWithString:@"×"], *heightField ]];
-	[row setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
-	[row setAlignment:NSLayoutAttributeCenterY]; [row setSpacing:8.0];
-	[[*mode widthAnchor] constraintEqualToConstant:160.0].active = YES;
-	for (NSView *field in @[ *widthField, *heightField ])
-	{
-		[[field widthAnchor] constraintEqualToConstant:110.0].active = YES;
-		[[field heightAnchor] constraintEqualToConstant:36.0].active = YES;
-	}
-	return OrbisEditorFieldGroup(title, row);
-}
-
-- (void)resolutionModeChanged:(id)sender
-{
-	(void)sender;
-	[_primaryWidthField setEnabled:[_primaryResolutionMode indexOfSelectedItem] == 1];
-	[_primaryHeightField setEnabled:[_primaryResolutionMode indexOfSelectedItem] == 1];
-	[_secondaryWidthField setEnabled:[_secondaryResolutionMode indexOfSelectedItem] == 1];
-	[_secondaryHeightField setEnabled:[_secondaryResolutionMode indexOfSelectedItem] == 1];
-}
-
-- (BOOL)readResolutionMode:(NSPopUpButton *)mode widthField:(NSTextField *)widthField
-               heightField:(NSTextField *)heightField width:(NSUInteger *)width height:(NSUInteger *)height
-{
-	*width = *height = 0;
-	if ([mode indexOfSelectedItem] == 0) return YES;
-	NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789"] invertedSet];
-	NSString *w = [widthField stringValue], *h = [heightField stringValue];
-	if (!w.length || !h.length || [w rangeOfCharacterFromSet:invalid].location != NSNotFound ||
-	    [h rangeOfCharacterFromSet:invalid].location != NSNotFound || w.length > 4 || h.length > 4)
-		return NO;
-	*width = w.integerValue; *height = h.integerValue;
-	return OrbisDisplayResolutionIsValid((uint32_t)*width, (uint32_t)*height);
 }
 
 - (void)transportChanged:(id)sender
@@ -499,18 +380,6 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 		return;
 	}
 
-	NSUInteger pw, ph, sw, sh;
-	if (![self readResolutionMode:_primaryResolutionMode widthField:_primaryWidthField
-	    heightField:_primaryHeightField width:&pw height:&ph] ||
-	    ![self readResolutionMode:_secondaryResolutionMode widthField:_secondaryWidthField
-	    heightField:_secondaryHeightField width:&sw height:&sh])
-	{
-		[self showValidationError:@"Use resolutions from 200 to 8192 pixels, with an even width."];
-		return;
-	}
-	[_profile setPrimaryWidth:pw]; [_profile setPrimaryHeight:ph];
-	[_profile setSecondaryWidth:sw]; [_profile setSecondaryHeight:sh];
-	[_profile setMonitorArrangement:(OrbisMonitorArrangement)[_monitorArrangementField indexOfSelectedItem]];
 	[_profile setName:name];
 	[_profile setHost:host];
 	[_profile setPort:(NSUInteger)port];
@@ -559,9 +428,6 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[_passwordField release];
 	[_certificateCheckbox release];
 	[_automaticCheckbox release];
-	[_primaryResolutionMode release]; [_secondaryResolutionMode release]; [_monitorArrangementField release];
-	[_primaryWidthField release]; [_primaryHeightField release];
-	[_secondaryWidthField release]; [_secondaryHeightField release];
 	[_validationLabel release];
 	[super dealloc];
 }

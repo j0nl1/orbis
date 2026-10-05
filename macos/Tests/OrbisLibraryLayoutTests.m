@@ -7,6 +7,7 @@
 #import "OrbisProfile.h"
 #import "OrbisProfileEditorController.h"
 #import "OrbisAboutController.h"
+#import "OrbisDisplaySettings.h"
 
 static NSView *FindViewWithAccessibilityIdentifier(NSView *view, NSString *identifier)
 {
@@ -53,6 +54,33 @@ static void DrainSheetCompletion(void)
 	while ([deadline timeIntervalSinceNow] > 0)
 		[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:deadline];
 }
+
+@interface OrbisDisplayArrangementView (GeometryTests)
+- (void)updateMonitorRects;
+@end
+@interface OrbisArrangementDragFixture : OrbisDisplayArrangementView
+- (void)dragDisplay:(NSInteger)index toRemotePoint:(NSPoint)position;
+@end
+@implementation OrbisArrangementDragFixture
+- (void)dragDisplay:(NSInteger)index toRemotePoint:(NSPoint)position
+{
+    [self updateMonitorRects];
+    OrbisDisplayLayout layout = self.settings.previewLayout;
+    NSPoint start = NSMakePoint(NSMidX(_monitorRects[index]), NSMidY(_monitorRects[index]));
+    CGFloat direction = index ? 1 : -1;
+    NSPoint end = NSMakePoint(start.x + direction * (position.x - layout.monitors[1].x) * _scale,
+        start.y + direction * (position.y - layout.monitors[1].y) * _scale);
+    NSEventType types[] = { NSEventTypeLeftMouseDown, NSEventTypeLeftMouseDragged, NSEventTypeLeftMouseUp };
+    for (NSUInteger i = 0; i < 3; i++)
+    {
+        NSPoint location = [self convertPoint:i ? end : start toView:nil];
+        NSEvent *event = [NSEvent mouseEventWithType:types[i] location:location modifierFlags:0
+            timestamp:i + 1 windowNumber:self.window.windowNumber context:nil eventNumber:i + 1
+            clickCount:1 pressure:i == 2 ? 0 : 1];
+        if (i == 0) [self mouseDown:event]; else if (i == 1) [self mouseDragged:event]; else [self mouseUp:event];
+    }
+}
+@end
 
 @interface OrbisEditorSaveRecorder : NSObject <OrbisProfileEditorControllerDelegate>
 @property(nonatomic, retain) OrbisProfile *profile;
@@ -113,7 +141,7 @@ static void DrainSheetCompletion(void)
 	NSRect addFrame = [add convertRect:[add bounds] toView:content];
 	NSRect aboutFrame = [about convertRect:[about bounds] toView:content];
 	XCTAssertGreaterThanOrEqual(NSMaxX(aboutFrame), NSWidth([content bounds]) - 45.0);
-	XCTAssertGreaterThanOrEqual(NSMinX(addFrame), NSWidth([content bounds]) * 0.7);
+	XCTAssertGreaterThanOrEqual(NSMinX(addFrame), NSWidth([content bounds]) * 0.55);
 
 	NSView *statusIcon = FindViewWithAccessibilityIdentifier(content, @"connection-status-icon");
 	NSView *statusLabel = FindViewWithAccessibilityIdentifier(content, @"connection-status-label");
@@ -303,57 +331,126 @@ static void DrainSheetCompletion(void)
 	[profile release];
 }
 
-- (void)testDisplayOptionsSaveManualResolutionsAndArrangement
+- (void)testDisplaySettingsPersistResolutionsAndDraggedOffsetsWithoutChangingConnections
 {
-	OrbisProfile *profile = [[OrbisProfile alloc] init];
-	profile.name = @"Workstation"; profile.host = @"desktop.example.test";
-	OrbisProfileEditorController *editor = [[OrbisProfileEditorController alloc]
-	    initWithProfile:profile hasStoredPassword:NO];
-	NSView *content = editor.window.contentView;
-	NSPopUpButton *primary = (id)FindViewWithAccessibilityIdentifier(content, @"profile-primary-resolution-mode");
-	NSPopUpButton *secondary = (id)FindViewWithAccessibilityIdentifier(content, @"profile-secondary-resolution-mode");
-	NSPopUpButton *arrangement = (id)FindViewWithAccessibilityIdentifier(content, @"profile-monitor-arrangement");
-	XCTAssertEqual(primary.indexOfSelectedItem, (NSInteger)0);
-	XCTAssertEqual(secondary.indexOfSelectedItem, (NSInteger)0);
-	XCTAssertEqual(arrangement.indexOfSelectedItem, (NSInteger)0);
-	[primary selectItemAtIndex:1]; [primary sendAction:primary.action to:primary.target];
-	[secondary selectItemAtIndex:1]; [secondary sendAction:secondary.action to:secondary.target];
-	NSTextField *pw = (id)FindViewWithAccessibilityIdentifier(content, @"profile-primary-width");
-	NSTextField *ph = (id)FindViewWithAccessibilityIdentifier(content, @"profile-primary-height");
-	NSTextField *sw = (id)FindViewWithAccessibilityIdentifier(content, @"profile-secondary-width");
-	NSTextField *sh = (id)FindViewWithAccessibilityIdentifier(content, @"profile-secondary-height");
-	XCTAssertTrue(pw.enabled && ph.enabled && sw.enabled && sh.enabled);
-	pw.stringValue = @"2560"; ph.stringValue = @"1440";
-	sw.stringValue = @"1920"; sh.stringValue = @"1080";
-	[arrangement selectItemAtIndex:1];
-	OrbisEditorSaveRecorder *recorder = [[OrbisEditorSaveRecorder alloc] init];
-	editor.delegate = recorder;
-	[editor save:nil];
-	XCTAssertEqual(recorder.profile.primaryWidth, (NSUInteger)2560);
-	XCTAssertEqual(recorder.profile.primaryHeight, (NSUInteger)1440);
-	XCTAssertEqual(recorder.profile.secondaryWidth, (NSUInteger)1920);
-	XCTAssertEqual(recorder.profile.secondaryHeight, (NSUInteger)1080);
-	XCTAssertEqual(recorder.profile.monitorArrangement, OrbisMonitorLeft);
-	[content layoutSubtreeIfNeeded];
-	NSString *screenshot = [NSProcessInfo processInfo].environment[@"ORBIS_DISPLAY_OPTIONS_SCREENSHOT"];
-	if (screenshot)
-	{
-		NSView *options = arrangement.superview.superview;
-		NSBitmapImageRep *image = [options bitmapImageRepForCachingDisplayInRect:options.bounds];
-		[options cacheDisplayInRect:options.bounds toBitmapImageRep:image];
-		[[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:screenshot atomically:YES];
-	}
-	for (NSString *invalid in @[ @"1921", @"8194", @"-200", @"1920x", @"", @"199" ])
-	{
-		recorder.profile = nil; sw.stringValue = invalid;
-		[editor save:nil];
-		XCTAssertNil(recorder.profile, @"Invalid manual width: %@", invalid);
-	}
-	[primary selectItemAtIndex:0]; [secondary selectItemAtIndex:0];
-	[editor save:nil];
-	XCTAssertEqual(recorder.profile.primaryWidth, (NSUInteger)0);
-	XCTAssertEqual(recorder.profile.secondaryWidth, (NSUInteger)0);
-	editor.delegate = nil; [recorder release]; [editor release]; [profile release];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    id original = [[defaults objectForKey:@"OrbisDisplaySettings.v1"] retain];
+    [defaults removeObjectForKey:@"OrbisDisplaySettings.v1"];
+    OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease];
+    profile.name = @"Workstation"; profile.host = @"desktop.example.test";
+    profile.primaryWidth = 1280; profile.primaryHeight = 800;
+    OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] initWithDefaults:defaults legacyProfile:profile] autorelease];
+    XCTAssertEqual(settings.primaryWidth, (NSUInteger)1280);
+    profile.primaryWidth = 2560;
+    OrbisDisplaySettings *migrated = [[[OrbisDisplaySettings alloc] initWithDefaults:defaults legacyProfile:profile] autorelease];
+    XCTAssertEqual(migrated.primaryWidth, (NSUInteger)1280, @"Migration happens once; global settings win over another profile");
+    OrbisDisplaySettingsController *editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
+    NSView *content = editor.window.contentView;
+    NSPopUpButton *primary = (id)FindViewWithAccessibilityIdentifier(content, @"settings-primary-resolution-mode");
+    NSPopUpButton *secondary = (id)FindViewWithAccessibilityIdentifier(content, @"settings-secondary-resolution-mode");
+    [primary selectItemAtIndex:1]; [primary sendAction:primary.action to:primary.target];
+    [secondary selectItemAtIndex:1]; [secondary sendAction:secondary.action to:secondary.target];
+    NSTextField *pw = (id)FindViewWithAccessibilityIdentifier(content, @"settings-primary-width");
+    NSTextField *ph = (id)FindViewWithAccessibilityIdentifier(content, @"settings-primary-height");
+    NSTextField *sw = (id)FindViewWithAccessibilityIdentifier(content, @"settings-secondary-width");
+    NSTextField *sh = (id)FindViewWithAccessibilityIdentifier(content, @"settings-secondary-height");
+    XCTAssertTrue(pw.enabled && ph.enabled && sw.enabled && sh.enabled);
+    pw.stringValue = @"2560"; ph.stringValue = @"1440";
+    sw.stringValue = @"1920"; sh.stringValue = @"1080";
+    [primary sendAction:primary.action to:primary.target];
+    OrbisDisplayArrangementView *arrangement = (id)FindViewWithAccessibilityIdentifier(content, @"display-arrangement");
+    [arrangement.settings placeSecondaryAtPoint:NSMakePoint(-1920, 240)];
+    NSButton *save = FindButtonWithTitle(content, @"Save settings");
+    [save sendAction:save.action to:save.target];
+    OrbisDisplaySettings *saved = [OrbisDisplaySettings loadMigratingProfile:nil];
+    XCTAssertEqual(saved.primaryWidth, (NSUInteger)2560); XCTAssertEqual(saved.primaryHeight, (NSUInteger)1440);
+    XCTAssertEqual(saved.secondaryWidth, (NSUInteger)1920); XCTAssertEqual(saved.secondaryHeight, (NSUInteger)1080);
+    XCTAssertEqual(saved.arrangement, OrbisMonitorLeft); XCTAssertEqual(saved.offset, (int32_t)240);
+    XCTAssertEqual(profile.primaryWidth, (NSUInteger)2560); XCTAssertEqual(profile.secondaryWidth, (NSUInteger)0);
+    for (NSString *invalid in @[ @"1921", @"8194", @"-200", @"1920x", @"", @"199" ])
+    {
+        sw.stringValue = invalid; [save sendAction:save.action to:save.target];
+        XCTAssertEqual([OrbisDisplaySettings loadMigratingProfile:nil].secondaryWidth, (NSUInteger)1920);
+    }
+    [primary selectItemAtIndex:0]; [secondary selectItemAtIndex:0];
+    [save sendAction:save.action to:save.target];
+    XCTAssertEqual([OrbisDisplaySettings loadMigratingProfile:nil].primaryWidth, (NSUInteger)0);
+    XCTAssertEqual([OrbisDisplaySettings loadMigratingProfile:nil].secondaryWidth, (NSUInteger)0);
+    [primary selectItemAtIndex:1]; [secondary selectItemAtIndex:1];
+    sw.stringValue = @"1920"; [primary sendAction:primary.action to:primary.target];
+    [content layoutSubtreeIfNeeded];
+    [arrangement setNeedsDisplay:YES]; [content displayIfNeeded];
+    NSString *screenshot = [NSProcessInfo processInfo].environment[@"ORBIS_DISPLAY_OPTIONS_SCREENSHOT"];
+    if (screenshot)
+    {
+        NSBitmapImageRep *image = [content bitmapImageRepForCachingDisplayInRect:content.bounds];
+        [content cacheDisplayInRect:content.bounds toBitmapImageRep:image];
+        [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:screenshot atomically:YES];
+    }
+    [editor release];
+    if (original) [defaults setObject:original forKey:@"OrbisDisplaySettings.v1"];
+    else [defaults removeObjectForKey:@"OrbisDisplaySettings.v1"];
+    [original release];
+}
+
+- (void)testDraggingEitherMonitorPreservesRelativePositionAndCancelKeepsSavedSettings
+{
+    OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] init] autorelease];
+    settings.primaryWidth = 1920; settings.primaryHeight = 1080;
+    settings.secondaryWidth = 1280; settings.secondaryHeight = 1024;
+    NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 556, 210)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO] autorelease];
+    OrbisArrangementDragFixture *view = [[[OrbisArrangementDragFixture alloc] initWithFrame:NSMakeRect(0, 0, 556, 210)] autorelease];
+    view.settings = settings; [window setContentView:view];
+    [view dragDisplay:1 toRemotePoint:NSMakePoint(-1280, 240)];
+    XCTAssertEqual(settings.arrangement, OrbisMonitorLeft); XCTAssertEqual(settings.offset, (int32_t)240);
+    [view dragDisplay:0 toRemotePoint:NSMakePoint(300, -1024)];
+    XCTAssertEqual(settings.arrangement, OrbisMonitorAbove); XCTAssertEqual(settings.offset, (int32_t)300);
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    id original = [[defaults objectForKey:@"OrbisDisplaySettings.v1"] retain];
+    [settings saveToDefaults:defaults];
+    NSDictionary *before = [[defaults objectForKey:@"OrbisDisplaySettings.v1"] copy];
+    OrbisDisplaySettingsController *editor = [[[OrbisDisplaySettingsController alloc] initWithSettings:settings] autorelease];
+    [editor beginSheetForWindow:window];
+    OrbisDisplayArrangementView *editorView = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"display-arrangement");
+    [editorView.settings placeSecondaryAtPoint:NSMakePoint(1920, 200)];
+    NSButton *cancel = FindButtonWithTitle(editor.window.contentView, @"Cancel");
+    [cancel sendAction:cancel.action to:cancel.target]; DrainSheetCompletion();
+    XCTAssertEqualObjects([defaults objectForKey:@"OrbisDisplaySettings.v1"], before);
+    [before release];
+    if (original) [defaults setObject:original forKey:@"OrbisDisplaySettings.v1"];
+    else [defaults removeObjectForKey:@"OrbisDisplaySettings.v1"];
+    [original release];
+}
+
+- (void)testMonitorPlacementSnapsToEveryEdgeAndClampsInvalidOffsets
+{
+    OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] init] autorelease];
+    settings.primaryWidth = 1920; settings.primaryHeight = 1080;
+    settings.secondaryWidth = 1280; settings.secondaryHeight = 1024;
+    NSPoint placements[] = { NSMakePoint(2000, 200), NSMakePoint(-1250, -100),
+        NSMakePoint(300, -1000), NSMakePoint(-200, 1100) };
+    for (NSUInteger i = 0; i < 4; i++)
+    {
+        [settings placeSecondaryAtPoint:placements[i]];
+        XCTAssertEqual(settings.arrangement, (OrbisMonitorArrangement)i);
+        OrbisDisplayLayout layout = settings.previewLayout;
+        XCTAssertEqual(layout.monitors[1].x, (int32_t)(i == 0 ? 1920 : i == 1 ? -1280 : placements[i].x));
+        XCTAssertEqual(layout.monitors[1].y, (int32_t)(i == 2 ? -1024 : i == 3 ? 1080 : placements[i].y));
+    }
+    OrbisDisplayLayout layout;
+    XCTAssertTrue(OrbisDisplayLayoutMakeWithOffset(1920, 1080, 1280, 1024, OrbisMonitorRight, INT32_MIN, true, &layout));
+    XCTAssertEqual(layout.monitors[1].y, (int32_t)-1023);
+    XCTAssertEqual(layout.pixels[0].y, (int32_t)1023);
+    XCTAssertTrue(OrbisDisplayLayoutMakeWithOffset(1920, 1080, 1280, 1024, OrbisMonitorAbove, INT32_MAX, true, &layout));
+    XCTAssertEqual(layout.monitors[1].x, (int32_t)1918);
+    for (OrbisMonitorArrangement side = OrbisMonitorAbove; side <= OrbisMonitorBelow; side++)
+        for (int32_t offset = -1301; offset < 1950; offset += 17)
+        {
+            XCTAssertTrue(OrbisDisplayLayoutMakeWithOffset(1920, 1080, 1280, 1024, side, offset, true, &layout));
+            XCTAssertEqual(layout.width % 2, (uint32_t)0);
+            XCTAssertEqual(layout.monitors[1].x % 2, (int32_t)0);
+        }
 }
 
 - (void)testCancelAndEscapeAllowEditingAgainAndCreatingANewConnection

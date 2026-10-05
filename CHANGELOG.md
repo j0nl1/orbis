@@ -4,13 +4,14 @@
 
 ### Added
 - macOS virtual second displays in a separate window, using the existing RDP session when the server supports Display Control.
-- Per-connection initial resolutions and monitor arrangement for macOS displays.
+- Global display settings beside New connection, with initial resolutions and a draggable monitor arrangement.
 - Cloudflare Access service-token connections on iPadOS, using the shared transport adapters and separate hostname-bound Keychain credentials.
 - An offline changelog in iPadOS About Orbis and a simulator XCTest suite for connection editing, transport lifecycle, and hardware keyboard input.
 - An offline changelog in About Orbis, alongside open-source acknowledgements.
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- Local macOS updates can reuse a configured signing identity to preserve Keychain authorization across builds.
 - Add Virtual Display is available in the macOS Session menu, without a session toolbar.
 - iPadOS connection forms group endpoint, Access token, account, and connection options, accept tunnel HTTPS URLs, and preserve saved credentials.
 - iPadOS hardware keyboards support Option-Backspace word deletion and Option symbols while retaining remote Alt+Tab.

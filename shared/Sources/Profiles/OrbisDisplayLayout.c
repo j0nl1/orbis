@@ -7,8 +7,8 @@ bool OrbisDisplayResolutionIsValid(uint32_t width, uint32_t height)
     return width >= 200 && width <= 8192 && !(width % 2) && height >= 200 && height <= 8192;
 }
 
-bool OrbisDisplayLayoutMake(uint32_t pw, uint32_t ph, uint32_t sw, uint32_t sh,
-                            OrbisMonitorArrangement arrangement, bool second,
+bool OrbisDisplayLayoutMakeWithOffset(uint32_t pw, uint32_t ph, uint32_t sw, uint32_t sh,
+                            OrbisMonitorArrangement arrangement, int32_t offset, bool second,
                             OrbisDisplayLayout *layout)
 {
     if (!layout || !OrbisDisplayResolutionIsValid(pw, ph) ||
@@ -23,10 +23,19 @@ bool OrbisDisplayLayoutMake(uint32_t pw, uint32_t ph, uint32_t sw, uint32_t sh,
         int32_t x = 0, y = 0;
         switch (arrangement)
         {
-            case OrbisMonitorRight: x = (int32_t)pw; break;
-            case OrbisMonitorLeft: x = -(int32_t)sw; break;
-            case OrbisMonitorAbove: y = -(int32_t)sh; break;
-            case OrbisMonitorBelow: y = (int32_t)ph; break;
+            case OrbisMonitorRight: x = (int32_t)pw; y = offset; break;
+            case OrbisMonitorLeft: x = -(int32_t)sw; y = offset; break;
+            case OrbisMonitorAbove: y = -(int32_t)sh; x = offset; break;
+            case OrbisMonitorBelow: y = (int32_t)ph; x = offset; break;
+        }
+        /* Keep a shared edge so the pointer can cross between the monitors. */
+        if (arrangement < OrbisMonitorAbove)
+            y = y < 1 - (int32_t)sh ? 1 - (int32_t)sh : y >= (int32_t)ph ? (int32_t)ph - 1 : y;
+        else
+        {
+            x = x < 1 - (int32_t)sw ? 1 - (int32_t)sw : x >= (int32_t)pw ? (int32_t)pw - 1 : x;
+            /* GNOME Remote Desktop requires an even aggregate desktop width. */
+            x -= x % 2;
         }
         layout->monitors[1] = (OrbisDisplayRect){x, y, sw, sh};
     }
@@ -46,4 +55,10 @@ bool OrbisDisplayLayoutMake(uint32_t pw, uint32_t ph, uint32_t sw, uint32_t sh,
         if ((uint32_t)rect.y + rect.height > layout->height) layout->height = rect.y + rect.height;
     }
     return true;
+}
+
+bool OrbisDisplayLayoutMake(uint32_t pw, uint32_t ph, uint32_t sw, uint32_t sh,
+                           OrbisMonitorArrangement arrangement, bool second, OrbisDisplayLayout *layout)
+{
+    return OrbisDisplayLayoutMakeWithOffset(pw, ph, sw, sh, arrangement, 0, second, layout);
 }

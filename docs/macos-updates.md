@@ -10,6 +10,7 @@ requires the user's approval. Checks are deferred during remote sessions. If
 the user starts a session after downloading an update, relaunch waits until
 that session ends. Sparkle verifies the ZIP before extraction and also verifies
 the feed. Updates preserve the existing profile files and Keychain credentials.
+Ad-hoc updates may still require renewed Keychain authorization, as described below.
 
 ## Free signing
 
@@ -25,6 +26,43 @@ The first installation of an unnotarized GitHub download may require the user
 to approve opening it in macOS System Settings > Privacy & Security. Organizations
 can enforce policies that disallow such apps. A Developer ID signature and
 notarization can be added later for smoother first-install distribution.
+
+## Stable identity for local installations
+
+An ad-hoc signature identifies a particular build, so replacing its executable
+can trigger Keychain authorization again. For local installations, use the same
+Apple Development identity on every update. For public distribution, use a
+consistent Developer ID identity and notarization. Sparkle's Ed25519 signature
+authenticates an update archive; it does not establish the application's identity
+for Keychain access.
+
+Configure a local identity without putting certificates or private keys in the
+repository. Use the SHA-1 identity reported by `security find-identity -v -p
+codesigning`, or its exact certificate name:
+
+```sh
+mkdir -p "$HOME/.config/orbis"
+printf '%s\n' 'YOUR_CODE_SIGNING_IDENTITY' > "$HOME/.config/orbis/macos-signing-identity"
+scripts/build-orbis-macos.sh
+```
+
+`ORBIS_MACOS_SIGNING_IDENTITY` overrides this file. Set it to `-` explicitly for
+an ad-hoc test build. `ORBIS_MACOS_SIGNING_IDENTITY_FILE` overrides the file path.
+If a configured identity is unavailable, signing fails rather than silently
+changing the application's identity. In remote development, sign from the Mac's
+logged-in GUI session when the signing key is not accessible over SSH.
+
+The first transition from an ad-hoc build can still require authorization for
+existing credentials. Choose **Always Allow** in the macOS Keychain prompt for
+Orbis to remember that permission. Subsequent versions signed with the same
+identity and bundle identifier retain the same designated requirement. This does
+not change other applications' permissions or expose saved credentials. Switching
+between Apple Development, Developer ID, and ad-hoc builds can prompt again.
+The current GitHub release workflow still uses ad-hoc signing; the local identity
+configuration applies to local builds only.
+
+References: [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements),
+[Apple code signing overview](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Introduction/Introduction.html).
 
 ## One-time repository setup
 

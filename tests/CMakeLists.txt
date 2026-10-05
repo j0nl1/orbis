@@ -129,6 +129,8 @@ target_link_libraries(orbis_tunnel PUBLIC orbis_shared)
 add_library(
   orbis_macos_ui
   STATIC
+  ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisFormControls.m
+  ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisDisplaySettings.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAboutController.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisLibraryViewController.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisProfileEditorController.m

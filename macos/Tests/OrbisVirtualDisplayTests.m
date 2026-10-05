@@ -3,6 +3,7 @@
 #import <freerdp/client/disp.h>
 #import "OrbisSessionController.h"
 #import "OrbisProfile.h"
+#import "OrbisDisplaySettings.h"
 #import "OrbisDirectTransport.h"
 #import "MRDPView.h"
 #import "OrbisRemoteView.h"
@@ -99,7 +100,7 @@ static void Require(BOOL value, const char *message)
     [[_window contentView] addSubview:_remoteView];
     [_window setReleasedWhenClosed:NO];
     _wasConnected = YES;
-    OrbisDisplayLayoutMake(1280, 800, 0, 0, [_profile monitorArrangement], false, &_displayLayout);
+    OrbisDisplayLayoutMake(1280, 800, 0, 0, [_displaySettings arrangement], false, &_displayLayout);
 }
 - (NSWindow *)secondWindow { return _secondaryWindow; }
 - (BOOL)isStopped { return _stopping; }
@@ -168,6 +169,7 @@ int main(void)
     {
         [NSApplication sharedApplication];
         pointerEvents = [[NSMutableArray alloc] init];
+        id originalSettings = [[[NSUserDefaults standardUserDefaults] objectForKey:@"OrbisDisplaySettings.v1"] retain];
         OrbisAppDelegate *delegate = [[OrbisAppDelegate alloc] init];
         [delegate buildMainMenu];
         NSMenuItem *displayItem = nil;
@@ -182,6 +184,11 @@ int main(void)
             profile.name = @"Fixture";
             profile.secondaryWidth = 1024; profile.secondaryHeight = 768;
             profile.monitorArrangement = (OrbisMonitorArrangement)arrangement;
+            OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] init] autorelease];
+            settings.secondaryWidth = 1024; settings.secondaryHeight = 768;
+            settings.arrangement = (OrbisMonitorArrangement)arrangement;
+            settings.offset = (int32_t)(arrangement * 100 - 150);
+            [settings saveToDefaults:[NSUserDefaults standardUserDefaults]];
             OrbisDirectTransport *transport = [[[OrbisDirectTransport alloc] init] autorelease];
             OrbisDisplayFixtureController *controller = [[OrbisDisplayFixtureController alloc]
                 initWithProfile:profile password:nil transport:transport];
@@ -201,7 +208,7 @@ int main(void)
                 "The primary flag and saved secondary resolution must reach the protocol");
             Require(![controller secondWindow], "Do not display a second window before the server confirms resizing");
             OrbisDisplayLayout expected;
-            OrbisDisplayLayoutMake(1280, 800, 1024, 768, profile.monitorArrangement, true, &expected);
+            OrbisDisplayLayoutMakeWithOffset(1280, 800, 1024, 768, settings.arrangement, settings.offset, true, &expected);
             Require(sentMonitors[1].Left == expected.monitors[1].x &&
                 sentMonitors[1].Top == expected.monitors[1].y, "Arrangement must retain signed protocol offsets");
             [controller setPixelSize:NSMakeSize(expected.width, expected.height)];
@@ -233,6 +240,9 @@ int main(void)
             [controller release]; [profile release];
         }
         [delegate release]; [pointerEvents release];
+        if (originalSettings) [[NSUserDefaults standardUserDefaults] setObject:originalSettings forKey:@"OrbisDisplaySettings.v1"];
+        else [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OrbisDisplaySettings.v1"];
+        [originalSettings release];
         printf("%s: virtual display session lifecycle\n", failures ? "FAIL" : "PASS");
         return failures ? 1 : 0;
     }

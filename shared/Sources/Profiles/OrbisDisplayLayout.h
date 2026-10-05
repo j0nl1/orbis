@@ -25,4 +25,8 @@ bool OrbisDisplayLayoutMake(uint32_t primaryWidth, uint32_t primaryHeight,
                             uint32_t secondaryWidth, uint32_t secondaryHeight,
                             OrbisMonitorArrangement arrangement, bool secondDisplay,
                             OrbisDisplayLayout *layout);
+bool OrbisDisplayLayoutMakeWithOffset(uint32_t primaryWidth, uint32_t primaryHeight,
+                                      uint32_t secondaryWidth, uint32_t secondaryHeight,
+                                      OrbisMonitorArrangement arrangement, int32_t offset,
+                                      bool secondDisplay, OrbisDisplayLayout *layout);
 #endif

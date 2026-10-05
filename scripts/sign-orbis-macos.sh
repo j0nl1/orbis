@@ -3,7 +3,19 @@
 set -euo pipefail
 
 app_path="${1:?Usage: sign-orbis-macos.sh APP_PATH}"
-identity="${ORBIS_MACOS_SIGNING_IDENTITY:--}"
+identity="${ORBIS_MACOS_SIGNING_IDENTITY:-}"
+# Keep a local signing identity across rebuilds without committing certificates
+# or configuring unrelated applications. An invalid configured identity fails
+# signing instead of silently falling back to a new ad-hoc identity.
+identity_file="${ORBIS_MACOS_SIGNING_IDENTITY_FILE:-${HOME}/.config/orbis/macos-signing-identity}"
+if [[ -z "$identity" && -f "$identity_file" ]]; then
+  IFS= read -r identity < "$identity_file" || [[ -n "$identity" ]]
+  if [[ -z "$identity" ]]; then
+    printf 'The Orbis macOS signing identity file is empty: %s\n' "$identity_file" >&2
+    exit 1
+  fi
+fi
+identity="${identity:--}"
 options=(--force --sign "$identity")
 if [[ "$identity" != - ]]; then
   options+=(--options runtime --timestamp)

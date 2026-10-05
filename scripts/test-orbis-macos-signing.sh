@@ -4,7 +4,7 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sign_script="${ORBIS_TEST_SIGN_SCRIPT:-${project_root}/scripts/sign-orbis-macos.sh}"
-artifact_root="${HOME}/.codex-artifacts/${project_root#/}/research/signing-tests"
+artifact_root="${HOME}/.codex/artifacts/research/orbis-signing-tests"
 mkdir -p "$artifact_root"
 fixture_root="$(mktemp -d "${artifact_root}/unsigned-intel.XXXXXX")"
 trap 'rm -r "$fixture_root"' EXIT
@@ -41,4 +41,15 @@ if codesign --display "${app_path}/Contents/Frameworks/libOrbisSigningFixture.dy
 fi
 ORBIS_MACOS_SIGNING_IDENTITY=- "$sign_script" "$app_path"
 codesign --verify --deep --strict "$app_path"
-printf '%s\n' 'PASS: unsigned Intel dependencies are signed before the app'
+# A configured identity persists without affecting an explicit ad-hoc override.
+printf '%s\n' - > "$fixture_root/identity"
+ORBIS_MACOS_SIGNING_IDENTITY= ORBIS_MACOS_SIGNING_IDENTITY_FILE="$fixture_root/identity" "$sign_script" "$app_path"
+printf '%s\n' 'missing-orbis-signing-test-identity' > "$fixture_root/identity"
+if ORBIS_MACOS_SIGNING_IDENTITY= ORBIS_MACOS_SIGNING_IDENTITY_FILE="$fixture_root/identity" \
+    "$sign_script" "$app_path" > "$fixture_root/missing-identity.log" 2>&1; then
+  printf '%s\n' 'A missing configured identity must fail instead of changing the app identity.' >&2
+  exit 1
+fi
+ORBIS_MACOS_SIGNING_IDENTITY=- ORBIS_MACOS_SIGNING_IDENTITY_FILE="$fixture_root/identity" "$sign_script" "$app_path"
+codesign --verify --deep --strict "$app_path"
+printf '%s\n' 'PASS: dependencies, persistent identity, and explicit ad-hoc override'

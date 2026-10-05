@@ -16,6 +16,7 @@
 #import "mfreerdp.h"
 #import "OrbisConnectionRetryPolicy.h"
 #import "OrbisProfile.h"
+#import "OrbisDisplaySettings.h"
 #import "OrbisConnectionTransport.h"
 #import "OrbisRDPTransportRoute.h"
 #import "OrbisSessionEndPolicy.h"
@@ -138,6 +139,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	NSParameterAssert(transport != nil);
 	_transport = [transport retain];
 	_profile = [profile copy];
+	_displaySettings = [[OrbisDisplaySettings loadMigratingProfile:profile] copy];
 	_password = [password copy];
 	_displayLock = [[NSLock alloc] init];
 	return self;
@@ -395,13 +397,13 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	// GNOME Remote Desktop 46 rejects odd RDP desktop widths. Rounding down one
 	// point keeps the requested aspect and the smart-sized window unchanged.
 	width -= width % 2;
-	if ([_profile primaryWidth] && [_profile primaryHeight])
+	if ([_displaySettings primaryWidth] && [_displaySettings primaryHeight])
 	{
-		width = [_profile primaryWidth]; height = [_profile primaryHeight];
+		width = [_displaySettings primaryWidth]; height = [_displaySettings primaryHeight];
 	}
 	width = MIN(8192, MAX(200, width)); height = MIN(8192, MAX(200, height));
 	OrbisDisplayLayoutMake((uint32_t)width, (uint32_t)height, 0, 0,
-	    [_profile monitorArrangement], false, &_displayLayout);
+	    [_displaySettings arrangement], false, &_displayLayout);
 	[_remoteView setDisplayRegion:NSMakeRect(0, 0, width, height)];
 	NSMutableArray *arguments = [NSMutableArray arrayWithObjects:
 	    @"orbis",
@@ -580,12 +582,12 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	NSScreen *screen = [_window screen];
 	for (NSScreen *candidate in [NSScreen screens]) if (candidate != screen) { screen = candidate; break; }
 	NSSize size = [screen frame].size;
-	uint32_t sw = [_profile secondaryWidth] ?: (uint32_t)MIN(8192, MAX(800, size.width));
-	uint32_t sh = [_profile secondaryHeight] ?: (uint32_t)MIN(8192, MAX(600, size.height));
+	uint32_t sw = [_displaySettings secondaryWidth] ?: (uint32_t)MIN(8192, MAX(800, size.width));
+	uint32_t sh = [_displaySettings secondaryHeight] ?: (uint32_t)MIN(8192, MAX(600, size.height));
 	sw -= sw % 2;
 	OrbisDisplayLayout layout;
-	if (OrbisDisplayLayoutMake(_displayLayout.monitors[0].width, _displayLayout.monitors[0].height,
-	    sw, sh, [_profile monitorArrangement], true, &layout)) [self requestDisplayLayout:layout];
+	if (OrbisDisplayLayoutMakeWithOffset(_displayLayout.monitors[0].width, _displayLayout.monitors[0].height,
+	    sw, sh, [_displaySettings arrangement], [_displaySettings offset], true, &layout)) [self requestDisplayLayout:layout];
 }
 
 - (void)removeSecondaryWindow
@@ -619,7 +621,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	}
 	else if (_displayLayout.count == 1)
 		OrbisDisplayLayoutMake((uint32_t)size.width, (uint32_t)size.height, 0, 0,
-		    [_profile monitorArrangement], false, &_displayLayout);
+		    [_displaySettings arrangement], false, &_displayLayout);
 	OrbisDisplayRect primary = _displayLayout.pixels[0];
 	[_remoteView setDisplayRegion:NSMakeRect(primary.x, primary.y, primary.width, primary.height)];
 	if (_displayLayout.count == 2)
@@ -888,7 +890,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 		if (_displayChangePending || _stopping) return NO;
 		OrbisDisplayLayout layout;
 		OrbisDisplayLayoutMake(_displayLayout.monitors[0].width, _displayLayout.monitors[0].height,
-		    0, 0, [_profile monitorArrangement], false, &layout);
+		    0, 0, [_displaySettings arrangement], false, &layout);
 		[self requestDisplayLayout:layout];
 		return NO;
 	}
@@ -910,6 +912,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[_window release];
 	[_password release];
 	[_profile release];
+	[_displaySettings release];
 	[_transport release];
 	[super dealloc];
 }

@@ -50,6 +50,10 @@ set(ORBIS_MACOS_SOURCES
 	Sources/OrbisAboutController.m
     Sources/OrbisLibraryViewController.h
     Sources/OrbisLibraryViewController.m
+    Sources/OrbisFormControls.h
+    Sources/OrbisFormControls.m
+    Sources/OrbisDisplaySettings.h
+    Sources/OrbisDisplaySettings.m
     Sources/OrbisProfileEditorController.h
     Sources/OrbisProfileEditorController.m
 	Sources/OrbisConnectionRetryPolicy.h

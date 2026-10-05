@@ -6,6 +6,7 @@
 
 #import "OrbisCredentialStore.h"
 #import "OrbisAboutController.h"
+#import "OrbisDisplaySettings.h"
 #import "OrbisProfile.h"
 #import "OrbisProfileEditorController.h"
 
@@ -88,7 +89,14 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	                                  @selector(showAbout:));
 	[add setContentTintColor:[NSColor systemTealColor]];
 	[info setContentTintColor:[NSColor secondaryLabelColor]];
-	NSStackView *headerActions = [NSStackView stackViewWithViews:@[ add, info ]];
+	NSButton *settings = [NSButton buttonWithTitle:@"Settings" target:self action:@selector(showSettings:)];
+    [settings setImage:[NSImage imageWithSystemSymbolName:@"gearshape" accessibilityDescription:nil]];
+    [settings setImagePosition:NSImageLeading];
+    [settings setBezelStyle:NSBezelStyleRounded];
+    [settings setControlSize:NSControlSizeLarge];
+    [settings setAccessibilityIdentifier:@"display-settings-button"];
+    [[settings heightAnchor] constraintEqualToConstant:36].active = YES;
+    NSStackView *headerActions = [NSStackView stackViewWithViews:@[ add, settings, info ]];
 	[headerActions setOrientation:NSUserInterfaceLayoutOrientationHorizontal];
 	[headerActions setAlignment:NSLayoutAttributeCenterY];
 	[headerActions setSpacing:10.0];
@@ -350,6 +358,16 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[_aboutController beginSheetForWindow:parent];
 }
 
+- (void)showSettings:(id)sender
+{
+    (void)sender;
+    if (!self.view.window || self.view.window.attachedSheet) return;
+    [_settingsController release];
+    OrbisDisplaySettings *settings = [OrbisDisplaySettings loadMigratingProfile:[[_profileStore profiles] firstObject]];
+    _settingsController = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
+    [_settingsController beginSheetForWindow:self.view.window];
+}
+
 - (void)editPressed:(NSButton *)sender
 {
 	OrbisProfile *profile = [self profileForSender:sender];
@@ -451,6 +469,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[_profileEditor setDelegate:nil];
 	[_profileEditor release];
 	[_aboutController release];
+	[_settingsController release];
 	[_cardsStack release];
 	[_profileStore release];
 	[super dealloc];

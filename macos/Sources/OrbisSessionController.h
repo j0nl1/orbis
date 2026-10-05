@@ -4,6 +4,7 @@
 #import "OrbisDisplayLayout.h"
 
 @class OrbisProfile;
+@class OrbisDisplaySettings;
 @class OrbisSessionController;
 @protocol OrbisConnectionTransport;
 @protocol OrbisTransportSession;
@@ -20,6 +21,7 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 {
 	id<OrbisSessionControllerDelegate> _delegate;
 	OrbisProfile *_profile;
+	OrbisDisplaySettings *_displaySettings;
 	NSString *_password;
 	NSWindow *_window, *_secondaryWindow, *_closingSecondaryWindow;
 	id _secondaryView;
