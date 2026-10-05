@@ -215,12 +215,153 @@ static void CheckDisplayViewports(void)
 	[second removeFromSuperview]; [second release]; [source release]; [window release];
 }
 
+static void CheckCommandEventOrdering(void)
+{
+    [events removeAllObjects];
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    // A nested client can deliver the shortcut before its modifier transition.
+    [view keyDown:Key(NSEventTypeKeyDown, 8, @"c", @"c", NSEventModifierFlagCommand)];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 4,
+        @"A shortcut observed before Command state must not produce an extra remote Super tap");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    // AppKit may omit keyUp for keys used while Command is held.
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", 0)];
+    NSInteger balance = 0;
+    for (NSDictionary *event in events)
+    {
+        if ([event[@"code"] unsignedIntValue] == 0x4B)
+            balance += ([event[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) ? -1 : 1;
+    }
+    Require(balance == 0, @"Releasing Command must not leave an unmapped arrow key held remotely");
+    [view release];
+}
+
+static void CheckCommandReleaseTransitions(void)
+{
+    [events removeAllObjects];
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:NO];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 2 && [events[0][@"code"] unsignedIntValue] == 0x5B &&
+        ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"A standalone Command tap must remain one complete remote Super tap");
+    [view release];
+
+    for (NSNumber *keyCode in @[ @8, @51 ])
+    {
+        [events removeAllObjects];
+        view = [[OrbisKeyboardTestView alloc] init];
+        NSString *text = keyCode.unsignedShortValue == 8 ? @"c" : @"\177";
+        [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+        [view keyDown:Key(NSEventTypeKeyDown, keyCode.unsignedShortValue, text, text, NSEventModifierFlagCommand)];
+        [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", 0)];
+        [view keyUp:Key(NSEventTypeKeyUp, keyCode.unsignedShortValue, text, text, 0)];
+        Require(events.count == (keyCode.unsignedShortValue == 8 ? 4 : 2),
+            @"An atomic Command shortcut must ignore keyUp arriving after Command release");
+        [view release];
+    }
+
+    for (NSNumber *keyCode in @[ @123, @124, @125, @126, @14 ])
+    {
+        [events removeAllObjects];
+        view = [[OrbisKeyboardTestView alloc] init];
+        NSString *text = keyCode.unsignedShortValue == 14 ? @"e" : @"";
+        [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+        [view keyDown:Key(NSEventTypeKeyDown, keyCode.unsignedShortValue, text, text, NSEventModifierFlagCommand)];
+        [view setCommandKeyDown:NO];
+        Require(events.count == 2 &&
+            [events[0][@"code"] unsignedIntValue] == [events[1][@"code"] unsignedIntValue] &&
+            ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+            @"Every non-atomic Command key must receive its remote release when keyUp is missing");
+        [view keyUp:Key(NSEventTypeKeyUp, keyCode.unsignedShortValue, text, text, 0)];
+        Require(events.count == 2, @"A late keyUp must not release an already completed Command key twice");
+        [view keyDown:Key(NSEventTypeKeyDown, keyCode.unsignedShortValue, text, text, 0)];
+        [view keyUp:Key(NSEventTypeKeyUp, keyCode.unsignedShortValue, text, text, 0)];
+        Require(events.count == 4 && ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+            @"The same key must still work normally after recovering a Command chord");
+        [view release];
+    }
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view keyUp:Key(NSEventTypeKeyUp, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 2, @"A Command key released normally must not be released again");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    NSEvent *repeat = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagCommand timestamp:2 windowNumber:0 context:nil
+        characters:@"" charactersIgnoringModifiers:@"" isARepeat:YES keyCode:123];
+    [view keyDown:repeat];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 3 && ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Repeated Command arrows must end with one remote release");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view cancelPendingCommandTap];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 2 && [events.lastObject[@"code"] unsignedIntValue] == 0x4B &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Focus cancellation must release Command keys without creating a Super tap");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    NSEventModifierFlags chord = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", chord)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", chord)];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagShift)];
+    Require(events.count == 3 && [events[0][@"code"] unsignedIntValue] == 0x2A &&
+        [events.lastObject[@"code"] unsignedIntValue] == 0x4B &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Recovering a Command key must preserve Shift while it is physically held");
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 56, @"", @"", 0)];
+    Require(events.count == 4 && [events.lastObject[@"code"] unsignedIntValue] == 0x2A &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Shift must be released when its own modifier event arrives");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    NSEvent *click = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:NSMakePoint(10, 10)
+        modifierFlags:NSEventModifierFlagCommand timestamp:1 windowNumber:0 context:nil
+        eventNumber:1 clickCount:1 pressure:1];
+    [view mouseDown:click];
+    [view mouseUp:click];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 0, @"A Command pointer action must not create a later Super tap");
+    [view release];
+    mouseEvents = 0;
+}
+
 int main(void)
 {
 	@autoreleasepool
 	{
 		[NSApplication sharedApplication];
 		events = [[NSMutableArray alloc] init];
+        CheckCommandEventOrdering();
+        CheckCommandReleaseTransitions();
 		CheckDisplayViewports();
 		CheckOptionBackspace(NO, NO);
 		CheckOptionBackspace(YES, NO);

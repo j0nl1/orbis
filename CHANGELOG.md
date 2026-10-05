@@ -28,6 +28,8 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- macOS Command shortcuts no longer send an extra remote Super tap when their modifier state arrives after the shortcut.
+- Remote keys used with Command are released when Command is released or focus cleanup runs, including when key-up events are missing or delayed.
 - Windowed macOS remote sessions use a separate native title bar so window controls do not overlap the remote desktop.
 - The macOS loading overlay is removed from its window after the first remote frame, including its retained view and status label.
 - macOS remote window drags can cross between Orbis display windows while keeping the original button press.

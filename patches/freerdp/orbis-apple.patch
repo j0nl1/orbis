@@ -143,7 +143,7 @@ index 31682d1d5..625142d56 100644
  
  	if (tIOHIDManagerRef)
 diff --git a/client/Mac/MRDPView.h b/client/Mac/MRDPView.h
-index d7d978f0e..2acf02181 100644
+index d7d978f..5f46ad3 100644
 --- a/client/Mac/MRDPView.h
 +++ b/client/Mac/MRDPView.h
 @@ -28,6 +28,12 @@
@@ -159,7 +159,7 @@ index d7d978f0e..2acf02181 100644
  @interface MRDPView : NSView
  {
  	mfContext *mfc;
-@@ -44,13 +50,24 @@
+@@ -44,13 +50,25 @@
  	int argc;
  	char **argv;
  	DWORD kbdModFlags;
@@ -168,6 +168,7 @@ index d7d978f0e..2acf02181 100644
 +	BOOL commandTapPending;
 +	BOOL commandTapConsumed;
 +	BOOL locallyHandledKeyDown[128];
++	DWORD commandKeyScancodes[128];
 +	BOOL hasPresentedRemoteFrame;
  	BOOL initialized;
 +	BOOL usesDisplayRegion;
@@ -184,7 +185,7 @@ index d7d978f0e..2acf02181 100644
    @public
  	NSPasteboard *pasteboard_rd;
  	NSPasteboard *pasteboard_wr;
-@@ -64,11 +81,21 @@
+@@ -64,11 +82,21 @@
  - (void)setScrollOffset:(int)xOffset y:(int)yOffset w:(int)width h:(int)height;
  
  - (void)onPasteboardTimerFired:(NSTimer *)timer;
@@ -207,7 +208,7 @@ index d7d978f0e..2acf02181 100644
  @end
  
 diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
-index e82f50b9c..4fad65447 100644
+index e82f50b..37d6a39 100644
 --- a/client/Mac/MRDPView.m
 +++ b/client/Mac/MRDPView.m
 @@ -24,8 +24,6 @@
@@ -408,7 +409,7 @@ index e82f50b9c..4fad65447 100644
  - (void)mouseMoved:(NSEvent *)event
  {
  	[super mouseMoved:event];
-@@ -273,12 +399,30 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -273,12 +399,33 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -429,7 +430,10 @@ index e82f50b9c..4fad65447 100644
 +	if (mapsCommandShortcutsToControl)
 +	{
 +		if (flags & NSEventModifierFlagCommand)
++		{
++			[self setCommandKeyDown:YES];
 +			commandTapConsumed = TRUE;
++		}
 +		flags &= ~NSEventModifierFlagCommand;
 +	}
 +	updateFlagStates(instance->context->input, flags, kbdModFlags);
@@ -439,7 +443,7 @@ index e82f50b9c..4fad65447 100644
  - (void)mouseDown:(NSEvent *)event
  {
  	[super mouseDown:event];
-@@ -286,6 +430,12 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -286,6 +433,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -452,7 +456,7 @@ index e82f50b9c..4fad65447 100644
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -299,6 +449,11 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -299,6 +452,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -464,7 +468,7 @@ index e82f50b9c..4fad65447 100644
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -312,6 +467,12 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -312,6 +470,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -477,7 +481,7 @@ index e82f50b9c..4fad65447 100644
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -325,6 +486,11 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -325,6 +489,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -489,7 +493,7 @@ index e82f50b9c..4fad65447 100644
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -338,6 +504,12 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -338,6 +507,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -502,7 +506,7 @@ index e82f50b9c..4fad65447 100644
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -352,6 +524,11 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -352,6 +527,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -514,7 +518,7 @@ index e82f50b9c..4fad65447 100644
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -415,6 +592,11 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -415,6 +595,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -526,7 +530,7 @@ index e82f50b9c..4fad65447 100644
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -422,6 +604,17 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -422,6 +607,17 @@ DWORD WINAPI mac_client_thread(void *param)
  	mf_scale_mouse_event(context, PTR_FLAGS_MOVE, x, y);
  }
  
@@ -544,7 +548,7 @@ index e82f50b9c..4fad65447 100644
  static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE type)
  {
  	/**
-@@ -484,6 +677,16 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -484,6 +680,16 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  		return;
  
  	DWORD modFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -561,14 +565,31 @@ index e82f50b9c..4fad65447 100644
  
  	WINPR_ASSERT(instance);
  	WINPR_ASSERT(instance->context);
-@@ -498,6 +701,155 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -498,6 +704,175 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  	kbdModFlags = modFlags;
  }
  
++- (void)releaseCommandKeys
++{
++	rdpInput *input = (is_connected && instance && instance->context) ? instance->context->input : NULL;
++	for (NSUInteger code = 0; code < sizeof(commandKeyScancodes) / sizeof(commandKeyScancodes[0]); code++)
++	{
++		if (!commandKeyScancodes[code])
++			continue;
++		DWORD scancode = commandKeyScancodes[code] - 1;
++		if (input)
++			freerdp_input_send_keyboard_event(input, (scancode & KBDEXT) | KBD_FLAGS_RELEASE, scancode & 0xFF);
++		commandKeyScancodes[code] = 0;
++		locallyHandledKeyDown[code] = TRUE;
++	}
++}
++
 +- (void)setCommandKeyDown:(BOOL)commandIsDown
 +{
 +	if (!is_connected || !mapsCommandShortcutsToControl)
 +		return;
++	if (!commandIsDown)
++		[self releaseCommandKeys];
 +	if (commandIsDown && !commandTapPending)
 +	{
 +		commandTapPending = TRUE;
@@ -593,6 +614,7 @@ index e82f50b9c..4fad65447 100644
 +
 +- (void)cancelPendingCommandTap
 +{
++	[self releaseCommandKeys];
 +	commandTapPending = FALSE;
 +	commandTapConsumed = FALSE;
 +}
@@ -607,6 +629,8 @@ index e82f50b9c..4fad65447 100644
 +	commandTapConsumed = TRUE;
 +
 +	const unsigned short keyCode = [event keyCode];
++	if (keyCode < sizeof(locallyHandledKeyDown) / sizeof(locallyHandledKeyDown[0]))
++		locallyHandledKeyDown[keyCode] = TRUE;
 +	const NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
 +	// Remote-control hops can inject the same Command shortcut more than once,
 +	// with isARepeat still false and without a matching key-up. Coalesce only
@@ -717,10 +741,12 @@ index e82f50b9c..4fad65447 100644
  - (void)keyDown:(NSEvent *)event
  {
  	DWORD keyCode;
-@@ -509,8 +861,24 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -509,8 +884,26 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
++	if (mapsCommandShortcutsToControl && ([event modifierFlags] & NSEventModifierFlagCommand))
++		[self setCommandKeyDown:YES];
 +	if ([self sendMappedCommandShortcut:event])
 +		return;
 +	if ([self sendMappedOptionBackspace:event])
@@ -743,17 +769,32 @@ index e82f50b9c..4fad65447 100644
  
  	keyFlags = KBD_FLAGS_DOWN;
  	keyCode = [event keyCode];
-@@ -548,8 +916,23 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -533,6 +926,11 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+ 	         keyCode, scancode, vkcode, keyFlags, GetVirtualKeyName(vkcode));
+ #endif
+ 
++	// Command chords may arrive without keyUp; keep their actual wire scancode
++	// so releasing Command or leaving the remote view can finish the press.
++	if (mapsCommandShortcutsToControl && ([event modifierFlags] & NSEventModifierFlagCommand) &&
++	    code < sizeof(commandKeyScancodes) / sizeof(commandKeyScancodes[0]))
++		commandKeyScancodes[code] = (scancode | (keyFlags & KBDEXT)) + 1;
+ 	WINPR_ASSERT(instance->context);
+ 	freerdp_input_send_keyboard_event(instance->context->input, keyFlags, scancode);
+ }
+@@ -548,8 +946,26 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
 -
 -	[self flagsChanged:event];
 +	unsigned short releasedCode = [event keyCode];
++	if (releasedCode < sizeof(commandKeyScancodes) / sizeof(commandKeyScancodes[0]))
++		commandKeyScancodes[releasedCode] = 0;
 +	if (releasedCode < sizeof(locallyHandledKeyDown) / sizeof(locallyHandledKeyDown[0]) &&
 +	    locallyHandledKeyDown[releasedCode])
 +	{
 +		locallyHandledKeyDown[releasedCode] = FALSE;
++		[self flagsChanged:event];
 +		return; // Locally handled keys already include their remote releases.
 +	}
 +	DWORD eventModFlags =
@@ -769,7 +810,7 @@ index e82f50b9c..4fad65447 100644
  
  	keyFlags = KBD_FLAGS_RELEASE;
  	keyCode = [event keyCode];
-@@ -673,6 +1056,17 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -673,6 +1089,17 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  	return updateFlagStates(input, 0, aKbdModFlags);
  }
  
@@ -787,7 +828,7 @@ index e82f50b9c..4fad65447 100644
  - (void)releaseResources
  {
  	for (int i = 0; i < argc; i++)
-@@ -686,13 +1080,22 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -686,13 +1113,22 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)drawRect:(NSRect)rect
  {
@@ -814,7 +855,7 @@ index e82f50b9c..4fad65447 100644
  		CGContextSaveGState(cgContext);
  		CGContextClipToRect(
  		    cgContext, CGRectMake(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height));
-@@ -773,6 +1176,8 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -773,6 +1209,8 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)pause
  {
@@ -823,7 +864,7 @@ index e82f50b9c..4fad65447 100644
  	dispatch_async(dispatch_get_main_queue(), ^{
  		[self->pasteboard_timer invalidate];
  	});
-@@ -788,6 +1193,7 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -788,6 +1226,7 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)resume
  {
@@ -831,7 +872,7 @@ index e82f50b9c..4fad65447 100644
  	if (!self.is_connected)
  		return;
  
-@@ -932,7 +1338,11 @@ BOOL mac_post_connect(freerdp *instance)
+@@ -932,7 +1371,11 @@ BOOL mac_post_connect(freerdp *instance)
  		return FALSE;
  
  	gdi = instance->context->gdi;
@@ -844,7 +885,7 @@ index e82f50b9c..4fad65447 100644
  	graphics_register_pointer(instance->context->graphics, &rdp_pointer);
  	/* setup pasteboard (aka clipboard) for copy operations (write only) */
  	view->pasteboard_wr = [NSPasteboard generalPasteboard];
-@@ -941,7 +1351,6 @@ BOOL mac_post_connect(freerdp *instance)
+@@ -941,7 +1384,6 @@ BOOL mac_post_connect(freerdp *instance)
  		view->pasteboard_rd = [NSPasteboard generalPasteboard];
  		view->pasteboard_changecount = -1;
  	});
@@ -852,7 +893,7 @@ index e82f50b9c..4fad65447 100644
  	mfc->appleKeyboardType = mac_detect_keyboard_type();
  	return TRUE;
  }
-@@ -962,7 +1371,18 @@ void mac_post_disconnect(freerdp *instance)
+@@ -962,7 +1404,18 @@ void mac_post_disconnect(freerdp *instance)
  	                                   mac_OnChannelConnectedEventHandler);
  	PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub,
  	                                      mac_OnChannelDisconnectedEventHandler);
@@ -871,7 +912,7 @@ index e82f50b9c..4fad65447 100644
  }
  
  static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **username, char **password,
-@@ -974,65 +1394,75 @@ static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **usernam
+@@ -974,65 +1427,75 @@ static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **usernam
  	WINPR_ASSERT(password);
  	WINPR_ASSERT(domain);
  
@@ -1000,7 +1041,7 @@ index e82f50b9c..4fad65447 100644
  }
  
  static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **password, char **domain,
-@@ -1092,11 +1522,6 @@ static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **pass
+@@ -1092,11 +1555,6 @@ static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **pass
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
  			goto fail;
  	}
@@ -1012,7 +1053,7 @@ index e82f50b9c..4fad65447 100644
  	else if (!*password)
  	{
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
-@@ -1149,35 +1574,41 @@ DWORD mac_verify_certificate_ex(freerdp *instance, const char *host, UINT16 port
+@@ -1149,35 +1607,41 @@ DWORD mac_verify_certificate_ex(freerdp *instance, const char *host, UINT16 port
                                  const char *common_name, const char *subject, const char *issuer,
                                  const char *fingerprint, DWORD flags)
  {
@@ -1083,7 +1124,7 @@ index e82f50b9c..4fad65447 100644
  }
  
  DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
-@@ -1186,35 +1617,11 @@ DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UIN
+@@ -1186,35 +1650,11 @@ DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UIN
                                          const char *old_subject, const char *old_issuer,
                                          const char *old_fingerprint, DWORD flags)
  {
@@ -1124,7 +1165,7 @@ index e82f50b9c..4fad65447 100644
  }
  
  int mac_logon_error_info(freerdp *instance, UINT32 data, UINT32 type)
-@@ -1456,7 +1863,19 @@ BOOL mac_end_paint(rdpContext *context)
+@@ -1456,7 +1896,19 @@ BOOL mac_end_paint(rdpContext *context)
  
  	windows_to_apple_cords(mfc->view, &newDrawRect);
  	dispatch_sync(dispatch_get_main_queue(), ^{
@@ -1145,7 +1186,7 @@ index e82f50b9c..4fad65447 100644
  	});
  	gdi->primary->hdc->hwnd->ninvalid = 0;
  	return TRUE;
-@@ -1477,23 +1896,35 @@ BOOL mac_desktop_resize(rdpContext *context)
+@@ -1477,23 +1929,35 @@ BOOL mac_desktop_resize(rdpContext *context)
  	 * put on the update message queue to be able to properly flush pending updates,
  	 * resize, and then continue with post-resizing graphical updates.
  	 */

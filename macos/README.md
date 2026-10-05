@@ -79,3 +79,12 @@ has its own mode. Resize events are coalesced after the drag ends, and a size
 change received while the server is responding is applied after confirmation.
 Requests respect the same server limits as manual changes and retain the other
 remote display's resolution and arrangement.
+
+## Keyboard modifiers
+
+Mac editing shortcuts such as Command-C send complete remote Control chords.
+A standalone Command tap sends the remote Super/Windows key. Keyboard and pointer
+actions with Command consume that tap even when modifier events arrive later.
+Keys forwarded while Command is held are released when Command is released or
+focus cleanup runs; a missing key-up does not keep the remote key pressed, and
+a delayed key-up does not release it twice.
