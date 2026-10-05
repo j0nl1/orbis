@@ -15,6 +15,8 @@
 #import "OrbisTransportFactory.h"
 #import "OrbisConnectionHealthCheck.h"
 #import "OrbisAboutController.h"
+#import "OrbisIPadDisplaySettings.h"
+#import "OrbisIPadDisplaySettingsController.h"
 #import "OrbisProfile.h"
 #import "OrbisProfileEditorController.h"
 #import "RDPSession.h"
@@ -140,6 +142,18 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	[addButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 	[[addButton heightAnchor] constraintEqualToConstant:46.0].active = YES;
 
+	UIButton *settingsButton = [UIButton buttonWithType:UIButtonTypeSystem];
+	UIButtonConfiguration *settingsConfiguration = [headerButtonConfiguration copy];
+	[settingsConfiguration setImage:[UIImage systemImageNamed:@"gearshape"]];
+	[settingsButton setConfiguration:settingsConfiguration];
+	[settingsConfiguration release];
+	[settingsButton addTarget:self action:@selector(showSettingsPressed:)
+	    forControlEvents:UIControlEventTouchUpInside];
+	[settingsButton setAccessibilityLabel:@"Settings"];
+	[settingsButton setAccessibilityIdentifier:@"display-settings-button"];
+	[[settingsButton widthAnchor] constraintEqualToConstant:46.0].active = YES;
+	[[settingsButton heightAnchor] constraintEqualToConstant:46.0].active = YES;
+
 	UIButton *infoButton = [UIButton buttonWithType:UIButtonTypeSystem];
 	UIButtonConfiguration *infoConfiguration = [headerButtonConfiguration copy];
 	[infoConfiguration setImage:[UIImage systemImageNamed:@"info.circle"]];
@@ -153,7 +167,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	[[infoButton heightAnchor] constraintEqualToConstant:46.0].active = YES;
 
 	UIStackView *appHeader = [[[UIStackView alloc]
-	    initWithArrangedSubviews:@[ titleStack, addButton, infoButton ]] autorelease];
+	    initWithArrangedSubviews:@[ titleStack, addButton, settingsButton, infoButton ]] autorelease];
 	[appHeader setAxis:UILayoutConstraintAxisHorizontal];
 	[appHeader setAlignment:UIStackViewAlignmentCenter];
 	[appHeader setSpacing:10.0];
@@ -358,6 +372,18 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 		[check release];
 	}
 	[self setConnectionBusy:_isStartingConnection status:_connectionStatus];
+}
+
+- (void)showSettingsPressed:(id)sender
+{
+	(void)sender;
+	OrbisIPadDisplaySettingsController *settings = [[[OrbisIPadDisplaySettingsController alloc]
+	    initWithDefaults:[NSUserDefaults standardUserDefaults]] autorelease];
+	UINavigationController *navigation = [[[UINavigationController alloc]
+	    initWithRootViewController:settings] autorelease];
+	[navigation setModalPresentationStyle:UIModalPresentationFormSheet];
+	[navigation setPreferredContentSize:CGSizeMake(620.0, 620.0)];
+	[self presentViewController:navigation animated:YES completion:nil];
 }
 
 - (void)showAboutPressed:(id)sender
@@ -1164,8 +1190,9 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	[params setValue:password forKey:@"password"];
 	[params setValue:@"" forKey:@"domain"];
 	[params setBool:[profile acceptAllCertificates] forKey:@"accept_all_certificates"];
-	[params setInt:0 forKey:@"width"];
-	[params setInt:0 forKey:@"height"];
+	OrbisIPadDisplaySettings *displaySettings = [[[OrbisIPadDisplaySettings alloc]
+	    initWithDefaults:[NSUserDefaults standardUserDefaults]] autorelease];
+	[displaySettings applyToConnectionParameters:params];
 
 	ComputerBookmark *bookmark =
 	    [[[ComputerBookmark alloc] initWithConnectionParameters:params] autorelease];

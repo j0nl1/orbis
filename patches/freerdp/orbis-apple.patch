@@ -1399,7 +1399,7 @@ index 1f4f4732d..278cb7724 100644
      didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
  {
 diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
-index b1cc404d1..4c379bdb9 100644
+index b1cc404..f7b337f 100644
 --- a/client/iOS/CMakeLists.txt
 +++ b/client/iOS/CMakeLists.txt
 @@ -30,6 +30,11 @@ project(iFreeRDP VERSION ${FREERDP_DEFAULT_PROJECT_VERSION})
@@ -1447,12 +1447,16 @@ index b1cc404d1..4c379bdb9 100644
  
  # Dependencies
  include(ExternalDeps)
-@@ -115,6 +125,12 @@ set(SRCS
+@@ -115,6 +125,16 @@ set(SRCS
      Controllers/CredentialsEditorController.m
      Controllers/CredentialsInputController.h
      Controllers/CredentialsInputController.m
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisController.h
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisController.m
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettings.h
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettings.m
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettingsController.h
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettingsController.m
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisConnectionHealthCheck.h
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisConnectionHealthCheck.m
 +	${ORBIS_IPADOS_APP_DIR}/Sources/OrbisAboutController.h
@@ -1460,7 +1464,7 @@ index b1cc404d1..4c379bdb9 100644
      Controllers/EditorBaseController.h
      Controllers/EditorBaseController.m
      Controllers/EditorSelectionController.h
-@@ -123,14 +139,14 @@ set(SRCS
+@@ -123,14 +143,14 @@ set(SRCS
      Controllers/EncryptionController.m
      Controllers/MainTabBarController.h
      Controllers/MainTabBarController.m
@@ -1477,7 +1481,7 @@ index b1cc404d1..4c379bdb9 100644
      FreeRDP/ios_cliprdr.h
      FreeRDP/ios_cliprdr.m
      FreeRDP/ios_freerdp_events.h
-@@ -155,6 +171,19 @@ set(SRCS
+@@ -155,6 +175,19 @@ set(SRCS
      Models/Encryptor.m
      Models/GlobalDefaults.h
      Models/GlobalDefaults.m
@@ -1497,7 +1501,7 @@ index b1cc404d1..4c379bdb9 100644
      Models/RDPKeyboard.h
      Models/RDPKeyboard.m
      Models/RDPSession.h
-@@ -204,10 +233,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
+@@ -204,10 +237,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
      Resources/EditSubEditTableViewCell.xib
      Resources/EditTextTableViewCell.xib
      Resources/MainWindow.xib
@@ -1508,7 +1512,7 @@ index b1cc404d1..4c379bdb9 100644
  )
  
  set(IOS_CLIENT_RESOURCES_PNGS
-@@ -224,6 +251,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
+@@ -224,6 +255,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
      Resources/alert-window-landscape.png
      Resources/alert-window.png
      Resources/cancel_button_background.png
@@ -1516,7 +1520,7 @@ index b1cc404d1..4c379bdb9 100644
      Resources/Default@2x.png
      Resources/Default-568h@2x.png
      Resources/Default-Landscape@2x~ipad.png
-@@ -287,6 +315,15 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
+@@ -287,6 +319,15 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
  find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
  find_library(WEBKIT_FRAMEWORK WebKit REQUIRED)
  find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
@@ -1532,7 +1536,7 @@ index b1cc404d1..4c379bdb9 100644
  
  set(EXTRA_LIBS
      ${FOUNDATION_FRAMEWORK}
-@@ -298,9 +335,10 @@ set(EXTRA_LIBS
+@@ -298,9 +339,10 @@ set(EXTRA_LIBS
      ${SYSTEMCONFIGURATION_FRAMEWORK}
      ${WEBKIT_FRAMEWORK}
      ${GAMECONTROLLER_FRAMEWORK}
@@ -1544,7 +1548,7 @@ index b1cc404d1..4c379bdb9 100644
                ${IOS_CLIENT_RESOURCES_DIR}/en.lproj ${IOS_CLIENT_DIR}/Defaults.plist
  )
  
-@@ -325,7 +363,11 @@ add_executable(
+@@ -325,7 +367,11 @@ add_executable(
  add_dependencies(${PROJECT_NAME} freerdp)
  
  set_target_properties(
@@ -1557,7 +1561,7 @@ index b1cc404d1..4c379bdb9 100644
                               RESOURCE "${RESOURCES}"
  )
  
-@@ -347,6 +389,26 @@ if(TARGET winpr3-lib)
+@@ -347,6 +393,26 @@ if(TARGET winpr3-lib)
    list(APPEND _ios_embed_frameworks "${_ios_winpr_runtime_location}")
  endif()
  
@@ -1584,7 +1588,7 @@ index b1cc404d1..4c379bdb9 100644
  if(AVCODEC_LIBRARIES MATCHES "\\.framework/")
    get_filename_component(_ios_ffmpeg_framework "${AVCODEC_LIBRARIES}" DIRECTORY)
    list(APPEND _ios_embed_frameworks "${_ios_ffmpeg_framework}")
-@@ -358,3 +420,8 @@ if(_ios_embed_frameworks)
+@@ -358,3 +424,8 @@ if(_ios_embed_frameworks)
                                 XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
    )
  endif()
@@ -1616,7 +1620,7 @@ index c5a018ec6..417ceabda 100644
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378cce..cef2a5d0c 100644
+index b6d378c..ba477e7 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
 @@ -10,21 +10,22 @@
@@ -1995,7 +1999,7 @@ index b6d378cce..cef2a5d0c 100644
  
  	CGFloat maxDimension = MAX(size.width, size.height);
  	if (maxDimension > 4096.0f)
-@@ -584,9 +700,35 @@
+@@ -584,9 +700,42 @@
  
  	size.width = MAX(64.0f, size.width);
  	size.height = MAX(64.0f, size.height);
@@ -2004,9 +2008,16 @@ index b6d378cce..cef2a5d0c 100644
  	return size;
  }
  
++- (BOOL)automaticallyMatchesViewport
++{
++	ConnectionParams *parameters = [_session params];
++	return ![parameters hasValueForKey:@"match_window_resolution"] ||
++	    [parameters boolForKey:@"match_window_resolution"];
++}
++
 +- (void)queueViewportResize
 +{
-+	if (!_session_connected)
++	if (!_session_connected || ![self automaticallyMatchesViewport])
 +		return;
 +
 +	[NSObject cancelPreviousPerformRequestsWithTarget:self
@@ -2017,7 +2028,7 @@ index b6d378cce..cef2a5d0c 100644
 +
 +- (void)sendViewportResize
 +{
-+	if (!_session_connected)
++	if (!_session_connected || ![self automaticallyMatchesViewport])
 +		return;
 +
 +	CGSize requestedSize = [self remoteSizeForCurrentViewport];
@@ -2031,13 +2042,14 @@ index b6d378cce..cef2a5d0c 100644
  #pragma mark - Keyboard Toolbar Handlers
  
  - (void)showAdvancedKeyboardAnimated
-@@ -702,6 +844,14 @@
+@@ -702,6 +851,15 @@
  	}
  }
  
 +- (IBAction)matchIPadResolution:(id)sender
 +{
 +	(void)sender;
++	[[_session params] setBool:YES forKey:@"match_window_resolution"];
 +	_last_requested_remote_size = CGSizeZero;
 +	[self fitSessionViewToViewport];
 +	[self queueViewportResize];
@@ -2046,7 +2058,7 @@ index b6d378cce..cef2a5d0c 100644
  - (IBAction)disconnectSession:(id)sender
  {
  	[_session disconnect];
-@@ -914,8 +1064,7 @@
+@@ -914,8 +1072,7 @@
  
  - (void)handleSingle3FingersTap:(UITapGestureRecognizer *)gesture
  {
@@ -2056,7 +2068,7 @@ index b6d378cce..cef2a5d0c 100644
  }
  
  - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
-@@ -998,35 +1147,9 @@
+@@ -998,35 +1155,9 @@
  
  - (void)showSessionToolbar:(BOOL)show
  {
@@ -2350,7 +2362,7 @@ index 131fdc135..51169e12f 100644
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
  
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
-index 0fde5e33b..dc7580db3 100644
+index 0fde5e3..e1cdaa3 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
 @@ -12,6 +12,9 @@
@@ -2391,7 +2403,21 @@ index 0fde5e33b..dc7580db3 100644
  	// Screen Size is set on connect (we need a valid delegate in case the user choose an automatic
  	// screen size)
  
-@@ -260,6 +270,19 @@ static void freeArguments(int argc, char **argv)
+@@ -213,6 +223,13 @@ static void freeArguments(int argc, char **argv)
+ 		if (!addArgument(&argc, &argv, "/h:%d", [_params intForKey:@"height"]))
+ 			goto out_free;
+ 
++	if ([_params hasValueForKey:@"desktop_scale_factor"])
++	{
++		const int scale = [_params intForKey:@"desktop_scale_factor"];
++		if (scale < 100 || scale > 500 || !addArgument(&argc, &argv, "/scale-desktop:%d", scale))
++			goto out_free;
++	}
++
+ 	// security
+ 	switch ([_params intForKey:@"security"])
+ 	{
+@@ -260,6 +277,19 @@ static void freeArguments(int argc, char **argv)
  	if (0 != status)
  		goto out_free;
  
@@ -2411,7 +2437,7 @@ index 0fde5e33b..dc7580db3 100644
  	freeArguments(argc, argv);
  	[self mfi]->session = self;
  	return self;
-@@ -276,7 +299,11 @@ out_free:
+@@ -276,7 +306,11 @@ out_free:
  	[_name release];
  	[_params release];
  	[_ui_request_completed release];
@@ -2423,7 +2449,7 @@ index 0fde5e33b..dc7580db3 100644
  	[super dealloc];
  }
  
-@@ -290,6 +317,37 @@ out_free:
+@@ -290,6 +324,37 @@ out_free:
  
  - (void)connect
  {
@@ -2461,7 +2487,7 @@ index 0fde5e33b..dc7580db3 100644
  	// Set Screen Size to automatic if width or height are still 0
  	rdpSettings *settings = _freerdp->context->settings;
  
-@@ -313,7 +371,7 @@ out_free:
+@@ -313,7 +378,7 @@ out_free:
  	// TODO: This is a hack to ensure connections to RDVH with 16bpp don't have an odd screen
  	// resolution width
  	//       Otherwise this could result in screen corruption ..
@@ -2470,7 +2496,7 @@ index 0fde5e33b..dc7580db3 100644
  	{
  		const UINT32 w = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) & (~1);
  		(void)freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
-@@ -324,13 +382,21 @@ out_free:
+@@ -324,13 +389,21 @@ out_free:
  
  - (void)disconnect
  {
@@ -2493,7 +2519,7 @@ index 0fde5e33b..dc7580db3 100644
  		return;
  	}
  }
-@@ -382,6 +448,20 @@ out_free:
+@@ -382,6 +455,20 @@ out_free:
  		ios_events_send([self mfi], eventDescriptor);
  }
  
@@ -2514,7 +2540,7 @@ index 0fde5e33b..dc7580db3 100644
  #pragma mark -
  #pragma mark Server events (main thread)
  
-@@ -508,8 +588,30 @@ out_free:
+@@ -508,8 +595,30 @@ out_free:
  		[[self delegate] sessionDidConnect:self];
  }
  
@@ -2545,7 +2571,7 @@ index 0fde5e33b..dc7580db3 100644
  	[[NSNotificationCenter defaultCenter]
  	    postNotificationName:TSXSessionDidFailToConnectNotification
  	                  object:self];
-@@ -520,6 +622,9 @@ out_free:
+@@ -520,6 +629,9 @@ out_free:
  
  - (void)sessionDidDisconnect
  {

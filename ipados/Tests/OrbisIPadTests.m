@@ -5,6 +5,9 @@
 #import "OrbisController.h"
 #import "OrbisProfileEditorController.h"
 #import "OrbisAboutController.h"
+#import "OrbisIPadDisplaySettings.h"
+#import "OrbisIPadDisplaySettingsController.h"
+#import "RDPSessionViewController.h"
 #import "OrbisConnectionTransport.h"
 #import "OrbisConnectionHealthCheck.h"
 #import "OrbisDirectTransport.h"
@@ -27,6 +30,21 @@
 - (void)startHealthMonitoring;
 - (void)applicationWillResignActive:(NSNotification *)notification;
 - (void)applicationDidBecomeActive:(NSNotification *)notification;
+@end
+
+@interface OrbisIPadDisplaySettingsController (OrbisTesting)
+- (void)savePressed:(id)sender;
+- (void)cancelPressed:(id)sender;
+@end
+@interface RDPSessionViewController (OrbisDisplayTesting)
+- (void)sendViewportResize;
+- (IBAction)matchIPadResolution:(id)sender;
+@end
+@interface OrbisTestViewportController : RDPSessionViewController
+@end
+@implementation OrbisTestViewportController
+- (CGSize)remoteSizeForCurrentViewport { return CGSizeMake(2732, 2048); }
+- (void)fitSessionViewToViewport {}
 @end
 
 @interface OrbisTestHealthCheck : OrbisConnectionHealthCheck
@@ -139,9 +157,12 @@
 
 @interface OrbisTestRDPSession : RDPSession
 @property(nonatomic) NSUInteger rdpStarts;
+@property(nonatomic) NSUInteger resizeRequests;
+@property(nonatomic) CGSize requestedSize;
 @end
 @implementation OrbisTestRDPSession
 - (void)beginRDPConnection { self.rdpStarts++; }
+- (void)requestDesktopSize:(CGSize)size { self.resizeRequests++; self.requestedSize = size; }
 @end
 
 @interface OrbisIPadTests : XCTestCase <OrbisProfileEditorDelegate>
@@ -167,6 +188,111 @@
 	[[editor valueForKey:@"nameField"] setText:@"Test computer"];
 	[[editor valueForKey:@"usernameField"] setText:@"tester"];
 	return editor;
+}
+
+- (NSUserDefaults *)displayDefaults
+{
+	NSString *suite = [@"com.dnexus.orbis.tests.display." stringByAppendingString:[[NSUUID UUID] UUIDString]];
+	NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+	[self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+	return defaults;
+}
+
+- (void)testDisplayDefaultsKeepAutomaticResolutionAndNormalLinuxScale
+{
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:[self displayDefaults]] autorelease];
+	XCTAssertTrue(settings.automaticResolution);
+	XCTAssertEqual(settings.desktopScale, 100u);
+	XCTAssertEqualObjects([OrbisIPadDisplaySettings supportedScales], (@[ @100, @125, @150, @175, @200 ]));
+}
+
+- (void)testGlobalDisplaySettingsReachNewSessionsWithOneDesktop
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	settings.width = 2560; settings.height = 1440; settings.desktopScale = 150;
+	XCTAssertTrue([settings saveWithError:nil]);
+	for (NSString *host in @[ @"first.local", @"second.local" ])
+	{
+		OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+		ConnectionParams *params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
+		[params setValue:host forKey:@"hostname"];
+		[loaded applyToConnectionParameters:params];
+		ComputerBookmark *bookmark = [[[ComputerBookmark alloc] initWithConnectionParameters:params] autorelease];
+		RDPSession *session = [[[RDPSession alloc] initWithBookmark:bookmark] autorelease];
+		XCTAssertNotNil(session);
+		rdpSettings *rdp = [session getSessionParams];
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopWidth), 2560u);
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopHeight), 1440u);
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopScaleFactor), 150u);
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DeviceScaleFactor), 100u);
+		XCTAssertFalse(freerdp_settings_get_bool(rdp, FreeRDP_UseMultimon));
+		XCTAssertFalse([session.params boolForKey:@"match_window_resolution"]);
+	}
+}
+
+- (void)testInvalidDisplayValuesDoNotOverwriteTheSavedConfiguration
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	settings.width = 1920; settings.height = 1080; settings.desktopScale = 200;
+	XCTAssertTrue([settings saveWithError:nil]);
+	for (NSArray *size in @[ @[ @1919, @1080 ], @[ @0, @1080 ], @[ @1920, @199 ], @[ @8194, @1080 ], @[ @(NSUIntegerMax), @1080 ] ])
+	{
+		settings.width = [size[0] unsignedIntegerValue]; settings.height = [size[1] unsignedIntegerValue];
+		NSError *error = nil;
+		XCTAssertFalse([settings saveWithError:&error]);
+		XCTAssertNotNil(error);
+	}
+	settings.width = 1920; settings.height = 1080; settings.desktopScale = 250;
+	XCTAssertFalse([settings saveWithError:nil]);
+	OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertEqual(loaded.width, 1920u); XCTAssertEqual(loaded.height, 1080u); XCTAssertEqual(loaded.desktopScale, 200u);
+}
+
+- (void)testCorruptSavedDisplayValuesFallBackToSafeDefaults
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	for (id saved in @[ @"invalid", @{ @"width" : @(-1), @"height" : @1080, @"desktopScale" : @900 },
+	    @{ @"width" : @1920.5, @"height" : @1080, @"desktopScale" : @"150" } ])
+	{
+		[defaults setObject:saved forKey:@"OrbisIPadDisplaySettings.v1"];
+		OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+		XCTAssertTrue(settings.automaticResolution);
+		XCTAssertEqual(settings.desktopScale, 100u);
+	}
+}
+
+- (void)testSettingsCancelDiscardsEditsAndSavePersistsManualDimensions
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc] initWithDefaults:defaults] autorelease];
+	[editor loadViewIfNeeded];
+	[[editor valueForKey:@"automaticSwitch"] setOn:NO];
+	[[editor valueForKey:@"widthField"] setText:@"2560"];
+	[[editor valueForKey:@"heightField"] setText:@"1440"];
+	[editor cancelPressed:nil];
+	XCTAssertNil([defaults objectForKey:@"OrbisIPadDisplaySettings.v1"]);
+	[editor savePressed:nil];
+	OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertEqual(loaded.width, 2560u); XCTAssertEqual(loaded.height, 1440u);
+}
+
+- (void)testManualResolutionSurvivesViewportChangesUntilExplicitMatch
+{
+	OrbisTestTransport *transport = [[[OrbisTestTransport alloc] init] autorelease];
+	OrbisTestRDPSession *session = [self sessionWithTransport:transport];
+	[session.params setBool:NO forKey:@"match_window_resolution"];
+	OrbisTestViewportController *controller = [[[OrbisTestViewportController alloc]
+	    initWithNibName:nil bundle:nil session:session] autorelease];
+	[controller setValue:@YES forKey:@"session_connected"];
+	[controller sendViewportResize];
+	XCTAssertEqual(session.resizeRequests, 0u);
+	[controller matchIPadResolution:nil];
+	[NSObject cancelPreviousPerformRequestsWithTarget:controller];
+	[controller sendViewportResize];
+	XCTAssertEqual(session.resizeRequests, 1u);
+	XCTAssertTrue(CGSizeEqualToSize(session.requestedSize, CGSizeMake(2732, 2048)));
 }
 
 - (void)testDirectProfileKeepsItsDefaultTransport

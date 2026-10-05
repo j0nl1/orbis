@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Global iPad display settings with automatic, preset, and custom resolutions and a Linux desktop scale request from 100% to 200%. Manual resolutions remain fixed across rotation and window resizing.
 - Optional macOS fullscreen input capture forwards physical keys, system shortcuts, mouse buttons, and input-generating macros to the active remote desktop. Control + Option + Command + Esc releases capture.
 - Automatic remote resolution sizing in Window → Resolution, following each window's size and monitor changes.
 - A Window → Resolution menu for changing the active remote display during a session, with standard presets and Match Mac Screen.

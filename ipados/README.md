@@ -32,3 +32,16 @@ Run `scripts/test-orbis-ipados.sh` on a Mac for app-hosted XCTest coverage in an
 available iPad simulator. Set `ORBIS_SIMULATOR_DESTINATION` to select a specific
 simulator. Tests use synthetic input and transports; live RDP servers and service
 tokens are not required.
+
+The icon-only Settings action beside New connection stores global display defaults
+for all computers on this iPad. Automatic resolution follows the native viewport,
+including rotation and window resizing. A preset or custom resolution remains
+fixed; Match iPad Resolution in the session menu enables automatic sizing for
+that session.
+Manual dimensions must be 200–8192 pixels, with an even width.
+
+Linux display scale defaults to 100%, with 125%, 150%, 175%, and 200% options.
+New connections request this remote desktop scale through RDP. The server decides
+whether to apply it to text and applications; local pinch zoom and image fitting
+remain independent. Settings changes apply on the next connection. The iPad uses
+one remote display.
