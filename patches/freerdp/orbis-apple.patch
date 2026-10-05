@@ -143,21 +143,23 @@ index 31682d1d5..625142d56 100644
  
  	if (tIOHIDManagerRef)
 diff --git a/client/Mac/MRDPView.h b/client/Mac/MRDPView.h
-index d7d978f..b23ffcd 100644
+index d7d978f0e..0560eba3b 100644
 --- a/client/Mac/MRDPView.h
 +++ b/client/Mac/MRDPView.h
-@@ -28,6 +28,10 @@
+@@ -28,6 +28,12 @@
  
  #import <CoreGraphics/CoreGraphics.h>
  
 +__attribute__((visibility("default")))
 +extern NSString *const MRDPViewDidPresentFirstFrameNotification;
++__attribute__((visibility("default")))
++extern NSString *const MRDPViewDidResizeDesktopNotification;
 +
 +__attribute__((visibility("default")))
  @interface MRDPView : NSView
  {
  	mfContext *mfc;
-@@ -44,6 +48,12 @@
+@@ -44,13 +50,24 @@
  	int argc;
  	char **argv;
  	DWORD kbdModFlags;
@@ -168,9 +170,13 @@ index d7d978f..b23ffcd 100644
 +	BOOL locallyHandledKeyDown[128];
 +	BOOL hasPresentedRemoteFrame;
  	BOOL initialized;
++	BOOL usesDisplayRegion;
++	NSRect displayRegion;
++	MRDPView *displaySource;
++	NSMutableArray *displayMirrors;
  	NSPoint savedDragLocation;
  	BOOL firstCreateWindow;
-@@ -51,6 +61,7 @@
+ 	BOOL isMoveSizeInProgress;
  	BOOL skipResizeOnce;
  	BOOL saveInitialDragLoc;
  	BOOL skipMoveWindowOnce;
@@ -178,7 +184,7 @@ index d7d978f..b23ffcd 100644
    @public
  	NSPasteboard *pasteboard_rd;
  	NSPasteboard *pasteboard_wr;
-@@ -64,11 +75,14 @@
+@@ -64,11 +81,20 @@
  - (void)setScrollOffset:(int)xOffset y:(int)yOffset w:(int)width h:(int)height;
  
  - (void)onPasteboardTimerFired:(NSTimer *)timer;
@@ -187,6 +193,12 @@ index d7d978f..b23ffcd 100644
  - (void)pause;
  - (void)resume;
  - (void)releaseResources;
++// Additional views share the original session and bitmap, but own their input state.
++- (void)attachToDisplaySource:(MRDPView *)source;
++- (void)detachFromDisplaySource;
++- (void)setDisplayRegion:(NSRect)region;
++- (NSSize)desktopPixelSize;
++- (NSPoint)remotePointForEvent:(NSEvent *)event;
  
  @property(assign) int is_connected;
 +@property(assign) BOOL mapsCommandShortcutsToControl;
@@ -194,7 +206,7 @@ index d7d978f..b23ffcd 100644
  @end
  
 diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
-index e82f50b..b310a17 100644
+index e82f50b9c..64bad4d2a 100644
 --- a/client/Mac/MRDPView.m
 +++ b/client/Mac/MRDPView.m
 @@ -24,8 +24,6 @@
@@ -206,18 +218,19 @@ index e82f50b..b310a17 100644
  
  #include <winpr/crt.h>
  #include <winpr/assert.h>
-@@ -51,6 +49,10 @@
+@@ -51,6 +49,11 @@
  
  #define TAG CLIENT_TAG("mac")
  
 +__attribute__((visibility("default")))
 +NSString *const MRDPViewDidPresentFirstFrameNotification =
 +    @"MRDPViewDidPresentFirstFrameNotification";
++NSString *const MRDPViewDidResizeDesktopNotification = @"MRDPViewDidResizeDesktopNotification";
 +
  static BOOL mf_Pointer_New(rdpContext *context, rdpPointer *pointer);
  static void mf_Pointer_Free(rdpContext *context, rdpPointer *pointer);
  static BOOL mf_Pointer_Set(rdpContext *context, rdpPointer *pointer);
-@@ -67,16 +69,41 @@ static void input_activity_cb(freerdp *instance);
+@@ -67,16 +70,41 @@ static void input_activity_cb(freerdp *instance);
  static DWORD WINAPI mac_client_thread(void *param);
  static void windows_to_apple_cords(MRDPView *view, NSRect *r);
  static CGContextRef mac_create_bitmap_context(rdpContext *context);
@@ -259,7 +272,7 @@ index e82f50b..b310a17 100644
  
  	WINPR_ASSERT(rdp_context);
  	context = rdp_context;
-@@ -148,6 +175,7 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -148,6 +176,7 @@ DWORD WINAPI mac_client_thread(void *param)
  		}
  
  		[view setIs_connected:1];
@@ -267,7 +280,7 @@ index e82f50b..b310a17 100644
  		nCount = 0;
  		events[nCount++] = mfc->stopEvent;
  
-@@ -203,7 +231,7 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -203,7 +232,7 @@ DWORD WINAPI mac_client_thread(void *param)
  		}
  
  	disconnect:
@@ -276,7 +289,23 @@ index e82f50b..b310a17 100644
  		freerdp_disconnect(instance);
  
  		ExitThread(0);
-@@ -266,6 +294,26 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -253,12 +282,14 @@ DWORD WINAPI mac_client_thread(void *param)
+ 	self->currentCursor = cursor;
+ 	dispatch_async(dispatch_get_main_queue(), ^{
+ 		[[self window] invalidateCursorRectsForView:self];
++		for (MRDPView *mirror in self->displayMirrors)
++			[[mirror window] invalidateCursorRectsForView:mirror];
+ 	});
+ }
+ 
+ - (void)resetCursorRects
+ {
+-	[self addCursorRect:[self visibleRect] cursor:currentCursor];
++	[self addCursorRect:[self visibleRect] cursor:displaySource ? displaySource->currentCursor : currentCursor];
+ }
+ 
+ - (BOOL)acceptsFirstResponder
+@@ -266,6 +297,96 @@ DWORD WINAPI mac_client_thread(void *param)
  	return YES;
  }
  
@@ -287,23 +316,104 @@ index e82f50b..b310a17 100644
 +
 +- (BOOL)resignFirstResponder
 +{
++	if (usesDisplayRegion && self.is_connected && instance)
++	{
++		releaseFlagStates(instance->context->input, kbdModFlags);
++		kbdModFlags = 0;
++		[self cancelPendingCommandTap];
++	}
 +	return [super resignFirstResponder];
 +}
 +
 +- (void)setFrameSize:(NSSize)newSize
 +{
 +	[super setFrameSize:newSize];
-+	if (mfc)
++	if (mfc && !displaySource)
 +	{
 +		mfc->client_width = (int)newSize.width;
 +		mfc->client_height = (int)newSize.height;
 +	}
 +}
 +
++- (void)setDisplayRegion:(NSRect)region
++{
++	usesDisplayRegion = YES;
++	displayRegion = region;
++	[self setNeedsDisplay:YES];
++}
++
++- (NSSize)desktopPixelSize
++{
++	MRDPView *source = displaySource ?: self;
++	@synchronized (source)
++	{
++		return source->bitmap_context ? NSMakeSize(CGBitmapContextGetWidth(source->bitmap_context),
++		    CGBitmapContextGetHeight(source->bitmap_context)) : NSZeroSize;
++	}
++}
++
++- (void)attachToDisplaySource:(MRDPView *)source
++{
++	[self initializeView];
++	displaySource = source;
++	context = source->context; instance = source->instance; mfc = source->mfc;
++	if (!source->displayMirrors) source->displayMirrors = [[NSMutableArray alloc] init];
++	[source->displayMirrors addObject:self];
++	[self setIs_connected:source.is_connected];
++}
++
++- (void)detachFromDisplaySource
++{
++	if (!displaySource) return;
++	if (self.is_connected && instance) releaseFlagStates(instance->context->input, kbdModFlags);
++	kbdModFlags = 0; [self cancelPendingCommandTap];
++	[self setIs_connected:0];
++	MRDPView *source = displaySource;
++	displaySource = nil; context = nil; instance = nil; mfc = nil;
++	[source->displayMirrors removeObject:self];
++}
++
++- (NSPoint)remotePointForEvent:(NSEvent *)event
++{
++	NSPoint point = [self convertPoint:[event locationInWindow] fromView:nil];
++	NSSize bounds = [self bounds].size;
++	CGFloat x = displayRegion.origin.x + point.x * displayRegion.size.width / MAX(1, bounds.width);
++	CGFloat y = displayRegion.origin.y + (bounds.height - point.y) * displayRegion.size.height / MAX(1, bounds.height);
++	return NSMakePoint(MIN(NSMaxX(displayRegion) - 1, MAX(displayRegion.origin.x, floor(x))),
++	                  MIN(NSMaxY(displayRegion) - 1, MAX(displayRegion.origin.y, floor(y))));
++}
++
++- (void)sendDisplayPointer:(NSEvent *)event button:(NSInteger)button down:(BOOL)down
++{
++	NSPoint point = [self remotePointForEvent:event];
++	UINT16 flags = down ? PTR_FLAGS_DOWN : 0;
++	if (button < 0)
++		freerdp_client_send_button_event(&mfc->common, FALSE, PTR_FLAGS_MOVE, point.x, point.y);
++	else if (button <= 2)
++	{
++		const UINT16 buttons[] = { PTR_FLAGS_BUTTON1, PTR_FLAGS_BUTTON2, PTR_FLAGS_BUTTON3 };
++		freerdp_client_send_button_event(&mfc->common, FALSE, flags | buttons[button], point.x, point.y);
++	}
++	else if (button <= 4)
++		freerdp_client_send_extended_button_event(&mfc->common, FALSE,
++		    (down ? PTR_XFLAGS_DOWN : 0) | (button == 3 ? PTR_XFLAGS_BUTTON1 : PTR_XFLAGS_BUTTON2), point.x, point.y);
++}
++
  - (void)mouseMoved:(NSEvent *)event
  {
  	[super mouseMoved:event];
-@@ -279,6 +327,19 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -273,12 +394,30 @@ DWORD WINAPI mac_client_thread(void *param)
+ 	if (!self.is_connected)
+ 		return;
+ 
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:-1 down:NO];
++		return;
++	}
+ 	NSPoint loc = [event locationInWindow];
+ 	int x = (int)loc.x;
+ 	int y = (int)loc.y;
  	mf_scale_mouse_event(context, PTR_FLAGS_MOVE, x, y);
  }
  
@@ -323,31 +433,94 @@ index e82f50b..b310a17 100644
  - (void)mouseDown:(NSEvent *)event
  {
  	[super mouseDown:event];
-@@ -286,6 +347,7 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -286,6 +425,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
 +	[self prepareModifiersForPointerEvent:event];
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:0 down:YES];
++		return;
++	}
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -312,6 +374,7 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -299,6 +444,11 @@ DWORD WINAPI mac_client_thread(void *param)
+ 	if (!self.is_connected)
+ 		return;
+ 
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:0 down:NO];
++		return;
++	}
+ 	NSPoint loc = [event locationInWindow];
+ 	int x = (int)loc.x;
+ 	int y = (int)loc.y;
+@@ -312,6 +462,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
 +	[self prepareModifiersForPointerEvent:event];
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:1 down:YES];
++		return;
++	}
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -338,6 +401,7 @@ DWORD WINAPI mac_client_thread(void *param)
+@@ -325,6 +481,11 @@ DWORD WINAPI mac_client_thread(void *param)
+ 	if (!self.is_connected)
+ 		return;
+ 
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:1 down:NO];
++		return;
++	}
+ 	NSPoint loc = [event locationInWindow];
+ 	int x = (int)loc.x;
+ 	int y = (int)loc.y;
+@@ -338,6 +499,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
 +	[self prepareModifiersForPointerEvent:event];
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:[event buttonNumber] down:YES];
++		return;
++	}
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -484,6 +548,16 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -352,6 +519,11 @@ DWORD WINAPI mac_client_thread(void *param)
+ 	if (!self.is_connected)
+ 		return;
+ 
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:[event buttonNumber] down:NO];
++		return;
++	}
+ 	NSPoint loc = [event locationInWindow];
+ 	int x = (int)loc.x;
+ 	int y = (int)loc.y;
+@@ -415,6 +587,11 @@ DWORD WINAPI mac_client_thread(void *param)
+ 	if (!self.is_connected)
+ 		return;
+ 
++	if (usesDisplayRegion)
++	{
++		[self sendDisplayPointer:event button:-1 down:NO];
++		return;
++	}
+ 	NSPoint loc = [event locationInWindow];
+ 	int x = (int)loc.x;
+ 	int y = (int)loc.y;
+@@ -484,6 +661,16 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  		return;
  
  	DWORD modFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -364,7 +537,7 @@ index e82f50b..b310a17 100644
  
  	WINPR_ASSERT(instance);
  	WINPR_ASSERT(instance->context);
-@@ -498,6 +572,155 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -498,6 +685,155 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  	kbdModFlags = modFlags;
  }
  
@@ -520,7 +693,7 @@ index e82f50b..b310a17 100644
  - (void)keyDown:(NSEvent *)event
  {
  	DWORD keyCode;
-@@ -509,8 +732,24 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -509,8 +845,24 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
@@ -546,7 +719,7 @@ index e82f50b..b310a17 100644
  
  	keyFlags = KBD_FLAGS_DOWN;
  	keyCode = [event keyCode];
-@@ -548,8 +787,23 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -548,8 +900,23 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
@@ -572,17 +745,41 @@ index e82f50b..b310a17 100644
  
  	keyFlags = KBD_FLAGS_RELEASE;
  	keyCode = [event keyCode];
-@@ -686,13 +940,16 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -673,6 +1040,17 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+ 	return updateFlagStates(input, 0, aKbdModFlags);
+ }
+ 
++- (void)dealloc
++{
++	for (MRDPView *mirror in displayMirrors)
++	{
++		mirror->displaySource = nil; mirror->context = nil; mirror->mfc = nil; mirror->instance = nil;
++		mirror->is_connected = 0;
++	}
++	[displayMirrors release];
++	[super dealloc];
++}
++
+ - (void)releaseResources
+ {
+ 	for (int i = 0; i < argc; i++)
+@@ -686,13 +1064,22 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)drawRect:(NSRect)rect
  {
 -	if (!context)
 -		return;
 +	CGImageRef cgImage = nullptr;
-+	@synchronized (self)
++	MRDPView *source = displaySource ?: self;
++	@synchronized (source)
 +	{
-+		if (self->bitmap_context)
-+			cgImage = CGBitmapContextCreateImage(self->bitmap_context);
++		if (source->bitmap_context)
++			cgImage = CGBitmapContextCreateImage(source->bitmap_context);
++	}
++	if (cgImage && usesDisplayRegion)
++	{
++		CGImageRef crop = CGImageCreateWithImageInRect(cgImage, NSRectToCGRect(displayRegion));
++		CGImageRelease(cgImage); cgImage = crop;
 +	}
  
 -	if (self->bitmap_context)
@@ -593,7 +790,7 @@ index e82f50b..b310a17 100644
  		CGContextSaveGState(cgContext);
  		CGContextClipToRect(
  		    cgContext, CGRectMake(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height));
-@@ -773,6 +1030,8 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -773,6 +1160,8 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)pause
  {
@@ -602,7 +799,7 @@ index e82f50b..b310a17 100644
  	dispatch_async(dispatch_get_main_queue(), ^{
  		[self->pasteboard_timer invalidate];
  	});
-@@ -788,6 +1047,7 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -788,6 +1177,7 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)resume
  {
@@ -610,7 +807,7 @@ index e82f50b..b310a17 100644
  	if (!self.is_connected)
  		return;
  
-@@ -932,7 +1192,11 @@ BOOL mac_post_connect(freerdp *instance)
+@@ -932,7 +1322,11 @@ BOOL mac_post_connect(freerdp *instance)
  		return FALSE;
  
  	gdi = instance->context->gdi;
@@ -623,7 +820,7 @@ index e82f50b..b310a17 100644
  	graphics_register_pointer(instance->context->graphics, &rdp_pointer);
  	/* setup pasteboard (aka clipboard) for copy operations (write only) */
  	view->pasteboard_wr = [NSPasteboard generalPasteboard];
-@@ -941,7 +1205,6 @@ BOOL mac_post_connect(freerdp *instance)
+@@ -941,7 +1335,6 @@ BOOL mac_post_connect(freerdp *instance)
  		view->pasteboard_rd = [NSPasteboard generalPasteboard];
  		view->pasteboard_changecount = -1;
  	});
@@ -631,7 +828,7 @@ index e82f50b..b310a17 100644
  	mfc->appleKeyboardType = mac_detect_keyboard_type();
  	return TRUE;
  }
-@@ -962,7 +1225,18 @@ void mac_post_disconnect(freerdp *instance)
+@@ -962,7 +1355,18 @@ void mac_post_disconnect(freerdp *instance)
  	                                   mac_OnChannelConnectedEventHandler);
  	PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub,
  	                                      mac_OnChannelDisconnectedEventHandler);
@@ -650,7 +847,7 @@ index e82f50b..b310a17 100644
  }
  
  static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **username, char **password,
-@@ -974,65 +1248,75 @@ static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **usernam
+@@ -974,65 +1378,75 @@ static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **usernam
  	WINPR_ASSERT(password);
  	WINPR_ASSERT(domain);
  
@@ -779,7 +976,7 @@ index e82f50b..b310a17 100644
  }
  
  static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **password, char **domain,
-@@ -1092,11 +1376,6 @@ static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **pass
+@@ -1092,11 +1506,6 @@ static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **pass
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
  			goto fail;
  	}
@@ -791,7 +988,7 @@ index e82f50b..b310a17 100644
  	else if (!*password)
  	{
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
-@@ -1149,35 +1428,41 @@ DWORD mac_verify_certificate_ex(freerdp *instance, const char *host, UINT16 port
+@@ -1149,35 +1558,41 @@ DWORD mac_verify_certificate_ex(freerdp *instance, const char *host, UINT16 port
                                  const char *common_name, const char *subject, const char *issuer,
                                  const char *fingerprint, DWORD flags)
  {
@@ -862,7 +1059,7 @@ index e82f50b..b310a17 100644
  }
  
  DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
-@@ -1186,35 +1471,11 @@ DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UIN
+@@ -1186,35 +1601,11 @@ DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UIN
                                          const char *old_subject, const char *old_issuer,
                                          const char *old_fingerprint, DWORD flags)
  {
@@ -903,10 +1100,17 @@ index e82f50b..b310a17 100644
  }
  
  int mac_logon_error_info(freerdp *instance, UINT32 data, UINT32 type)
-@@ -1457,6 +1718,13 @@ BOOL mac_end_paint(rdpContext *context)
+@@ -1456,7 +1847,19 @@ BOOL mac_end_paint(rdpContext *context)
+ 
  	windows_to_apple_cords(mfc->view, &newDrawRect);
  	dispatch_sync(dispatch_get_main_queue(), ^{
- 		[view setNeedsDisplayInRect:newDrawRect];
+-		[view setNeedsDisplayInRect:newDrawRect];
++		if (view->usesDisplayRegion)
++		{
++			[view setNeedsDisplay:YES];
++			for (MRDPView *mirror in view->displayMirrors) [mirror setNeedsDisplay:YES];
++		}
++		else [view setNeedsDisplayInRect:newDrawRect];
 +		if (!view->hasPresentedRemoteFrame)
 +		{
 +			view->hasPresentedRemoteFrame = YES;
@@ -917,7 +1121,7 @@ index e82f50b..b310a17 100644
  	});
  	gdi->primary->hdc->hwnd->ninvalid = 0;
  	return TRUE;
-@@ -1477,18 +1745,27 @@ BOOL mac_desktop_resize(rdpContext *context)
+@@ -1477,23 +1880,35 @@ BOOL mac_desktop_resize(rdpContext *context)
  	 * put on the update message queue to be able to properly flush pending updates,
  	 * resize, and then continue with post-resizing graphical updates.
  	 */
@@ -950,6 +1154,15 @@ index e82f50b..b310a17 100644
  		return FALSE;
  
  	mfc->client_width = mfc->width;
+ 	mfc->client_height = mfc->height;
+-	[view setFrameSize:NSMakeSize(mfc->width, mfc->height)];
++	dispatch_sync(dispatch_get_main_queue(), ^{
++		if (!view->usesDisplayRegion) [view setFrameSize:NSMakeSize(mfc->width, mfc->height)];
++		[[NSNotificationCenter defaultCenter] postNotificationName:MRDPViewDidResizeDesktopNotification object:view];
++	});
+ 	EventArgsInit(&e, "mfreerdp");
+ 	e.width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
+ 	e.height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
 diff --git a/client/Mac/mf_client.m b/client/Mac/mf_client.m
 --- a/client/Mac/mf_client.m
 +++ b/client/Mac/mf_client.m
@@ -1040,7 +1253,7 @@ index 1f4f4732d..278cb7724 100644
      didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
  {
 diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
-index b1cc404d1..50e589033 100644
+index b1cc404d1..4c379bdb9 100644
 --- a/client/iOS/CMakeLists.txt
 +++ b/client/iOS/CMakeLists.txt
 @@ -30,6 +30,11 @@ project(iFreeRDP VERSION ${FREERDP_DEFAULT_PROJECT_VERSION})
@@ -1118,12 +1331,13 @@ index b1cc404d1..50e589033 100644
      FreeRDP/ios_cliprdr.h
      FreeRDP/ios_cliprdr.m
      FreeRDP/ios_freerdp_events.h
-@@ -155,6 +171,18 @@ set(SRCS
+@@ -155,6 +171,19 @@ set(SRCS
      Models/Encryptor.m
      Models/GlobalDefaults.h
      Models/GlobalDefaults.m
 +    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.h
 +    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.m
++    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisDisplayLayout.c
 +    ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.h
 +    ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.m
 +	${ORBIS_SHARED_DIR}/Sources/About/OrbisAcknowledgements.h
@@ -1137,7 +1351,7 @@ index b1cc404d1..50e589033 100644
      Models/RDPKeyboard.h
      Models/RDPKeyboard.m
      Models/RDPSession.h
-@@ -204,10 +232,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
+@@ -204,10 +233,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
      Resources/EditSubEditTableViewCell.xib
      Resources/EditTextTableViewCell.xib
      Resources/MainWindow.xib
@@ -1148,7 +1362,7 @@ index b1cc404d1..50e589033 100644
  )
  
  set(IOS_CLIENT_RESOURCES_PNGS
-@@ -224,6 +250,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
+@@ -224,6 +251,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
      Resources/alert-window-landscape.png
      Resources/alert-window.png
      Resources/cancel_button_background.png
@@ -1156,7 +1370,7 @@ index b1cc404d1..50e589033 100644
      Resources/Default@2x.png
      Resources/Default-568h@2x.png
      Resources/Default-Landscape@2x~ipad.png
-@@ -287,6 +314,15 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
+@@ -287,6 +315,15 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
  find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
  find_library(WEBKIT_FRAMEWORK WebKit REQUIRED)
  find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
@@ -1172,7 +1386,7 @@ index b1cc404d1..50e589033 100644
  
  set(EXTRA_LIBS
      ${FOUNDATION_FRAMEWORK}
-@@ -298,9 +334,10 @@ set(EXTRA_LIBS
+@@ -298,9 +335,10 @@ set(EXTRA_LIBS
      ${SYSTEMCONFIGURATION_FRAMEWORK}
      ${WEBKIT_FRAMEWORK}
      ${GAMECONTROLLER_FRAMEWORK}
@@ -1184,7 +1398,7 @@ index b1cc404d1..50e589033 100644
                ${IOS_CLIENT_RESOURCES_DIR}/en.lproj ${IOS_CLIENT_DIR}/Defaults.plist
  )
  
-@@ -325,7 +362,11 @@ add_executable(
+@@ -325,7 +363,11 @@ add_executable(
  add_dependencies(${PROJECT_NAME} freerdp)
  
  set_target_properties(
@@ -1197,7 +1411,7 @@ index b1cc404d1..50e589033 100644
                               RESOURCE "${RESOURCES}"
  )
  
-@@ -347,6 +388,26 @@ if(TARGET winpr3-lib)
+@@ -347,6 +389,26 @@ if(TARGET winpr3-lib)
    list(APPEND _ios_embed_frameworks "${_ios_winpr_runtime_location}")
  endif()
  
@@ -1224,7 +1438,7 @@ index b1cc404d1..50e589033 100644
  if(AVCODEC_LIBRARIES MATCHES "\\.framework/")
    get_filename_component(_ios_ffmpeg_framework "${AVCODEC_LIBRARIES}" DIRECTORY)
    list(APPEND _ios_embed_frameworks "${_ios_ffmpeg_framework}")
-@@ -358,3 +419,8 @@ if(_ios_embed_frameworks)
+@@ -358,3 +420,8 @@ if(_ios_embed_frameworks)
                                 XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
    )
  endif()

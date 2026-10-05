@@ -17,3 +17,24 @@ section when preparing a release. The application displays that section as
 `Latest changes`. Use second-level headings for releases, third-level headings
 for change categories, and one-line bullet entries; the About view formats those
 elements for reading.
+
+## Virtual displays
+
+Each connection starts with one display. In the connection editor's Options,
+choose an automatic or manual initial resolution for each display and place the
+second display to the right, left, above, or below the primary. Manual dimensions
+are pixels, from 200 to 8192, with an even width. Automatic sizing uses the local
+screen's dimensions in points, preserving the existing default.
+
+The session toolbar's **Add virtual display** action requests a second remote
+monitor using the same RDP session. The second window opens after the server
+confirms the combined desktop size; move it to another Mac screen or use native
+fullscreen. Window resizing scales the image without changing its saved remote
+resolution. Closing the second window requests monitor removal and keeps the
+primary session open; the window disappears when removal is confirmed.
+
+The action requires the server's Display Control channel and support for at least
+two monitors. Advertised monitor area limits are checked before sending a layout.
+A ten-second resize deadline reports unsupported changes and requests the previous
+layout again. No physical monitor is needed on a server that supports virtual
+remote displays. Live server validation is still required for this implementation.

@@ -6,6 +6,14 @@
 static NSMutableArray *events;
 static NSUInteger failures;
 static NSUInteger mouseEvents;
+static NSUInteger displayPointerEvents;
+static NSPoint displayPointerPoint;
+BOOL OrbisRecordDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 flags, INT32 x, INT32 y)
+{
+	(void)context; (void)relative; (void)flags;
+	displayPointerEvents++; displayPointerPoint = NSMakePoint(x, y);
+	return TRUE;
+}
 
 void OrbisRecordMouseButton(void *context, int button, int x, int y, BOOL down)
 {
@@ -52,6 +60,22 @@ BOOL OrbisRecordUnicodeKeyboardEvent(rdpInput *input, UINT16 flags, UINT16 code)
 	[self setIs_connected:1];
 	[self setMapsCommandShortcutsToControl:YES];
 	return self;
+}
+- (void)makeDisplayBitmap
+{
+	CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+	bitmap_context = CGBitmapContextCreate(NULL, 600, 200, 8, 600 * 4,
+	    colorSpace, kCGImageAlphaPremultipliedLast);
+	CGColorSpaceRelease(colorSpace);
+	CGContextSetRGBFillColor(bitmap_context, 1, 0, 0, 1);
+	CGContextFillRect(bitmap_context, CGRectMake(0, 0, 400, 200));
+	CGContextSetRGBFillColor(bitmap_context, 0, 0, 1, 1);
+	CGContextFillRect(bitmap_context, CGRectMake(400, 0, 200, 200));
+}
+- (void)dealloc
+{
+	if (bitmap_context) CGContextRelease(bitmap_context);
+	[super dealloc];
 }
 @end
 
@@ -152,12 +176,52 @@ static void CheckOptionBackspace(BOOL releaseOptionFirst, BOOL repeat)
 	[view release];
 }
 
+static void CheckDisplayViewports(void)
+{
+	NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
+	    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+	[window setReleasedWhenClosed:NO];
+	OrbisKeyboardTestView *source = [[OrbisKeyboardTestView alloc] init];
+	MRDPView *second = [[MRDPView alloc] initWithFrame:NSMakeRect(20, 30, 400, 200)];
+	[[window contentView] addSubview:second];
+	[second attachToDisplaySource:source];
+	[second setMapsCommandShortcutsToControl:YES];
+	[second setDisplayRegion:NSMakeRect(1024, 0, 1280, 800)];
+	NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:NSMakePoint(220, 130)
+	    modifierFlags:0 timestamp:1 windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:0 pressure:0];
+	NSPoint point = [second remotePointForEvent:event];
+	Require(NSEqualPoints(point, NSMakePoint(1664, 400)), @"Secondary pointer coordinates must include region offset, scaling, and the view origin");
+	displayPointerEvents = 0; [second mouseMoved:event];
+	Require(displayPointerEvents == 1 && NSEqualPoints(displayPointerPoint, point),
+	    @"Managed pointer events must reach RDP without scaling twice");
+	[events removeAllObjects];
+	[second keyDown:Key(NSEventTypeKeyDown, 8, @"c", @"c", NSEventModifierFlagCommand)];
+	Require(events.count > 0, @"The second display must use the existing session keyboard");
+
+	[source makeDisplayBitmap];
+	[second setDisplayRegion:NSMakeRect(400, 0, 200, 200)];
+	NSBitmapImageRep *bitmap = [[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+	    pixelsWide:400 pixelsHigh:200 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+	    isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:1600 bitsPerPixel:32] autorelease];
+	[NSGraphicsContext saveGraphicsState];
+	[NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap]];
+	[second drawRect:second.bounds];
+	[NSGraphicsContext restoreGraphicsState];
+	NSColor *color = [[bitmap colorAtX:200 y:100] colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+	Require(color.blueComponent > 0.9 && color.redComponent < 0.1,
+	    @"The second window must paint only its blue monitor, excluding the red primary monitor");
+	[second detachFromDisplaySource];
+	Require(!second.is_connected && source.is_connected, @"Detaching the second display must preserve the primary session");
+	[second removeFromSuperview]; [second release]; [source release]; [window release];
+}
+
 int main(void)
 {
 	@autoreleasepool
 	{
 		[NSApplication sharedApplication];
 		events = [[NSMutableArray alloc] init];
+		CheckDisplayViewports();
 		CheckOptionBackspace(NO, NO);
 		CheckOptionBackspace(YES, NO);
 		CheckOptionBackspace(NO, YES);

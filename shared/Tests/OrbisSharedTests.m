@@ -12,6 +12,65 @@
 
 @implementation OrbisProfileTests
 
+- (void)testDisplayLayoutRoundTripAndLegacyDefaults
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	XCTAssertEqual(profile.primaryWidth, (NSUInteger)0);
+	XCTAssertEqual(profile.secondaryWidth, (NSUInteger)0);
+	XCTAssertEqual(profile.monitorArrangement, OrbisMonitorRight);
+	profile.primaryWidth = 2560; profile.primaryHeight = 1440;
+	profile.secondaryWidth = 1920; profile.secondaryHeight = 1080;
+	profile.monitorArrangement = OrbisMonitorAbove;
+	OrbisProfile *decoded = [[OrbisProfile alloc] initWithDictionary:profile.dictionaryRepresentation];
+	OrbisProfile *copy = [decoded copy];
+	XCTAssertEqual(copy.primaryWidth, (NSUInteger)2560);
+	XCTAssertEqual(copy.primaryHeight, (NSUInteger)1440);
+	XCTAssertEqual(copy.secondaryWidth, (NSUInteger)1920);
+	XCTAssertEqual(copy.secondaryHeight, (NSUInteger)1080);
+	XCTAssertEqual(copy.monitorArrangement, OrbisMonitorAbove);
+	[copy release]; [decoded release]; [profile release];
+}
+
+- (void)testInvalidPersistedResolutionsFallBackToAutomatic
+{
+	for (NSDictionary *display in @[ @{ @"primaryWidth": @1920 },
+	    @{ @"primaryWidth": @1921, @"primaryHeight": @1080 },
+	    @{ @"primaryWidth": @(-1), @"primaryHeight": @1080 },
+	    @{ @"primaryWidth": @4294969216ULL, @"primaryHeight": @1080 },
+	    @{ @"primaryWidth": @"1920", @"primaryHeight": @1080, @"arrangement": @"future" } ])
+	{
+		OrbisProfile *profile = [[OrbisProfile alloc] initWithDictionary:@{ @"display": display }];
+		XCTAssertEqual(profile.primaryWidth, (NSUInteger)0);
+		XCTAssertEqual(profile.primaryHeight, (NSUInteger)0);
+		XCTAssertEqual(profile.monitorArrangement, OrbisMonitorRight);
+		[profile release];
+	}
+}
+
+- (void)testMonitorLayoutsHaveCorrectPixelBoundsAndNoOverlap
+{
+	for (NSUInteger arrangement = 0; arrangement < 4; arrangement++)
+	{
+		OrbisDisplayLayout layout;
+		XCTAssertTrue(OrbisDisplayLayoutMake(1920, 1080, 1280, 1024,
+		    (OrbisMonitorArrangement)arrangement, true, &layout));
+		XCTAssertEqual(layout.count, (uint32_t)2);
+		XCTAssertEqual(layout.monitors[0].x, (int32_t)0);
+		XCTAssertEqual(layout.monitors[0].y, (int32_t)0);
+		XCTAssertEqual(layout.width, (uint32_t)(arrangement < 2 ? 3200 : 1920));
+		XCTAssertEqual(layout.height, (uint32_t)(arrangement < 2 ? 1080 : 2104));
+		XCTAssertTrue(layout.pixels[0].x >= 0 && layout.pixels[0].y >= 0);
+		XCTAssertTrue(layout.pixels[1].x >= 0 && layout.pixels[1].y >= 0);
+	}
+	OrbisDisplayLayout layout;
+	XCTAssertFalse(OrbisDisplayLayoutMake(8193, 600, 800, 600, OrbisMonitorRight, true, &layout));
+	XCTAssertFalse(OrbisDisplayLayoutMake(801, 600, 800, 600, OrbisMonitorRight, true, &layout));
+	XCTAssertTrue(OrbisDisplayLayoutMake(800, 600, 0, 0, OrbisMonitorLeft, false, &layout));
+	XCTAssertEqual(layout.count, (uint32_t)1);
+	XCTAssertEqual(layout.width, (uint32_t)800);
+	XCTAssertEqual(layout.pixels[0].x, (int32_t)0);
+}
+
 - (void)testNewProfileUsesSafeDefaults
 {
 	OrbisProfile *profile = [[OrbisProfile alloc] init];

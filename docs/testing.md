@@ -88,3 +88,21 @@ disconnecting, rechecking availability, and suspending checks while inactive.
 
 These tests are separate from the default macOS CTest suite because they require
 the full iPadOS dependency build and an installed simulator runtime.
+
+## macOS virtual display tests
+
+Build the native runtime with `scripts/build-orbis-macos.sh`, then configure the
+native test build with
+`-DORBIS_TEST_FREERDP_BUILD_DIR=$PWD/.build/macos/arm64` (use `x86_64` on Intel).
+This enables the existing keyboard boundary tests and
+`integration.macos-virtual-display`. The display test uses the real session
+controller and windows with a captured Display Control channel and simulated
+framebuffer resize notifications, without opening a remote connection.
+
+Coverage includes all four arrangements, unequal resolutions, signed monitor
+positions, normalized framebuffer regions, adding/removing windows, server monitor
+and area limits, and rollback on timeout. AppKit input tests exercise a secondary
+view's keyboard, pointer coordinates, and cropped rendering. Editor and profile
+tests cover manual dimensions, validation, automatic defaults, copying, and
+persistence. These fixtures do not establish server interoperability; validate
+adding and closing a second display against a live remote login before release.

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #import <AppKit/AppKit.h>
+#import "OrbisDisplayLayout.h"
 
 @class OrbisProfile;
 @class OrbisSessionController;
@@ -15,12 +16,21 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 
 @end
 
-@interface OrbisSessionController : NSObject <NSWindowDelegate>
+@interface OrbisSessionController : NSObject <NSWindowDelegate, NSToolbarDelegate>
 {
 	id<OrbisSessionControllerDelegate> _delegate;
 	OrbisProfile *_profile;
 	NSString *_password;
-	NSWindow *_window;
+	NSWindow *_window, *_secondaryWindow, *_closingSecondaryWindow;
+	id _secondaryView;
+	NSButton *_addDisplayButton;
+	NSLock *_displayLock;
+	void *_displayChannel;
+	uint32_t _displayMaxMonitors;
+	uint64_t _displayMaxArea;
+	OrbisDisplayLayout _displayLayout, _pendingDisplayLayout;
+	BOOL _displayChangePending;
+	NSTimer *_displayChangeTimer;
 	id _remoteView;
 	NSView *_connectingOverlay;
 	NSTextField *_connectingStatusLabel;

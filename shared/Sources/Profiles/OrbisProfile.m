@@ -19,6 +19,9 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 @synthesize connectAutomatically = _connectAutomatically;
 @synthesize transportType = _transportType;
 @synthesize transportOptions = _transportOptions;
+@synthesize primaryWidth = _primaryWidth, primaryHeight = _primaryHeight;
+@synthesize secondaryWidth = _secondaryWidth, secondaryHeight = _secondaryHeight;
+@synthesize monitorArrangement = _monitorArrangement;
 
 - (id)init
 {
@@ -74,6 +77,25 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 		[self setTransportType:OrbisTransportTypeCloudflare];
 		[self setTransportOptions:@{ @"hostname" : [self host] }];
 	}
+	id display = dictionary[@"display"];
+	if ([display isKindOfClass:[NSDictionary class]])
+	{
+		NSUInteger *pairs[] = { &_primaryWidth, &_primaryHeight, &_secondaryWidth, &_secondaryHeight };
+		NSArray *keys = @[ @"primaryWidth", @"primaryHeight", @"secondaryWidth", @"secondaryHeight" ];
+		for (NSUInteger i = 0; i < 4; i++)
+		{
+			id value = display[keys[i]];
+			if ([value isKindOfClass:[NSNumber class]] && [value unsignedLongLongValue] <= 8192)
+				*pairs[i] = [value unsignedIntegerValue];
+		}
+		if (!OrbisDisplayResolutionIsValid((uint32_t)_primaryWidth, (uint32_t)_primaryHeight))
+			_primaryWidth = _primaryHeight = 0;
+		if (!OrbisDisplayResolutionIsValid((uint32_t)_secondaryWidth, (uint32_t)_secondaryHeight))
+			_secondaryWidth = _secondaryHeight = 0;
+		NSArray *arrangements = @[ @"right", @"left", @"above", @"below" ];
+		NSUInteger index = [arrangements indexOfObject:display[@"arrangement"] ?: @""];
+		_monitorArrangement = index == NSNotFound ? OrbisMonitorRight : (OrbisMonitorArrangement)index;
+	}
 	return self;
 }
 
@@ -94,6 +116,10 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 	                         @"connectAutomatically", nil];
 	if (![_transportType isEqualToString:OrbisTransportTypeDirect] || [_transportOptions count])
 		dictionary[@"transport"] = @{ @"type" : _transportType, @"options" : _transportOptions };
+	if (_primaryWidth || _primaryHeight || _secondaryWidth || _secondaryHeight || _monitorArrangement != OrbisMonitorRight)
+		dictionary[@"display"] = @{ @"primaryWidth" : @(_primaryWidth), @"primaryHeight" : @(_primaryHeight),
+	    @"secondaryWidth" : @(_secondaryWidth), @"secondaryHeight" : @(_secondaryHeight),
+	    @"arrangement" : @[ @"right", @"left", @"above", @"below" ][MIN(3, MAX(0, _monitorArrangement))] };
 	return dictionary;
 }
 
@@ -109,6 +135,9 @@ static NSString *const OrbisSelectedProfileDefaultsKey = @"OrbisSelectedProfile.
 	[copy setConnectAutomatically:_connectAutomatically];
 	[copy setTransportType:_transportType];
 	[copy setTransportOptions:_transportOptions];
+	[copy setPrimaryWidth:_primaryWidth]; [copy setPrimaryHeight:_primaryHeight];
+	[copy setSecondaryWidth:_secondaryWidth]; [copy setSecondaryHeight:_secondaryHeight];
+	[copy setMonitorArrangement:_monitorArrangement];
 	return copy;
 }
 

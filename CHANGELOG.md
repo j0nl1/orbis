@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- macOS virtual second displays in a separate window, using the existing RDP session when the server supports Display Control.
+- Per-connection initial resolutions and monitor arrangement for macOS displays.
 - Cloudflare Access service-token connections on iPadOS, using the shared transport adapters and separate hostname-bound Keychain credentials.
 - An offline changelog in iPadOS About Orbis and a simulator XCTest suite for connection editing, transport lifecycle, and hardware keyboard input.
 - An offline changelog in About Orbis, alongside open-source acknowledgements.

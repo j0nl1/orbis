@@ -303,6 +303,59 @@ static void DrainSheetCompletion(void)
 	[profile release];
 }
 
+- (void)testDisplayOptionsSaveManualResolutionsAndArrangement
+{
+	OrbisProfile *profile = [[OrbisProfile alloc] init];
+	profile.name = @"Workstation"; profile.host = @"desktop.example.test";
+	OrbisProfileEditorController *editor = [[OrbisProfileEditorController alloc]
+	    initWithProfile:profile hasStoredPassword:NO];
+	NSView *content = editor.window.contentView;
+	NSPopUpButton *primary = (id)FindViewWithAccessibilityIdentifier(content, @"profile-primary-resolution-mode");
+	NSPopUpButton *secondary = (id)FindViewWithAccessibilityIdentifier(content, @"profile-secondary-resolution-mode");
+	NSPopUpButton *arrangement = (id)FindViewWithAccessibilityIdentifier(content, @"profile-monitor-arrangement");
+	XCTAssertEqual(primary.indexOfSelectedItem, (NSInteger)0);
+	XCTAssertEqual(secondary.indexOfSelectedItem, (NSInteger)0);
+	XCTAssertEqual(arrangement.indexOfSelectedItem, (NSInteger)0);
+	[primary selectItemAtIndex:1]; [primary sendAction:primary.action to:primary.target];
+	[secondary selectItemAtIndex:1]; [secondary sendAction:secondary.action to:secondary.target];
+	NSTextField *pw = (id)FindViewWithAccessibilityIdentifier(content, @"profile-primary-width");
+	NSTextField *ph = (id)FindViewWithAccessibilityIdentifier(content, @"profile-primary-height");
+	NSTextField *sw = (id)FindViewWithAccessibilityIdentifier(content, @"profile-secondary-width");
+	NSTextField *sh = (id)FindViewWithAccessibilityIdentifier(content, @"profile-secondary-height");
+	XCTAssertTrue(pw.enabled && ph.enabled && sw.enabled && sh.enabled);
+	pw.stringValue = @"2560"; ph.stringValue = @"1440";
+	sw.stringValue = @"1920"; sh.stringValue = @"1080";
+	[arrangement selectItemAtIndex:1];
+	OrbisEditorSaveRecorder *recorder = [[OrbisEditorSaveRecorder alloc] init];
+	editor.delegate = recorder;
+	[editor save:nil];
+	XCTAssertEqual(recorder.profile.primaryWidth, (NSUInteger)2560);
+	XCTAssertEqual(recorder.profile.primaryHeight, (NSUInteger)1440);
+	XCTAssertEqual(recorder.profile.secondaryWidth, (NSUInteger)1920);
+	XCTAssertEqual(recorder.profile.secondaryHeight, (NSUInteger)1080);
+	XCTAssertEqual(recorder.profile.monitorArrangement, OrbisMonitorLeft);
+	[content layoutSubtreeIfNeeded];
+	NSString *screenshot = [NSProcessInfo processInfo].environment[@"ORBIS_DISPLAY_OPTIONS_SCREENSHOT"];
+	if (screenshot)
+	{
+		NSView *options = arrangement.superview.superview;
+		NSBitmapImageRep *image = [options bitmapImageRepForCachingDisplayInRect:options.bounds];
+		[options cacheDisplayInRect:options.bounds toBitmapImageRep:image];
+		[[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:screenshot atomically:YES];
+	}
+	for (NSString *invalid in @[ @"1921", @"8194", @"-200", @"1920x", @"", @"199" ])
+	{
+		recorder.profile = nil; sw.stringValue = invalid;
+		[editor save:nil];
+		XCTAssertNil(recorder.profile, @"Invalid manual width: %@", invalid);
+	}
+	[primary selectItemAtIndex:0]; [secondary selectItemAtIndex:0];
+	[editor save:nil];
+	XCTAssertEqual(recorder.profile.primaryWidth, (NSUInteger)0);
+	XCTAssertEqual(recorder.profile.secondaryWidth, (NSUInteger)0);
+	editor.delegate = nil; [recorder release]; [editor release]; [profile release];
+}
+
 - (void)testCancelAndEscapeAllowEditingAgainAndCreatingANewConnection
 {
 	OrbisLibraryViewController *controller = [[OrbisLibraryViewController alloc] init];

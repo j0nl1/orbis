@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #import <Foundation/Foundation.h>
+#import "OrbisDisplayLayout.h"
 
 FOUNDATION_EXPORT NSString *const OrbisTransportTypeDirect;
 FOUNDATION_EXPORT NSString *const OrbisTransportTypeCloudflare;
@@ -16,6 +17,8 @@ FOUNDATION_EXPORT NSString *const OrbisTransportTypeCloudflare;
 	BOOL _connectAutomatically;
 	NSString *_transportType;
 	NSDictionary *_transportOptions;
+	NSUInteger _primaryWidth, _primaryHeight, _secondaryWidth, _secondaryHeight;
+	OrbisMonitorArrangement _monitorArrangement;
 }
 
 @property(nonatomic, copy) NSString *identifier;
@@ -29,6 +32,12 @@ FOUNDATION_EXPORT NSString *const OrbisTransportTypeCloudflare;
 @property(nonatomic, copy) NSString *transportType;
 @property(nonatomic, copy) NSDictionary *transportOptions;
 @property(nonatomic, readonly) NSString *transportHostname;
+// Zero dimensions select automatic resolution; a manual resolution is a complete pair.
+@property(nonatomic, assign) NSUInteger primaryWidth;
+@property(nonatomic, assign) NSUInteger primaryHeight;
+@property(nonatomic, assign) NSUInteger secondaryWidth;
+@property(nonatomic, assign) NSUInteger secondaryHeight;
+@property(nonatomic, assign) OrbisMonitorArrangement monitorArrangement;
 
 - (id)initWithDictionary:(NSDictionary *)dictionary;
 - (NSDictionary *)dictionaryRepresentation;

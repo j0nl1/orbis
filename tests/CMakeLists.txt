@@ -38,12 +38,32 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
     freerdp_input_send_keyboard_event=OrbisRecordKeyboardEvent
     freerdp_input_send_unicode_keyboard_event=OrbisRecordUnicodeKeyboardEvent)
   set_property(SOURCE ${keyboard_source}/client/Mac/MRDPView.m APPEND PROPERTY
-    COMPILE_DEFINITIONS mf_press_mouse_button=OrbisRecordMouseButton)
+    COMPILE_DEFINITIONS mf_press_mouse_button=OrbisRecordMouseButton
+      freerdp_client_send_button_event=OrbisRecordDisplayPointer)
   target_link_libraries(orbis_keyboard_input_tests PRIVATE ${APPKIT_FRAMEWORK}
     "${keyboard_runtime}/libfreerdp3.3.dylib"
     "${keyboard_runtime}/libfreerdp-client3.3.dylib"
     "${keyboard_runtime}/libwinpr3.3.dylib" "-framework IOKit" "-framework CoreGraphics")
   target_link_options(orbis_keyboard_input_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_executable(orbis_virtual_display_tests
+    ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisVirtualDisplayTests.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionController.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisConnectionRetryPolicy.c
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionEndPolicy.c
+    ${PROJECT_SOURCE_DIR}/shared/Sources/Transport/OrbisRDPTransportRoute.c)
+  target_include_directories(orbis_virtual_display_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/macos/Sources ${keyboard_source}/client/Mac
+    ${keyboard_source}/include ${keyboard_source}/winpr/include
+    ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
+  target_compile_options(orbis_virtual_display_tests PRIVATE -fno-objc-arc -fblocks)
+  target_link_libraries(orbis_virtual_display_tests PRIVATE orbis_tunnel ${APPKIT_FRAMEWORK}
+    "${keyboard_runtime}/libMacFreeRDP-library.dylib"
+    "${keyboard_runtime}/libfreerdp3.3.dylib"
+    "${keyboard_runtime}/libfreerdp-client3.3.dylib"
+    "${keyboard_runtime}/libwinpr3.3.dylib")
+  target_link_options(orbis_virtual_display_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_test(NAME integration.macos-virtual-display COMMAND orbis_virtual_display_tests)
+  set_tests_properties(integration.macos-virtual-display PROPERTIES LABELS "integration;appkit;freerdp" RUN_SERIAL TRUE)
   add_test(NAME integration.macos-keyboard-input COMMAND orbis_keyboard_input_tests)
   set_tests_properties(integration.macos-keyboard-input PROPERTIES LABELS "integration;appkit;freerdp")
 endif()
@@ -78,6 +98,7 @@ add_library(
   STATIC
   ${PROJECT_SOURCE_DIR}/shared/Sources/About/OrbisAcknowledgements.m
   ${PROJECT_SOURCE_DIR}/shared/Sources/Profiles/OrbisProfile.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Profiles/OrbisDisplayLayout.c
   ${PROJECT_SOURCE_DIR}/shared/Sources/Security/OrbisCredentialStore.m
 )
 target_include_directories(

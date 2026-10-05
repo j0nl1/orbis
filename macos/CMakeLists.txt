@@ -60,6 +60,7 @@ set(ORBIS_MACOS_SOURCES
     Sources/OrbisSessionController.m
     ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.h
     ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.m
+    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisDisplayLayout.c
     ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.h
     ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.m
 	${ORBIS_SHARED_DIR}/Sources/About/OrbisAcknowledgements.h

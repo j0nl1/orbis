@@ -29,6 +29,8 @@
 	NSSecureTextField *_passwordField;
 	NSButton *_certificateCheckbox;
 	NSButton *_automaticCheckbox;
+	NSPopUpButton *_primaryResolutionMode, *_secondaryResolutionMode, *_monitorArrangementField;
+	NSTextField *_primaryWidthField, *_primaryHeightField, *_secondaryWidthField, *_secondaryHeightField;
 	NSTextField *_validationLabel;
 	NSPopUpButton *_transportField;
 	NSTextField *_gatewayHostnameField;
