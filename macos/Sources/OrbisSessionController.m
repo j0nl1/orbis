@@ -46,10 +46,12 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)displayChangeTimedOut:(NSTimer *)timer;
 - (void)removeSecondaryWindow;
 - (BOOL)sendDisplayLayout:(OrbisDisplayLayout)layout;
+- (void)requestDisplayLayout:(OrbisDisplayLayout)layout;
 - (void)displayChannelConnected:(DispClientContext *)channel;
 - (void)displayChannelDisconnected:(DispClientContext *)channel;
 - (void)displayControlCaps:(uint32_t)count area:(uint64_t)area;
 - (void)setConnectingStatus:(NSString *)status;
+- (BOOL)layoutForActiveResolution:(NSSize)resolution result:(OrbisDisplayLayout *)layout;
 @end
 
 @implementation OrbisRemoteView
@@ -142,6 +144,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	_displaySettings = [[OrbisDisplaySettings loadMigratingProfile:profile] copy];
 	_password = [password copy];
 	_displayLock = [[NSLock alloc] init];
+	_pendingResolutionDisplayIndex = -1;
 	return self;
 }
 
@@ -505,6 +508,84 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	    !_secondaryWindow && !_closingSecondaryWindow;
 }
 
+- (NSInteger)activeRemoteDisplayIndex
+{
+    if (!_wasConnected || _stopping || !_displayLayout.count) return -1;
+    NSWindow *window = [NSApp keyWindow] ?: [NSApp mainWindow];
+    if (!window || [window attachedSheet]) return -1;
+    if (window == _window) return 0;
+    if (window == _secondaryWindow && _displayLayout.count == 2) return 1;
+    return -1;
+}
+
+- (NSSize)activeDisplayResolution
+{
+    NSInteger index = [self activeRemoteDisplayIndex];
+    if (index < 0 || (uint32_t)index >= _displayLayout.count) return NSZeroSize;
+    OrbisDisplayRect rect = _displayLayout.monitors[index];
+    return NSMakeSize(rect.width, rect.height);
+}
+
+- (NSSize)activeScreenResolution
+{
+    NSInteger index = [self activeRemoteDisplayIndex];
+    if (index < 0) return NSZeroSize;
+    NSWindow *window = index ? _secondaryWindow : _window;
+    NSSize size = [[window screen] frame].size;
+    if (!size.width || !size.height) return NSZeroSize;
+    size.width = MIN(8192, MAX(200, floor(size.width)));
+    size.height = MIN(8192, MAX(200, floor(size.height)));
+    size.width -= (NSUInteger)size.width % 2;
+    return size;
+}
+
+- (BOOL)canChangeActiveDisplayResolution
+{
+    if ([self activeRemoteDisplayIndex] < 0 || !_wasConnected || _stopping ||
+        _displayChangePending || _closingSecondaryWindow || !_displayLayout.count) return NO;
+    [_displayLock lock];
+    DispClientContext *channel = _displayChannel;
+    BOOL supported = channel && channel->SendMonitorLayout && _displayMaxMonitors >= _displayLayout.count;
+    [_displayLock unlock];
+    return supported;
+}
+
+- (BOOL)layoutForActiveResolution:(NSSize)resolution result:(OrbisDisplayLayout *)layout
+{
+    NSInteger index = [self activeRemoteDisplayIndex];
+    if (index < 0 || (uint32_t)index >= _displayLayout.count ||
+        !(resolution.width >= 200 && resolution.width <= 8192 && resolution.height >= 200 && resolution.height <= 8192) ||
+        floor(resolution.width) != resolution.width || floor(resolution.height) != resolution.height ||
+        !OrbisDisplayResolutionIsValid((uint32_t)resolution.width, (uint32_t)resolution.height)) return NO;
+    OrbisDisplayRect primary = _displayLayout.monitors[0], second = _displayLayout.monitors[1];
+    if (index) { second.width = (uint32_t)resolution.width; second.height = (uint32_t)resolution.height; }
+    else { primary.width = (uint32_t)resolution.width; primary.height = (uint32_t)resolution.height; }
+    int32_t offset = [_displaySettings arrangement] < OrbisMonitorAbove ? second.y : second.x;
+    return OrbisDisplayLayoutMakeWithOffset(primary.width, primary.height, second.width, second.height,
+        [_displaySettings arrangement], offset, _displayLayout.count == 2, layout);
+}
+
+- (BOOL)canSetActiveDisplayResolution:(NSSize)resolution
+{
+    if (![self canChangeActiveDisplayResolution]) return NO;
+    OrbisDisplayLayout layout;
+    if (![self layoutForActiveResolution:resolution result:&layout]) return NO;
+    uint64_t area = 0;
+    for (uint32_t i = 0; i < layout.count; i++) area += (uint64_t)layout.monitors[i].width * layout.monitors[i].height;
+    [_displayLock lock]; BOOL valid = _displayMaxArea && area <= _displayMaxArea; [_displayLock unlock];
+    return valid;
+}
+
+- (void)setActiveDisplayResolution:(NSSize)resolution
+{
+    if (![self canSetActiveDisplayResolution:resolution] || NSEqualSizes(resolution, [self activeDisplayResolution])) return;
+    OrbisDisplayLayout layout;
+    if (![self layoutForActiveResolution:resolution result:&layout]) return;
+    NSInteger index = [self activeRemoteDisplayIndex];
+    [self requestDisplayLayout:layout];
+    if (_displayChangePending) _pendingResolutionDisplayIndex = index;
+}
+
 - (void)updateDisplayControls
 {
 	[[NSApp mainMenu] update];
@@ -564,6 +645,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 - (void)requestDisplayLayout:(OrbisDisplayLayout)layout
 {
 	if (_displayChangePending || _stopping) return;
+	_pendingResolutionDisplayIndex = -1;
 	if (![self sendDisplayLayout:layout])
 	{
 		[self showDisplayError:@"The server cannot accept this display layout or resolution. Your current desktop remains open."];
@@ -617,6 +699,18 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	{
 		if (size.width != _pendingDisplayLayout.width || size.height != _pendingDisplayLayout.height) return;
 		_displayLayout = _pendingDisplayLayout; _displayChangePending = NO;
+        if (_pendingResolutionDisplayIndex >= 0)
+        {
+            OrbisDisplayRect changed = _displayLayout.monitors[_pendingResolutionDisplayIndex];
+            if (_pendingResolutionDisplayIndex == 0)
+            { _displaySettings.primaryWidth = changed.width; _displaySettings.primaryHeight = changed.height; }
+            else
+            { _displaySettings.secondaryWidth = changed.width; _displaySettings.secondaryHeight = changed.height; }
+            if (_displayLayout.count == 2)
+                _displaySettings.offset = _displaySettings.arrangement < OrbisMonitorAbove
+                    ? _displayLayout.monitors[1].y : _displayLayout.monitors[1].x;
+        }
+        _pendingResolutionDisplayIndex = -1;
 		[_displayChangeTimer invalidate]; [_displayChangeTimer release]; _displayChangeTimer = nil;
 	}
 	else if (_displayLayout.count == 1)
@@ -657,6 +751,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	(void)timer;
 	[_displayChangeTimer invalidate]; [_displayChangeTimer release]; _displayChangeTimer = nil;
 	_displayChangePending = NO;
+	_pendingResolutionDisplayIndex = -1;
 	[self sendDisplayLayout:_displayLayout];
 	[self updateDisplayControls];
 	[self showDisplayError:@"The server did not confirm the new desktop size. The previous layout was requested again; you can retry or reconnect."];
@@ -842,6 +937,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	_stopping = YES;
 	[_displayChangeTimer invalidate]; [_displayChangeTimer release]; _displayChangeTimer = nil;
 	_displayChangePending = NO;
+	_pendingResolutionDisplayIndex = -1;
 	[self updateDisplayControls];
 	_connectionPending = NO;
 	[[NSNotificationCenter defaultCenter] removeObserver:self

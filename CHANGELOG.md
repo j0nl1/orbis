@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- A Window → Resolution menu for changing the active remote display during a session, with standard presets and Match Mac Screen.
 - macOS virtual second displays in a separate window, using the existing RDP session when the server supports Display Control.
 - Global display settings beside New connection, with initial resolutions and a draggable monitor arrangement.
 - Cloudflare Access service-token connections on iPadOS, using the shared transport adapters and separate hostname-bound Keychain credentials.

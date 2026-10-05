@@ -9,6 +9,8 @@
 @interface OrbisAppDelegate ()
 - (void)disconnectSession:(id)sender;
 - (void)addVirtualDisplay:(id)sender;
+- (void)changeDisplayResolution:(NSMenuItem *)sender;
+- (void)matchScreenResolution:(id)sender;
 - (void)showLibraryWindow;
 @end
 
@@ -143,6 +145,29 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSMenuItem *windowItem = [[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""] autorelease];
 	NSMenu *windowMenu = [[[NSMenu alloc] initWithTitle:@"Window"] autorelease];
 	[windowMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+    [windowMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *resolutionItem = [windowMenu addItemWithTitle:@"Resolution" action:nil keyEquivalent:@""];
+    NSMenu *resolutions = [[[NSMenu alloc] initWithTitle:@"Resolution"] autorelease];
+    [resolutions setDelegate:self];
+    NSMenuItem *current = [resolutions addItemWithTitle:@"No remote display selected" action:nil keyEquivalent:@""];
+    [current setEnabled:NO];
+    [resolutions addItem:[NSMenuItem separatorItem]];
+    const NSUInteger sizes[][2] = { {1280, 720}, {1600, 900}, {1920, 1080}, {1920, 1200},
+        {2560, 1440}, {2560, 1600}, {3840, 2160} };
+    for (NSUInteger i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++)
+    {
+        NSSize size = NSMakeSize(sizes[i][0], sizes[i][1]);
+        NSMenuItem *item = [resolutions addItemWithTitle:[NSString stringWithFormat:@"%lu × %lu",
+            (unsigned long)sizes[i][0], (unsigned long)sizes[i][1]] action:@selector(changeDisplayResolution:)
+            keyEquivalent:@""];
+        [item setRepresentedObject:[NSValue valueWithSize:size]];
+        [item setTarget:self];
+    }
+    [resolutions addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *match = [resolutions addItemWithTitle:@"Match Mac Screen" action:@selector(matchScreenResolution:)
+        keyEquivalent:@""];
+    [match setTarget:self];
+    [resolutionItem setSubmenu:resolutions];
 	[windowItem setSubmenu:windowMenu];
 	[mainMenu addItem:windowItem];
 	[NSApp setWindowsMenu:windowMenu];
@@ -153,6 +178,27 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 - (void)addVirtualDisplay:(id)sender
 {
 	if ([_sessionController canAddVirtualDisplay]) [_sessionController addVirtualDisplay:sender];
+}
+
+- (void)menuNeedsUpdate:(NSMenu *)menu
+{
+    NSInteger index = _sessionController ? [_sessionController activeRemoteDisplayIndex] : -1;
+    NSSize resolution = [_sessionController activeDisplayResolution];
+    NSString *title = index < 0 ? @"No remote display selected" :
+        [NSString stringWithFormat:@"Display %ld: %.0f × %.0f", (long)index + 1, resolution.width, resolution.height];
+    [[menu itemAtIndex:0] setTitle:title];
+}
+
+- (void)changeDisplayResolution:(NSMenuItem *)sender
+{
+    NSValue *value = [sender representedObject];
+    if (value) [_sessionController setActiveDisplayResolution:[value sizeValue]];
+}
+
+- (void)matchScreenResolution:(id)sender
+{
+    (void)sender;
+    [_sessionController setActiveDisplayResolution:[_sessionController activeScreenResolution]];
 }
 
 - (void)disconnectSession:(id)sender
@@ -171,6 +217,16 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem
 {
+    if ([menuItem action] == @selector(changeDisplayResolution:))
+    {
+        NSSize resolution = [[menuItem representedObject] sizeValue];
+        BOOL active = _sessionController && [_sessionController activeRemoteDisplayIndex] >= 0;
+        [menuItem setState:active && NSEqualSizes(resolution, [_sessionController activeDisplayResolution])
+            ? NSControlStateValueOn : NSControlStateValueOff];
+        return [_sessionController canSetActiveDisplayResolution:resolution];
+    }
+    if ([menuItem action] == @selector(matchScreenResolution:))
+        return [_sessionController canSetActiveDisplayResolution:[_sessionController activeScreenResolution]];
 	if ([menuItem action] == @selector(addVirtualDisplay:))
 		return [_sessionController canAddVirtualDisplay];
 	if ([menuItem action] == @selector(disconnectSession:))

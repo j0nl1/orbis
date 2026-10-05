@@ -18,6 +18,12 @@
 - (void)stop {}
 - (BOOL)canAddVirtualDisplay { return NO; }
 - (void)addVirtualDisplay:(id)sender { (void)sender; }
+- (NSInteger)activeRemoteDisplayIndex { return -1; }
+- (NSSize)activeDisplayResolution { return NSZeroSize; }
+- (NSSize)activeScreenResolution { return NSZeroSize; }
+- (BOOL)canChangeActiveDisplayResolution { return NO; }
+- (BOOL)canSetActiveDisplayResolution:(NSSize)resolution { (void)resolution; return NO; }
+- (void)setActiveDisplayResolution:(NSSize)resolution { (void)resolution; }
 @end
 
 static void Require(BOOL condition, const char *message)

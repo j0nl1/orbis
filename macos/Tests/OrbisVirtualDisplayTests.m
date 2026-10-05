@@ -10,6 +10,15 @@
 #import "OrbisAppDelegate.h"
 #import <objc/runtime.h>
 
+/* Give the SSH fixture a deterministic active window without replacing menu or session code. */
+static NSWindow *resolutionFixtureWindow;
+@interface OrbisResolutionApplication : NSApplication
+@end
+@implementation OrbisResolutionApplication
+- (NSWindow *)keyWindow { return resolutionFixtureWindow ?: [super keyWindow]; }
+- (NSWindow *)mainWindow { return resolutionFixtureWindow ?: [super mainWindow]; }
+@end
+
 @interface OrbisSessionController (DisplayTests)
 - (void)displayChannelConnected:(DispClientContext *)channel;
 - (void)displayControlCaps:(uint32_t)count area:(uint64_t)area;
@@ -35,6 +44,7 @@ void OrbisRecordMouseButton(void *context, int button, int x, int y, BOOL down)
 @interface OrbisAppDelegate (DisplayTests)
 - (void)buildMainMenu;
 - (BOOL)validateMenuItem:(NSMenuItem *)item;
+- (void)menuNeedsUpdate:(NSMenu *)menu;
 @end
 
 @interface MRDPView (PointerFixture)
@@ -78,6 +88,8 @@ static void Require(BOOL value, const char *message)
 @property(nonatomic) NSUInteger errorCount;
 - (void)prepareFixture;
 - (NSWindow *)secondWindow;
+- (NSWindow *)primaryWindow;
+- (OrbisDisplayLayout)currentLayout;
 - (BOOL)isStopped;
 - (BOOL)isChanging;
 - (NSRect)primaryPixels;
@@ -103,6 +115,8 @@ static void Require(BOOL value, const char *message)
     OrbisDisplayLayoutMake(1280, 800, 0, 0, [_displaySettings arrangement], false, &_displayLayout);
 }
 - (NSWindow *)secondWindow { return _secondaryWindow; }
+- (NSWindow *)primaryWindow { return _window; }
+- (OrbisDisplayLayout)currentLayout { return _displayLayout; }
 - (BOOL)isStopped { return _stopping; }
 - (BOOL)isChanging { return _displayChangePending; }
 - (NSRect)primaryPixels
@@ -163,19 +177,131 @@ static void Require(BOOL value, const char *message)
 
 @end
 
+static void ConfirmResolution(OrbisDisplayFixtureController *controller)
+{
+    int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
+    for (uint32_t i = 0; i < sentCount; i++)
+    {
+        minX = MIN(minX, sentMonitors[i].Left); minY = MIN(minY, sentMonitors[i].Top);
+        maxX = MAX(maxX, sentMonitors[i].Left + (int32_t)sentMonitors[i].Width);
+        maxY = MAX(maxY, sentMonitors[i].Top + (int32_t)sentMonitors[i].Height);
+    }
+    [controller setPixelSize:NSMakeSize(maxX - minX, maxY - minY)];
+    [controller desktopDidResize:nil];
+}
+
+static void CheckResolutionMenu(OrbisAppDelegate *delegate, NSMenu *menu)
+{
+    NSMenuItem *fullHD = nil, *hd = nil, *match = nil;
+    for (NSMenuItem *item in menu.itemArray)
+    {
+        if ([item.title isEqualToString:@"1920 × 1080"]) fullHD = item;
+        if ([item.title isEqualToString:@"1280 × 720"]) hd = item;
+        if ([item.title isEqualToString:@"Match Mac Screen"]) match = item;
+    }
+    Require(fullHD && hd && match, "The Window menu must offer standard resolutions and screen matching");
+    Require(![delegate validateMenuItem:fullHD], "Resolution choices must be disabled outside a remote session");
+    for (OrbisMonitorArrangement side = OrbisMonitorRight; side <= OrbisMonitorBelow; side++)
+    {
+        OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] init] autorelease];
+        settings.secondaryWidth = 1024; settings.secondaryHeight = 768;
+        settings.arrangement = side; settings.offset = 120;
+        [settings saveToDefaults:[NSUserDefaults standardUserDefaults]];
+        NSDictionary *saved = [[[NSUserDefaults standardUserDefaults] objectForKey:@"OrbisDisplaySettings.v1"] copy];
+        OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease]; profile.name = @"Resolution fixture";
+        OrbisDisplayFixtureController *controller = [[OrbisDisplayFixtureController alloc] initWithProfile:profile
+            password:nil transport:[[[OrbisDirectTransport alloc] init] autorelease]];
+        [controller prepareFixture]; resolutionFixtureWindow = [controller primaryWindow];
+        object_setIvar(delegate, class_getInstanceVariable([OrbisAppDelegate class], "_sessionController"), controller);
+        Require(![delegate validateMenuItem:fullHD], "A session must wait for server display capabilities");
+        DispClientContext channel = {0}; channel.SendMonitorLayout = CaptureLayout;
+        [controller displayChannelConnected:&channel]; [controller displayControlCaps:1 area:8192ULL * 8192 * 2];
+        Require([delegate validateMenuItem:fullHD], "A single-monitor server can resize its one display");
+        [delegate menuNeedsUpdate:menu];
+        Require([[menu itemAtIndex:0].title isEqualToString:@"Display 1: 1280 × 800"], "The menu identifies the focused output and actual dimensions");
+        sentCount = 0;
+        [NSApp sendAction:fullHD.action to:fullHD.target from:fullHD];
+        Require(sentCount == 1 && sentMonitors[0].Width == 1920 && [controller isChanging], "Selecting a preset sends one layout on the existing connection");
+        Require(NSEqualSizes([controller activeDisplayResolution], NSMakeSize(1280, 800)), "The selected resolution changes only after server confirmation");
+        Require(![delegate validateMenuItem:hd], "Do not overlap requests while resizing");
+        [controller setPixelSize:NSMakeSize(1400, 900)]; [controller desktopDidResize:nil];
+        Require([controller isChanging], "An unrelated desktop resize cannot confirm the requested resolution");
+        ConfirmResolution(controller);
+        Require(NSEqualSizes([controller activeDisplayResolution], NSMakeSize(1920, 1080)), "The server-confirmed resolution becomes current");
+        Require([delegate validateMenuItem:fullHD] && fullHD.state == NSControlStateValueOn, "The active preset has a checkmark");
+        sentCount = 0; [NSApp sendAction:fullHD.action to:fullHD.target from:fullHD];
+        Require(!sentCount && ![controller isChanging], "Selecting the current resolution does not send another request");
+        for (NSValue *invalid in @[ [NSValue valueWithSize:NSMakeSize(1921, 1080)],
+            [NSValue valueWithSize:NSMakeSize(9000, 1080)], [NSValue valueWithSize:NSMakeSize(1920.5, 1080)] ])
+        {
+            Require(![controller canSetActiveDisplayResolution:invalid.sizeValue], "Invalid dimensions cannot enter the live layout");
+            [controller setActiveDisplayResolution:invalid.sizeValue];
+        }
+        Require(!sentCount && ![controller isChanging], "Invalid dimensions must not disturb the session");
+        [controller displayControlCaps:1 area:1];
+        Require(![delegate validateMenuItem:hd], "Presets beyond the server area limit are disabled");
+        [controller displayControlCaps:2 area:8192ULL * 8192 * 2];
+        [controller addVirtualDisplay:nil]; ConfirmResolution(controller);
+        NSWindow *primary = [controller primaryWindow], *second = [controller secondWindow];
+        resolutionFixtureWindow = second;
+        Require([controller activeRemoteDisplayIndex] == 1, "The secondary window is an independent resolution target");
+        [delegate menuNeedsUpdate:menu];
+        Require([[menu itemAtIndex:0].title isEqualToString:@"Display 2: 1024 × 768"], "The menu follows focus to the second output");
+        [NSApp sendAction:hd.action to:hd.target from:hd];
+        Require(sentCount == 2 && sentMonitors[0].Width == 1920 && sentMonitors[0].Height == 1080 &&
+            sentMonitors[1].Width == 1280 && sentMonitors[1].Height == 720, "Resizing the secondary preserves the primary");
+        ConfirmResolution(controller);
+        Require([controller secondWindow] == second && [controller primaryWindow] == primary && ![controller isStopped],
+            "A live resize reuses both windows and keeps the connection open");
+        resolutionFixtureWindow = primary;
+        [controller setActiveDisplayResolution:NSMakeSize(1600, 900)];
+        Require(sentMonitors[1].Width == 1280 && sentMonitors[1].Height == 720, "Resizing the primary preserves the secondary");
+        ConfirmResolution(controller);
+        OrbisDisplayLayout layout = [controller currentLayout];
+        Require(layout.monitors[1].x == (side == OrbisMonitorRight ? 1600 : side == OrbisMonitorLeft ? -1280 : 120) &&
+            layout.monitors[1].y == (side == OrbisMonitorAbove ? -720 : side == OrbisMonitorBelow ? 900 : 120),
+            "Resolution changes preserve the arrangement and staggered alignment");
+        [controller checkCapturedDrag];
+        resolutionFixtureWindow = second;
+        [controller setActiveDisplayResolution:NSMakeSize(1280, 800)]; ConfirmResolution(controller);
+        Require(![controller isChanging] && [controller activeDisplayResolution].height == 800,
+            "A pipeline reset can confirm a monitor resize even with unchanged aggregate bounds");
+        [NSApp sendAction:fullHD.action to:fullHD.target from:fullHD];
+        [controller displayChangeTimedOut:nil];
+        Require([controller activeDisplayResolution].width == 1280 && controller.errorCount == 1 && sentCount == 2,
+            "A rejected live resolution restores the previous layout and keeps its selection");
+        Require(NSEqualSizes([controller activeScreenResolution], [[second screen] frame].size), "Match Mac Screen uses the selected window's local screen");
+        [NSApp sendAction:match.action to:match.target from:match];
+        if ([controller isChanging]) ConfirmResolution(controller);
+        Require([[NSUserDefaults standardUserDefaults] objectForKey:@"OrbisDisplaySettings.v1"] &&
+            [[[NSUserDefaults standardUserDefaults] objectForKey:@"OrbisDisplaySettings.v1"] isEqual:saved],
+            "Live resolution changes do not overwrite saved initial display settings");
+        resolutionFixtureWindow = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 300, 200)
+            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO] autorelease];
+        Require(![delegate validateMenuItem:hd], "The library and unrelated windows are not remote resolution targets");
+        resolutionFixtureWindow = nil; [controller stop];
+        object_setIvar(delegate, class_getInstanceVariable([OrbisAppDelegate class], "_sessionController"), nil);
+        [controller release]; [saved release];
+    }
+}
+
 int main(void)
 {
     @autoreleasepool
     {
-        [NSApplication sharedApplication];
+        [OrbisResolutionApplication sharedApplication];
         pointerEvents = [[NSMutableArray alloc] init];
         id originalSettings = [[[NSUserDefaults standardUserDefaults] objectForKey:@"OrbisDisplaySettings.v1"] retain];
         OrbisAppDelegate *delegate = [[OrbisAppDelegate alloc] init];
         [delegate buildMainMenu];
         NSMenuItem *displayItem = nil;
+        NSMenu *resolutionMenu = nil;
         for (NSMenuItem *root in [NSApp mainMenu].itemArray)
             for (NSMenuItem *item in root.submenu.itemArray)
-                if ([item.title isEqualToString:@"Add Virtual Display"]) displayItem = item;
+                {
+                    if ([item.title isEqualToString:@"Add Virtual Display"]) displayItem = item;
+                    if ([item.title isEqualToString:@"Resolution"]) resolutionMenu = item.submenu;
+                }
         Require(displayItem && [displayItem target] == delegate, "Add Virtual Display belongs in the native menu");
         Require(![delegate validateMenuItem:displayItem], "The menu action must be disabled outside a session");
         for (NSInteger arrangement = 0; arrangement < 4; arrangement++)
@@ -239,6 +365,7 @@ int main(void)
             object_setIvar(delegate, class_getInstanceVariable([OrbisAppDelegate class], "_sessionController"), nil);
             [controller release]; [profile release];
         }
+        CheckResolutionMenu(delegate, resolutionMenu);
         [delegate release]; [pointerEvents release];
         if (originalSettings) [[NSUserDefaults standardUserDefaults] setObject:originalSettings forKey:@"OrbisDisplaySettings.v1"];
         else [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OrbisDisplaySettings.v1"];

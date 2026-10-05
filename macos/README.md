@@ -50,3 +50,19 @@ Orbis windows, including native fullscreen windows on separate Mac screens.
 The captured drag uses the output under the cursor, preserving the button press
 until its release in either window. Match the saved monitor arrangement to the
 Mac screens for a continuous transition between adjacent remote displays.
+
+During a connected session, **Window → Resolution** changes the focused remote
+window's resolution without reconnecting. The submenu identifies Display 1 or
+Display 2, shows its current dimensions, and marks the active preset. Common
+presets range from 1280 × 720 to 3840 × 2160; **Match Mac Screen** uses the screen
+containing that window. With two remote displays, the other display's resolution
+and the current arrangement are retained. These changes last for the current
+session; Settings continues to define initial resolutions for future connections.
+
+Resolution choices require the server's Display Control channel and stay disabled
+while a layout request is pending or a non-remote window is focused. Presets that
+exceed the advertised monitor area are disabled. The current resolution changes
+only after the server restarts its graphics pipeline or confirms a desktop resize;
+a timeout requests the previous layout and leaves the session open. See
+[Microsoft's Display Control overview](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/bdc90b21-4b14-43bc-9c03-b7fecbfc6a1f)
+for the server response sequence.

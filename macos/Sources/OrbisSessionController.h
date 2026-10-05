@@ -31,6 +31,7 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 	uint64_t _displayMaxArea;
 	OrbisDisplayLayout _displayLayout, _pendingDisplayLayout;
 	BOOL _displayChangePending;
+	NSInteger _pendingResolutionDisplayIndex;
 	NSTimer *_displayChangeTimer;
 	id _remoteView;
 	NSView *_connectingOverlay;
@@ -61,5 +62,11 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 - (void)stop;
 - (BOOL)canAddVirtualDisplay;
 - (void)addVirtualDisplay:(id)sender;
+- (NSInteger)activeRemoteDisplayIndex;
+- (NSSize)activeDisplayResolution;
+- (NSSize)activeScreenResolution;
+- (BOOL)canChangeActiveDisplayResolution;
+- (BOOL)canSetActiveDisplayResolution:(NSSize)resolution;
+- (void)setActiveDisplayResolution:(NSSize)resolution;
 
 @end
