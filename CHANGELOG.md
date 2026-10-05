@@ -7,6 +7,7 @@
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- Option-Backspace now deletes the previous word in remote Linux text fields by sending Control-Backspace.
 - A simpler connections toolbar with a labeled New connection action.
 - A compact connection status icon beside the computer name.
 - Vertically centered text in connection fields, including passwords and service tokens.

@@ -106,12 +106,75 @@ static void CheckOptionText(NSString *text, NSEventModifierFlags extraFlags)
 	[view release];
 }
 
+static void RequireWordDeletion(NSUInteger start)
+{
+	Require(events.count == start + 4 && UnicodeEvents().count == 0,
+	        @"Word deletion must send exactly one complete Control+Backspace chord");
+	if (events.count != start + 4)
+		return;
+	const UINT8 codes[] = { 0x1D, 0x0E, 0x0E, 0x1D };
+	for (NSUInteger index = 0; index < 4; index++)
+		Require([events[start + index][@"code"] unsignedIntValue] == codes[index] &&
+		        (([events[start + index][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) != 0) ==
+		            (index >= 2),
+		        @"Word deletion must press Control, press/release Backspace, then release Control");
+}
+
+static void CheckOptionBackspace(BOOL releaseOptionFirst, BOOL repeat)
+{
+	[events removeAllObjects];
+	OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+	[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", NSEventModifierFlagOption)];
+	[view keyDown:Key(NSEventTypeKeyDown, 51, @"\177", @"\177", NSEventModifierFlagOption)];
+	RequireWordDeletion(0);
+	if (repeat)
+	{
+		NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+		    modifierFlags:NSEventModifierFlagOption timestamp:2 windowNumber:0 context:nil
+		    characters:@"\177" charactersIgnoringModifiers:@"\177" isARepeat:YES keyCode:51];
+		[view keyDown:event];
+		RequireWordDeletion(4);
+	}
+	if (releaseOptionFirst)
+		[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", 0)];
+	[view keyUp:Key(NSEventTypeKeyUp, 51, @"\177", @"\177",
+	               releaseOptionFirst ? 0 : NSEventModifierFlagOption)];
+	if (!releaseOptionFirst)
+		[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", 0)];
+	Require(events.count == (repeat ? 8 : 4),
+	        @"Either release order must avoid stray Backspace releases or remote Alt");
+	[events removeAllObjects];
+	[view keyDown:Key(NSEventTypeKeyDown, 0, @"a", @"a", 0)];
+	[view keyUp:Key(NSEventTypeKeyUp, 0, @"a", @"a", 0)];
+	Require(events.count == 2 && [events[0][@"code"] unsignedIntValue] == 0x1E &&
+	        [events[1][@"code"] unsignedIntValue] == 0x1E,
+	        @"Typing after word deletion must not retain a remote modifier");
+	[view release];
+}
+
 int main(void)
 {
 	@autoreleasepool
 	{
 		[NSApplication sharedApplication];
 		events = [[NSMutableArray alloc] init];
+		CheckOptionBackspace(NO, NO);
+		CheckOptionBackspace(YES, NO);
+		CheckOptionBackspace(NO, YES);
+		CheckOptionBackspace(YES, YES);
+
+		[events removeAllObjects];
+		OrbisKeyboardTestView *transitionView = [[OrbisKeyboardTestView alloc] init];
+		[transitionView keyDown:Key(NSEventTypeKeyDown, 51, @"\177", @"\177", NSEventModifierFlagOption)];
+		[transitionView flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", 0)];
+		[transitionView keyDown:Key(NSEventTypeKeyDown, 51, @"\177", @"\177", 0)];
+		[transitionView keyUp:Key(NSEventTypeKeyUp, 51, @"\177", @"\177", 0)];
+		Require(events.count == 6 && [events[4][@"code"] unsignedIntValue] == 0x0E &&
+		        [events[5][@"code"] unsignedIntValue] == 0x0E &&
+		        ([events[5][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+		        @"Releasing Option while holding Backspace must still release subsequent plain Backspace");
+		[transitionView release];
+		[events removeAllObjects];
 		OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
 		[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", NSEventModifierFlagOption)];
 		[view keyDown:Key(NSEventTypeKeyDown, 19, @"@", @"2", NSEventModifierFlagOption)];
@@ -180,6 +243,42 @@ int main(void)
 		        ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
 		        @"Option+click must retain remote Alt for pointer gestures");
 		[view release];
+
+		[events removeAllObjects];
+		view = [[OrbisKeyboardTestView alloc] init];
+		[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", NSEventModifierFlagOption)];
+		[view mouseDown:click];
+		[view mouseUp:click];
+		[events removeAllObjects];
+		[view keyDown:Key(NSEventTypeKeyDown, 51, @"\177", @"\177", NSEventModifierFlagOption)];
+		Require(events.count == 5 && [events[0][@"code"] unsignedIntValue] == 0x38 &&
+		        ([events[0][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+		        @"Word deletion after Option+click must release remote Alt before Control");
+		if (events.count == 5)
+			RequireWordDeletion(1);
+		[view keyUp:Key(NSEventTypeKeyUp, 51, @"\177", @"\177", NSEventModifierFlagOption)];
+		[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", 0)];
+		Require(events.count == 5, @"The pointer-to-deletion transition must leave Alt released");
+		[view release];
+
+		for (NSNumber *mapping in @[ @YES, @NO ])
+		{
+			[events removeAllObjects];
+			view = [[OrbisKeyboardTestView alloc] init];
+			[view setMapsCommandShortcutsToControl:[mapping boolValue]];
+			NSEventModifierFlags flags = [mapping boolValue] ? 0 : NSEventModifierFlagOption;
+			[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", flags)];
+			[view keyDown:Key(NSEventTypeKeyDown, 51, @"\177", @"\177", flags)];
+			[view keyUp:Key(NSEventTypeKeyUp, 51, @"\177", @"\177", flags)];
+			[view flagsChanged:Key(NSEventTypeFlagsChanged, 58, @"", @"", 0)];
+			Require(events.count == ([mapping boolValue] ? 2 : 4) && UnicodeEvents().count == 0,
+			        @"Plain Backspace and disabled shortcut mapping must preserve physical key events");
+			for (NSDictionary *event in events)
+				Require([event[@"code"] unsignedIntValue] == 0x0E ||
+				        (![mapping boolValue] && [event[@"code"] unsignedIntValue] == 0x38),
+				        @"Control must only be injected for mapped Option+Backspace");
+			[view release];
+		}
 		[events release];
 	}
 	if (failures)

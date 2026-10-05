@@ -143,7 +143,7 @@ index 31682d1d5..625142d56 100644
  
  	if (tIOHIDManagerRef)
 diff --git a/client/Mac/MRDPView.h b/client/Mac/MRDPView.h
-index d7d978f..297747d 100644
+index d7d978f..b23ffcd 100644
 --- a/client/Mac/MRDPView.h
 +++ b/client/Mac/MRDPView.h
 @@ -28,6 +28,10 @@
@@ -165,7 +165,7 @@ index d7d978f..297747d 100644
 +	unsigned short lastMappedShortcutKeyCode;
 +	BOOL commandTapPending;
 +	BOOL commandTapConsumed;
-+	BOOL optionTextKeyDown[128];
++	BOOL locallyHandledKeyDown[128];
 +	BOOL hasPresentedRemoteFrame;
  	BOOL initialized;
  	NSPoint savedDragLocation;
@@ -194,7 +194,7 @@ index d7d978f..297747d 100644
  @end
  
 diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
-index e82f50b..7ab2e44 100644
+index e82f50b..b310a17 100644
 --- a/client/Mac/MRDPView.m
 +++ b/client/Mac/MRDPView.m
 @@ -24,8 +24,6 @@
@@ -364,7 +364,7 @@ index e82f50b..7ab2e44 100644
  
  	WINPR_ASSERT(instance);
  	WINPR_ASSERT(instance->context);
-@@ -498,6 +572,132 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -498,6 +572,155 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  	kbdModFlags = modFlags;
  }
  
@@ -461,6 +461,29 @@ index e82f50b..7ab2e44 100644
 +	return TRUE;
 +}
 +
++- (BOOL)sendMappedOptionBackspace:(NSEvent *)event
++{
++	DWORD flags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
++	if (!mapsCommandShortcutsToControl || [event keyCode] != APPLE_VK_Delete ||
++	    !(flags & NSEventModifierFlagOption) ||
++	    (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)))
++		return FALSE;
++
++	rdpInput *input = instance->context->input;
++	DWORD lockFlags = flags & (NSEventModifierFlagCapsLock | NSEventModifierFlagNumericPad);
++	DWORD chordFlags = (flags & ~NSEventModifierFlagOption) | NSEventModifierFlagControl;
++	// Send each word deletion as a complete chord, including key repeats.
++	// Release Alt first if an earlier pointer gesture or shortcut pressed it.
++	updateFlagStates(input, lockFlags, kbdModFlags);
++	updateFlagStates(input, chordFlags, lockFlags);
++	freerdp_input_send_keyboard_event(input, KBD_FLAGS_DOWN, RDP_SCANCODE_BACKSPACE);
++	freerdp_input_send_keyboard_event(input, KBD_FLAGS_RELEASE, RDP_SCANCODE_BACKSPACE);
++	updateFlagStates(input, lockFlags, chordFlags);
++	kbdModFlags = lockFlags;
++	locallyHandledKeyDown[[event keyCode]] = TRUE;
++	return TRUE;
++}
++
 +- (BOOL)sendOptionText:(NSEvent *)event
 +{
 +	NSEventModifierFlags flags = [event modifierFlags];
@@ -468,7 +491,7 @@ index e82f50b..7ab2e44 100644
 +	unsigned short code = [event keyCode];
 +	if (!mapsCommandShortcutsToControl || !(flags & NSEventModifierFlagOption) ||
 +	    (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) ||
-+	    code >= sizeof(optionTextKeyDown) / sizeof(optionTextKeyDown[0]) || [text length] == 0)
++	    code >= sizeof(locallyHandledKeyDown) / sizeof(locallyHandledKeyDown[0]) || [text length] == 0)
 +		return FALSE;
 +	for (NSUInteger index = 0; index < [text length]; index++)
 +	{
@@ -484,7 +507,7 @@ index e82f50b..7ab2e44 100644
 +	DWORD lockFlags = kbdModFlags & (NSEventModifierFlagCapsLock | NSEventModifierFlagNumericPad);
 +	updateFlagStates(input, lockFlags, kbdModFlags);
 +	kbdModFlags = lockFlags;
-+	optionTextKeyDown[code] = TRUE;
++	locallyHandledKeyDown[code] = TRUE;
 +	for (NSUInteger index = 0; index < [text length]; index++)
 +	{
 +		unichar character = [text characterAtIndex:index];
@@ -497,14 +520,19 @@ index e82f50b..7ab2e44 100644
  - (void)keyDown:(NSEvent *)event
  {
  	DWORD keyCode;
-@@ -509,8 +709,19 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -509,8 +732,24 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
 +	if ([self sendMappedCommandShortcut:event])
 +		return;
++	if ([self sendMappedOptionBackspace:event])
++		return;
 +	if ([self sendOptionText:event])
 +		return;
++	unsigned short code = [event keyCode];
++	if (code < sizeof(locallyHandledKeyDown) / sizeof(locallyHandledKeyDown[0]))
++		locallyHandledKeyDown[code] = FALSE;
  
 -	[self flagsChanged:event];
 +	DWORD modFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -518,18 +546,18 @@ index e82f50b..7ab2e44 100644
  
  	keyFlags = KBD_FLAGS_DOWN;
  	keyCode = [event keyCode];
-@@ -548,8 +759,23 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
+@@ -548,8 +787,23 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
 -
 -	[self flagsChanged:event];
 +	unsigned short releasedCode = [event keyCode];
-+	if (releasedCode < sizeof(optionTextKeyDown) / sizeof(optionTextKeyDown[0]) &&
-+	    optionTextKeyDown[releasedCode])
++	if (releasedCode < sizeof(locallyHandledKeyDown) / sizeof(locallyHandledKeyDown[0]) &&
++	    locallyHandledKeyDown[releasedCode])
 +	{
-+		optionTextKeyDown[releasedCode] = FALSE;
-+		return; // Unicode presses already include their releases.
++		locallyHandledKeyDown[releasedCode] = FALSE;
++		return; // Locally handled keys already include their remote releases.
 +	}
 +	DWORD eventModFlags =
 +	    [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -544,7 +572,7 @@ index e82f50b..7ab2e44 100644
  
  	keyFlags = KBD_FLAGS_RELEASE;
  	keyCode = [event keyCode];
-@@ -686,13 +912,16 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -686,13 +940,16 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)drawRect:(NSRect)rect
  {
@@ -565,24 +593,24 @@ index e82f50b..7ab2e44 100644
  		CGContextSaveGState(cgContext);
  		CGContextClipToRect(
  		    cgContext, CGRectMake(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height));
-@@ -773,6 +1002,8 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -773,6 +1030,8 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)pause
  {
-+	memset(optionTextKeyDown, 0, sizeof(optionTextKeyDown));
++	memset(locallyHandledKeyDown, 0, sizeof(locallyHandledKeyDown));
 +	[self cancelPendingCommandTap];
  	dispatch_async(dispatch_get_main_queue(), ^{
  		[self->pasteboard_timer invalidate];
  	});
-@@ -788,6 +1019,7 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
+@@ -788,6 +1047,7 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)resume
  {
-+	memset(optionTextKeyDown, 0, sizeof(optionTextKeyDown));
++	memset(locallyHandledKeyDown, 0, sizeof(locallyHandledKeyDown));
  	if (!self.is_connected)
  		return;
  
-@@ -932,7 +1164,11 @@ BOOL mac_post_connect(freerdp *instance)
+@@ -932,7 +1192,11 @@ BOOL mac_post_connect(freerdp *instance)
  		return FALSE;
  
  	gdi = instance->context->gdi;
@@ -595,7 +623,7 @@ index e82f50b..7ab2e44 100644
  	graphics_register_pointer(instance->context->graphics, &rdp_pointer);
  	/* setup pasteboard (aka clipboard) for copy operations (write only) */
  	view->pasteboard_wr = [NSPasteboard generalPasteboard];
-@@ -941,7 +1177,6 @@ BOOL mac_post_connect(freerdp *instance)
+@@ -941,7 +1205,6 @@ BOOL mac_post_connect(freerdp *instance)
  		view->pasteboard_rd = [NSPasteboard generalPasteboard];
  		view->pasteboard_changecount = -1;
  	});
@@ -603,7 +631,7 @@ index e82f50b..7ab2e44 100644
  	mfc->appleKeyboardType = mac_detect_keyboard_type();
  	return TRUE;
  }
-@@ -962,7 +1197,18 @@ void mac_post_disconnect(freerdp *instance)
+@@ -962,7 +1225,18 @@ void mac_post_disconnect(freerdp *instance)
  	                                   mac_OnChannelConnectedEventHandler);
  	PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub,
  	                                      mac_OnChannelDisconnectedEventHandler);
@@ -622,7 +650,7 @@ index e82f50b..7ab2e44 100644
  }
  
  static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **username, char **password,
-@@ -974,65 +1220,75 @@ static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **usernam
+@@ -974,65 +1248,75 @@ static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **usernam
  	WINPR_ASSERT(password);
  	WINPR_ASSERT(domain);
  
@@ -751,7 +779,7 @@ index e82f50b..7ab2e44 100644
  }
  
  static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **password, char **domain,
-@@ -1092,11 +1348,6 @@ static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **pass
+@@ -1092,11 +1376,6 @@ static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **pass
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
  			goto fail;
  	}
@@ -763,7 +791,7 @@ index e82f50b..7ab2e44 100644
  	else if (!*password)
  	{
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
-@@ -1149,35 +1400,41 @@ DWORD mac_verify_certificate_ex(freerdp *instance, const char *host, UINT16 port
+@@ -1149,35 +1428,41 @@ DWORD mac_verify_certificate_ex(freerdp *instance, const char *host, UINT16 port
                                  const char *common_name, const char *subject, const char *issuer,
                                  const char *fingerprint, DWORD flags)
  {
@@ -834,7 +862,7 @@ index e82f50b..7ab2e44 100644
  }
  
  DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
-@@ -1186,35 +1443,11 @@ DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UIN
+@@ -1186,35 +1471,11 @@ DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UIN
                                          const char *old_subject, const char *old_issuer,
                                          const char *old_fingerprint, DWORD flags)
  {
@@ -875,7 +903,7 @@ index e82f50b..7ab2e44 100644
  }
  
  int mac_logon_error_info(freerdp *instance, UINT32 data, UINT32 type)
-@@ -1457,6 +1690,13 @@ BOOL mac_end_paint(rdpContext *context)
+@@ -1457,6 +1718,13 @@ BOOL mac_end_paint(rdpContext *context)
  	windows_to_apple_cords(mfc->view, &newDrawRect);
  	dispatch_sync(dispatch_get_main_queue(), ^{
  		[view setNeedsDisplayInRect:newDrawRect];
@@ -889,7 +917,7 @@ index e82f50b..7ab2e44 100644
  	});
  	gdi->primary->hdc->hwnd->ninvalid = 0;
  	return TRUE;
-@@ -1477,18 +1717,27 @@ BOOL mac_desktop_resize(rdpContext *context)
+@@ -1477,18 +1745,27 @@ BOOL mac_desktop_resize(rdpContext *context)
  	 * put on the update message queue to be able to properly flush pending updates,
  	 * resize, and then continue with post-resizing graphical updates.
  	 */
