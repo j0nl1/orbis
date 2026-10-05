@@ -3,12 +3,22 @@
 ## Unreleased
 
 ### Added
+- iPad trackpad workspace gestures: swipe sideways with two fingers to switch workspaces, Alt + swipe up to open Activities, and Alt + Shift + swipe sideways to move the active window. Settings can restore normal horizontal scrolling.
+- iPad remote sessions keep the display awake while connecting or connected in the foreground, restoring automatic screen lock after disconnecting, a failed connection, or leaving the app.
+- Global iPad display settings with automatic and custom resolutions, plus suggested resolutions matching the current iPad window’s proportions. Manual resolutions remain fixed across rotation and window resizing.
+- Optional macOS fullscreen input capture forwards physical keys, system shortcuts, mouse buttons, and input-generating macros to the active remote desktop. Control + Option + Command + Esc releases capture.
+- Automatic remote resolution sizing in Window → Resolution, following each window's size and monitor changes.
+- A Window → Resolution menu for changing the active remote display during a session, with standard presets and Match Mac Screen.
+- macOS virtual second displays in a separate window, using the existing RDP session when the server supports Display Control.
+- Global display settings beside New connection, with initial resolutions and a draggable monitor arrangement.
 - Cloudflare Access service-token connections on iPadOS, using the shared transport adapters and separate hostname-bound Keychain credentials.
 - An offline changelog in iPadOS About Orbis and a simulator XCTest suite for connection editing, transport lifecycle, and hardware keyboard input.
 - An offline changelog in About Orbis, alongside open-source acknowledgements.
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- Local macOS updates can reuse a configured signing identity to preserve Keychain authorization across builds.
+- Add Virtual Display is available in the macOS Session menu, without a session toolbar.
 - iPadOS connection forms group endpoint, Access token, account, and connection options, accept tunnel HTTPS URLs, and preserve saved credentials.
 - iPadOS hardware keyboards support Option-Backspace word deletion and Option symbols while retaining remote Alt+Tab.
 - The iPadOS library has a labeled New connection action, and failed connections show transport or authentication details after returning to the library.
@@ -22,6 +32,11 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- macOS Command shortcuts no longer send an extra remote Super tap when their modifier state arrives after the shortcut.
+- Remote keys used with Command are released when Command is released or focus cleanup runs, including when key-up events are missing or delayed.
+- Windowed macOS remote sessions use a separate native title bar so window controls do not overlap the remote desktop.
+- The macOS loading overlay is removed from its window after the first remote frame, including its retained view and status label.
+- macOS remote window drags can cross between Orbis display windows while keeping the original button press.
 - iPadOS connection indicators check RDP availability independently of session state, including after disconnecting.
 - iPadOS Command-Backspace sends Forward Delete without Control, including when Command is released before Backspace.
 - OpenH264 simulator builds use the simulator SDK and target consistently and remain compatible with the supported CMake version.

@@ -20,6 +20,7 @@
 	NSStackView *_cardsStack;
 	id _profileEditor;
 	id _aboutController;
+	id _settingsController;
 }
 
 @property(nonatomic, assign) id<OrbisLibraryViewControllerDelegate> delegate;
@@ -27,6 +28,7 @@
 
 - (void)reloadProfiles;
 - (void)addConnection:(id)sender;
+- (void)showSettings:(id)sender;
 - (void)showAbout:(id)sender;
 - (void)connectSelectedProfile:(id)sender;
 

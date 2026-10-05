@@ -2,10 +2,26 @@
 
 #import <AppKit/AppKit.h>
 #import "MRDPView.h"
+#import "OrbisInputCapture.h"
 
 static NSMutableArray *events;
 static NSUInteger failures;
 static NSUInteger mouseEvents;
+static NSUInteger displayPointerEvents;
+static UINT16 displayPointerFlags;
+static NSPoint displayPointerPoint;
+BOOL OrbisRecordDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 flags, INT32 x, INT32 y)
+{
+	(void)context; (void)relative;
+	displayPointerFlags = flags;
+	displayPointerEvents++; displayPointerPoint = NSMakePoint(x, y);
+	return TRUE;
+}
+
+BOOL OrbisRecordExtendedDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 flags, INT32 x, INT32 y)
+{
+    return OrbisRecordDisplayPointer(context, relative, flags, x, y);
+}
 
 void OrbisRecordMouseButton(void *context, int button, int x, int y, BOOL down)
 {
@@ -39,6 +55,36 @@ BOOL OrbisRecordUnicodeKeyboardEvent(rdpInput *input, UINT16 flags, UINT16 code)
 }
 @end
 
+@interface OrbisCaptureTestWindow : NSWindow
+@property(nonatomic) BOOL captureFullscreen;
+@end
+@implementation OrbisCaptureTestWindow
+@synthesize captureFullscreen;
+- (NSWindowStyleMask)styleMask
+{
+    return [super styleMask] | (captureFullscreen ? NSWindowStyleMaskFullScreen : 0);
+}
+@end
+
+@interface OrbisCaptureTestDelegate : NSObject <OrbisInputCaptureDelegate>
+@property(nonatomic, assign) MRDPView *view;
+@property(nonatomic) BOOL eligible;
+@end
+@implementation OrbisCaptureTestDelegate
+@synthesize view, eligible;
+- (MRDPView *)inputCaptureKeyboardTarget { return eligible ? view : nil; }
+- (MRDPView *)inputCapturePointerTargetAtScreenPoint:(NSPoint)point { (void)point; return eligible ? view : nil; }
+@end
+
+@interface OrbisTestInputCapture : OrbisInputCapture
+@property(nonatomic) BOOL allowTap;
+@property(nonatomic) NSUInteger tapAttempts;
+@end
+@implementation OrbisTestInputCapture
+@synthesize allowTap, tapAttempts;
+- (BOOL)installTap { tapAttempts++; return allowTap; }
+@end
+
 @implementation OrbisKeyboardTestView
 - (id)init
 {
@@ -52,6 +98,22 @@ BOOL OrbisRecordUnicodeKeyboardEvent(rdpInput *input, UINT16 flags, UINT16 code)
 	[self setIs_connected:1];
 	[self setMapsCommandShortcutsToControl:YES];
 	return self;
+}
+- (void)makeDisplayBitmap
+{
+	CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+	bitmap_context = CGBitmapContextCreate(NULL, 600, 200, 8, 600 * 4,
+	    colorSpace, kCGImageAlphaPremultipliedLast);
+	CGColorSpaceRelease(colorSpace);
+	CGContextSetRGBFillColor(bitmap_context, 1, 0, 0, 1);
+	CGContextFillRect(bitmap_context, CGRectMake(0, 0, 400, 200));
+	CGContextSetRGBFillColor(bitmap_context, 0, 0, 1, 1);
+	CGContextFillRect(bitmap_context, CGRectMake(400, 0, 200, 200));
+}
+- (void)dealloc
+{
+	if (bitmap_context) CGContextRelease(bitmap_context);
+	[super dealloc];
 }
 @end
 
@@ -152,12 +214,310 @@ static void CheckOptionBackspace(BOOL releaseOptionFirst, BOOL repeat)
 	[view release];
 }
 
+static void CheckDisplayViewports(void)
+{
+	NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
+	    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+	[window setReleasedWhenClosed:NO];
+	OrbisKeyboardTestView *source = [[OrbisKeyboardTestView alloc] init];
+	MRDPView *second = [[MRDPView alloc] initWithFrame:NSMakeRect(20, 30, 400, 200)];
+	[[window contentView] addSubview:second];
+	[second attachToDisplaySource:source];
+	[second setMapsCommandShortcutsToControl:YES];
+	[second setDisplayRegion:NSMakeRect(1024, 0, 1280, 800)];
+	NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:NSMakePoint(220, 130)
+	    modifierFlags:0 timestamp:1 windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:0 pressure:0];
+	NSPoint point = [second remotePointForEvent:event];
+	Require(NSEqualPoints(point, NSMakePoint(1664, 400)), @"Secondary pointer coordinates must include region offset, scaling, and the view origin");
+	displayPointerEvents = 0; [second mouseMoved:event];
+	Require(displayPointerEvents == 1 && NSEqualPoints(displayPointerPoint, point),
+	    @"Managed pointer events must reach RDP without scaling twice");
+	[events removeAllObjects];
+	[second keyDown:Key(NSEventTypeKeyDown, 8, @"c", @"c", NSEventModifierFlagCommand)];
+	Require(events.count > 0, @"The second display must use the existing session keyboard");
+
+	[source makeDisplayBitmap];
+	[second setDisplayRegion:NSMakeRect(400, 0, 200, 200)];
+	NSBitmapImageRep *bitmap = [[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+	    pixelsWide:400 pixelsHigh:200 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+	    isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:1600 bitsPerPixel:32] autorelease];
+	[NSGraphicsContext saveGraphicsState];
+	[NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap]];
+	[second drawRect:second.bounds];
+	[NSGraphicsContext restoreGraphicsState];
+	NSColor *color = [[bitmap colorAtX:200 y:100] colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+	Require(color.blueComponent > 0.9 && color.redComponent < 0.1,
+	    @"The second window must paint only its blue monitor, excluding the red primary monitor");
+	[second detachFromDisplaySource];
+	Require(!second.is_connected && source.is_connected, @"Detaching the second display must preserve the primary session");
+	[second removeFromSuperview]; [second release]; [source release]; [window release];
+}
+
+static void CheckCommandEventOrdering(void)
+{
+    [events removeAllObjects];
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    // A nested client can deliver the shortcut before its modifier transition.
+    [view keyDown:Key(NSEventTypeKeyDown, 8, @"c", @"c", NSEventModifierFlagCommand)];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 4,
+        @"A shortcut observed before Command state must not produce an extra remote Super tap");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    // AppKit may omit keyUp for keys used while Command is held.
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", 0)];
+    NSInteger balance = 0;
+    for (NSDictionary *event in events)
+    {
+        if ([event[@"code"] unsignedIntValue] == 0x4B)
+            balance += ([event[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) ? -1 : 1;
+    }
+    Require(balance == 0, @"Releasing Command must not leave an unmapped arrow key held remotely");
+    [view release];
+}
+
+static void CheckCommandReleaseTransitions(void)
+{
+    [events removeAllObjects];
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:NO];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 2 && [events[0][@"code"] unsignedIntValue] == 0x5B &&
+        ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"A standalone Command tap must remain one complete remote Super tap");
+    [view release];
+
+    for (NSNumber *keyCode in @[ @8, @51 ])
+    {
+        [events removeAllObjects];
+        view = [[OrbisKeyboardTestView alloc] init];
+        NSString *text = keyCode.unsignedShortValue == 8 ? @"c" : @"\177";
+        [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+        [view keyDown:Key(NSEventTypeKeyDown, keyCode.unsignedShortValue, text, text, NSEventModifierFlagCommand)];
+        [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", 0)];
+        [view keyUp:Key(NSEventTypeKeyUp, keyCode.unsignedShortValue, text, text, 0)];
+        Require(events.count == (keyCode.unsignedShortValue == 8 ? 4 : 2),
+            @"An atomic Command shortcut must ignore keyUp arriving after Command release");
+        [view release];
+    }
+
+    for (NSNumber *keyCode in @[ @123, @124, @125, @126, @14 ])
+    {
+        [events removeAllObjects];
+        view = [[OrbisKeyboardTestView alloc] init];
+        NSString *text = keyCode.unsignedShortValue == 14 ? @"e" : @"";
+        [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+        [view keyDown:Key(NSEventTypeKeyDown, keyCode.unsignedShortValue, text, text, NSEventModifierFlagCommand)];
+        [view setCommandKeyDown:NO];
+        Require(events.count == 2 &&
+            [events[0][@"code"] unsignedIntValue] == [events[1][@"code"] unsignedIntValue] &&
+            ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+            @"Every non-atomic Command key must receive its remote release when keyUp is missing");
+        [view keyUp:Key(NSEventTypeKeyUp, keyCode.unsignedShortValue, text, text, 0)];
+        Require(events.count == 2, @"A late keyUp must not release an already completed Command key twice");
+        [view keyDown:Key(NSEventTypeKeyDown, keyCode.unsignedShortValue, text, text, 0)];
+        [view keyUp:Key(NSEventTypeKeyUp, keyCode.unsignedShortValue, text, text, 0)];
+        Require(events.count == 4 && ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+            @"The same key must still work normally after recovering a Command chord");
+        [view release];
+    }
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view keyUp:Key(NSEventTypeKeyUp, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 2, @"A Command key released normally must not be released again");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    NSEvent *repeat = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagCommand timestamp:2 windowNumber:0 context:nil
+        characters:@"" charactersIgnoringModifiers:@"" isARepeat:YES keyCode:123];
+    [view keyDown:repeat];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 3 && ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Repeated Command arrows must end with one remote release");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view cancelPendingCommandTap];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 2 && [events.lastObject[@"code"] unsignedIntValue] == 0x4B &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Focus cancellation must release Command keys without creating a Super tap");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    NSEventModifierFlags chord = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", chord)];
+    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", chord)];
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagShift)];
+    Require(events.count == 3 && [events[0][@"code"] unsignedIntValue] == 0x2A &&
+        [events.lastObject[@"code"] unsignedIntValue] == 0x4B &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Recovering a Command key must preserve Shift while it is physically held");
+    [view flagsChanged:Key(NSEventTypeFlagsChanged, 56, @"", @"", 0)];
+    Require(events.count == 4 && [events.lastObject[@"code"] unsignedIntValue] == 0x2A &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Shift must be released when its own modifier event arrives");
+    [view release];
+
+    [events removeAllObjects];
+    view = [[OrbisKeyboardTestView alloc] init];
+    NSEvent *click = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:NSMakePoint(10, 10)
+        modifierFlags:NSEventModifierFlagCommand timestamp:1 windowNumber:0 context:nil
+        eventNumber:1 clickCount:1 pressure:1];
+    [view mouseDown:click];
+    [view mouseUp:click];
+    [view setCommandKeyDown:YES];
+    [view setCommandKeyDown:NO];
+    Require(events.count == 0, @"A Command pointer action must not create a later Super tap");
+    [view release];
+    mouseEvents = 0;
+}
+
+static CGEventRef CaptureKey(CGEventType type, unsigned short code, CGEventFlags flags)
+{
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, code, type != kCGEventKeyUp);
+    CGEventSetType(event, type); CGEventSetFlags(event, flags);
+    return event;
+}
+
+static void CheckFullscreenInputCapture(void)
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    id original = [[defaults objectForKey:OrbisFullscreenInputCaptureKey] retain];
+    OrbisCaptureTestWindow *window = [[OrbisCaptureTestWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    [window setReleasedWhenClosed:NO];
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    [view setDisplayRegion:NSMakeRect(0, 0, 800, 600)];
+    [window.contentView addSubview:view];
+    OrbisCaptureTestDelegate *delegate = [[OrbisCaptureTestDelegate alloc] init];
+    delegate.view = view; delegate.eligible = YES;
+    OrbisTestInputCapture *capture = [[OrbisTestInputCapture alloc] initWithDelegate:delegate];
+    capture.allowTap = YES;
+    CGEventRef down = CaptureKey(kCGEventKeyDown, 48, kCGEventFlagMaskCommand);
+    CGEventRef up = CaptureKey(kCGEventKeyUp, 48, kCGEventFlagMaskCommand);
+    CGEventRef released = CaptureKey(kCGEventFlagsChanged, 55, 0);
+    [defaults setBool:NO forKey:OrbisFullscreenInputCaptureKey]; window.captureFullscreen = YES;
+    [events removeAllObjects];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown] && !capture.active && !capture.tapAttempts && !events.count,
+        @"Disabled capture must leave Mac input unchanged and never request a system filter");
+    [defaults setBool:YES forKey:OrbisFullscreenInputCaptureKey]; window.captureFullscreen = NO;
+    Require(![capture consumeEvent:down type:kCGEventKeyDown] && !capture.tapAttempts,
+        @"An enabled setting must still preserve windowed input");
+    window.captureFullscreen = YES;
+    Require([capture consumeEvent:down type:kCGEventKeyDown] && [capture consumeEvent:up type:kCGEventKeyUp] &&
+        [capture consumeEvent:released type:kCGEventFlagsChanged] && capture.active,
+        @"Fullscreen Command+Tab must be consumed before the Mac app switcher");
+    Require(events.count == 4 && [events[0][@"code"] unsignedIntValue] == 0x5B &&
+        [events[1][@"code"] unsignedIntValue] == 0x0F &&
+        ([events[2][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) &&
+        ([events[3][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Captured Command+Tab must reach RDP as a complete physical Super+Tab sequence");
+    [events removeAllObjects];
+    CGEventRef optionDown = CaptureKey(kCGEventKeyDown, 19, kCGEventFlagMaskAlternate);
+    CGEventRef optionUp = CaptureKey(kCGEventKeyUp, 19, kCGEventFlagMaskAlternate);
+    [capture consumeEvent:optionDown type:kCGEventKeyDown]; [capture consumeEvent:optionUp type:kCGEventKeyUp];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    Require(events.count == 4 && [events[0][@"code"] unsignedIntValue] == 0x38 &&
+        [events[1][@"code"] unsignedIntValue] == 0x03 && !UnicodeEvents().count,
+        @"Captured Option macros must forward physical Alt+2 rather than a Mac-generated Unicode symbol");
+    [events removeAllObjects];
+    [capture consumeEvent:down type:kCGEventKeyDown]; delegate.eligible = NO; [capture refresh];
+    Require(!capture.active && events.count == 4 &&
+        ([events[2][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) &&
+        ([events[3][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Changing apps must release a held key and Super before restoring local input");
+    Require(![capture consumeEvent:up type:kCGEventKeyUp], @"Inactive capture must pass subsequent input to macOS");
+    delegate.eligible = YES; [capture refresh]; [events removeAllObjects];
+    CGEventFlags escapeFlags = kCGEventFlagMaskCommand | kCGEventFlagMaskControl | kCGEventFlagMaskAlternate;
+    CGEventRef escapeDown = CaptureKey(kCGEventKeyDown, 53, escapeFlags);
+    CGEventRef escapeUp = CaptureKey(kCGEventKeyUp, 53, escapeFlags);
+    [capture consumeEvent:down type:kCGEventKeyDown];
+    Require([capture consumeEvent:escapeDown type:kCGEventKeyDown] && !capture.active && events.count == 4,
+        @"The release chord must finish remote input without sending Escape or reactivating capture");
+    Require([capture consumeEvent:escapeUp type:kCGEventKeyUp] &&
+        [capture consumeEvent:released type:kCGEventFlagsChanged] && !capture.suppressesLocalModifiers,
+        @"Escape and modifier releases must drain locally without a stray remote Super tap");
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"Capture stays suspended in the same fullscreen focus episode");
+    delegate.eligible = NO; [capture refresh]; delegate.eligible = YES; [capture refresh];
+    Require(capture.active, @"Returning from another app must rearm opted-in fullscreen capture");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowWillExitFullScreenNotification object:window];
+    [capture refresh];
+    Require(!capture.active, @"Capture must stop throughout the exit animation even while the fullscreen style bit remains set");
+    window.captureFullscreen = NO;
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowDidExitFullScreenNotification object:window];
+    [capture refresh]; window.captureFullscreen = YES; [capture refresh];
+    Require(capture.active, @"A later fullscreen entry must rearm capture after the completed transition");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidBeginTrackingNotification object:nil];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"Mac menus must receive local shortcuts during menu tracking");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidBeginTrackingNotification object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidEndTrackingNotification object:nil];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"Closing a submenu must not recapture input while the main menu is still tracking");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidEndTrackingNotification object:nil];
+    Require(capture.active, @"Closing a native menu must resume the opted-in fullscreen session");
+    [events removeAllObjects]; displayPointerEvents = 0;
+    CGEventRef click = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, CGPointMake(200, 200), kCGMouseButtonLeft);
+    CGEventSetFlags(click, 0);
+    Require([capture consumeEvent:click type:kCGEventLeftMouseDown] && displayPointerEvents == 1 &&
+        (displayPointerFlags & PTR_FLAGS_DOWN), @"Captured macro clicks must reach the normal remote pointer boundary exactly once");
+    window.captureFullscreen = NO; [capture refresh];
+    Require(displayPointerEvents == 2 && !(displayPointerFlags & PTR_FLAGS_DOWN) && !capture.active,
+        @"Leaving fullscreen while a mouse button is held must release it remotely");
+    window.captureFullscreen = YES; [capture refresh];
+    CGEventRef back = CGEventCreateMouseEvent(NULL, kCGEventOtherMouseDown, CGPointMake(200, 200), (CGMouseButton)3);
+    displayPointerEvents = 0;
+    [capture consumeEvent:back type:kCGEventOtherMouseDown];
+    Require(displayPointerEvents == 1 && displayPointerFlags == (PTR_XFLAGS_DOWN | PTR_XFLAGS_BUTTON1),
+        @"Captured side buttons must use the extended RDP button protocol");
+    CGEventSetType(back, kCGEventOtherMouseUp); [capture consumeEvent:back type:kCGEventOtherMouseUp];
+    Require(displayPointerEvents == 2 && displayPointerFlags == PTR_XFLAGS_BUTTON1,
+        @"A side-button release must use the same extended button without a duplicate local click");
+    CFRelease(back);
+    [capture consumeEvent:down type:kCGEventKeyDown]; [events removeAllObjects];
+    [capture consumeEvent:NULL type:kCGEventTapDisabledByTimeout];
+    Require(!capture.active && events.count == 2,
+        @"A disabled system tap must release remote state and return local control");
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"A timed-out tap must stay suspended until focus changes");
+    [capture stop]; capture.allowTap = NO; [events removeAllObjects];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown] && !events.count,
+        @"A missing OS permission must never swallow input or claim capture is active");
+    CFRelease(down); CFRelease(up); CFRelease(released); CFRelease(optionDown); CFRelease(optionUp);
+    CFRelease(escapeDown); CFRelease(escapeUp); CFRelease(click);
+    [capture release]; [delegate release]; [view removeFromSuperview]; [view release]; [window release];
+    if (original) [defaults setObject:original forKey:OrbisFullscreenInputCaptureKey];
+    else [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
+    [original release];
+}
+
 int main(void)
 {
 	@autoreleasepool
 	{
 		[NSApplication sharedApplication];
 		events = [[NSMutableArray alloc] init];
+        CheckFullscreenInputCapture();
+        CheckCommandEventOrdering();
+        CheckCommandReleaseTransitions();
+		CheckDisplayViewports();
 		CheckOptionBackspace(NO, NO);
 		CheckOptionBackspace(YES, NO);
 		CheckOptionBackspace(NO, YES);

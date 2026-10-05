@@ -10,7 +10,7 @@
 #endif
 
 @interface OrbisAppDelegate : NSObject <NSApplicationDelegate, OrbisLibraryViewControllerDelegate,
-                                         OrbisSessionControllerDelegate
+                                         OrbisSessionControllerDelegate, NSMenuDelegate
 #if ORBIS_ENABLE_UPDATES
                                          , SPUUpdaterDelegate
 #endif

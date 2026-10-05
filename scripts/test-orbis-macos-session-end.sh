@@ -40,7 +40,7 @@ grep -Fq 'view->bitmap_context = nullptr;' <<<"$disconnect_body" || \
 	fail 'disconnect leaves the view attached to the freed framebuffer'
 
 draw_body="$(sed -n '/^- (void)drawRect:/,/^}/p' "$remote_view")"
-grep -Fq '@synchronized (self)' <<<"$draw_body" || \
+grep -Fq '@synchronized (source)' <<<"$draw_body" || \
 	fail 'drawing is not serialised with framebuffer teardown'
 
 grep -Fq 'action:@selector(disconnectSession:)' "$app_delegate" || \

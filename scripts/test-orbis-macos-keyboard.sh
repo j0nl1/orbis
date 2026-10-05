@@ -46,14 +46,14 @@ grep -Fq 'if ([self sendMappedCommandShortcut:event])' <<<"$key_down_body" || \
 rg --fixed-strings --quiet -- \
   'addLocalMonitorForEventsMatchingMask:NSEventMaskFlagsChanged' "$session_controller" || \
   fail 'AppKit can consume a standalone Command event before the RDP view sees it'
-rg --fixed-strings --quiet -- '[_remoteView flagsChanged:event];' "$session_controller" || \
+rg --fixed-strings --quiet -- '[focusedView flagsChanged:event];' "$session_controller" || \
   fail 'application-level modifier events are not forwarded to the RDP view'
 rg --fixed-strings --quiet -- '[NSEvent removeMonitor:_modifierEventMonitor];' "$session_controller" || \
   fail 'the application-level modifier monitor leaks past the RDP session'
 rg --fixed-strings --quiet -- \
   'CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState)' "$session_controller" || \
   fail 'standalone Command taps consumed by AppKit are not observed through CoreGraphics'
-rg --fixed-strings --quiet -- '[_remoteView setCommandKeyDown:commandIsDown];' \
+rg --fixed-strings --quiet -- '[view setCommandKeyDown:commandIsDown];' \
   "$session_controller" || \
   fail 'the global Command state is not forwarded to the RDP keyboard state machine'
 rg --fixed-strings --quiet -- '[_modifierPollTimer invalidate];' "$session_controller" || \

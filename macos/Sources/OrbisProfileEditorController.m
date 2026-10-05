@@ -1,39 +1,11 @@
 /* SPDX-License-Identifier: MIT */
 
 #import "OrbisProfileEditorController.h"
+#import "OrbisFormControls.h"
 
 #import "OrbisProfile.h"
 #import "OrbisCredentialStore.h"
 #import "OrbisTunnelBridge.h"
-
-static NSRect OrbisCenteredTextRect(NSRect rect, NSFont *font)
-{
-	CGFloat height = ceil([font ascender] - [font descender] + [font leading]);
-	if (NSHeight(rect) > height)
-	{
-		rect.origin.y += floor((NSHeight(rect) - height) / 2.0);
-		rect.size.height = height;
-	}
-	return rect;
-}
-
-@interface OrbisCenteredTextFieldCell : NSTextFieldCell
-@end
-@implementation OrbisCenteredTextFieldCell
-- (NSRect)drawingRectForBounds:(NSRect)bounds
-{
-	return OrbisCenteredTextRect([super drawingRectForBounds:bounds], [self font]);
-}
-@end
-
-@interface OrbisCenteredSecureTextFieldCell : NSSecureTextFieldCell
-@end
-@implementation OrbisCenteredSecureTextFieldCell
-- (NSRect)drawingRectForBounds:(NSRect)bounds
-{
-	return OrbisCenteredTextRect([super drawingRectForBounds:bounds], [self font]);
-}
-@end
 
 static NSTextField *OrbisEditorLabel(NSString *title)
 {
@@ -41,29 +13,6 @@ static NSTextField *OrbisEditorLabel(NSString *title)
 	[label setFont:[NSFont systemFontOfSize:12.0 weight:NSFontWeightMedium]];
 	[label setTextColor:[NSColor secondaryLabelColor]];
 	return label;
-}
-
-static void OrbisConfigureEditorField(NSTextField *field, NSString *identifier)
-{
-	Class cellClass = [field isKindOfClass:[NSSecureTextField class]]
-	    ? [OrbisCenteredSecureTextFieldCell class] : [OrbisCenteredTextFieldCell class];
-	NSTextFieldCell *cell = [[[cellClass alloc] initTextCell:[field stringValue]] autorelease];
-	NSTextFieldCell *originalCell = [field cell];
-	[cell setPlaceholderString:[originalCell placeholderString]];
-	[cell setEditable:[originalCell isEditable]];
-	[cell setSelectable:[originalCell isSelectable]];
-	[cell setScrollable:[originalCell isScrollable]];
-	[cell setUsesSingleLineMode:[originalCell usesSingleLineMode]];
-	[cell setDrawsBackground:[originalCell drawsBackground]];
-	[cell setBackgroundColor:[originalCell backgroundColor]];
-	[cell setTextColor:[originalCell textColor]];
-	[field setCell:cell];
-	[field setBezeled:YES];
-	[field setBezelStyle:NSTextFieldRoundedBezel];
-	[field setControlSize:NSControlSizeLarge];
-	[field setFont:[NSFont systemFontOfSize:13.0]];
-	[field setFocusRingType:NSFocusRingTypeExterior];
-	[field setAccessibilityIdentifier:identifier];
 }
 
 static NSStackView *OrbisEditorFieldGroup(NSString *title, NSView *field)
@@ -147,26 +96,26 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	_nameField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_nameField setPlaceholderString:@"e.g. Workstation"];
 	[_nameField setStringValue:[_profile name] ?: @""];
-	OrbisConfigureEditorField(_nameField, @"profile-name-field");
+	OrbisConfigureFormField(_nameField, @"profile-name-field");
 
 	_hostField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_hostField setPlaceholderString:@"IP address or hostname"];
 	[_hostField setStringValue:[_profile host] ?: @""];
-	OrbisConfigureEditorField(_hostField, @"profile-host-field");
+	OrbisConfigureFormField(_hostField, @"profile-host-field");
 
 	_portField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_portField setPlaceholderString:@"3389"];
 	[_portField setStringValue:[NSString stringWithFormat:@"%lu", (unsigned long)[_profile port]]];
-	OrbisConfigureEditorField(_portField, @"profile-port-field");
+	OrbisConfigureFormField(_portField, @"profile-port-field");
 
 	_usernameField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_usernameField setPlaceholderString:@"Remote account"];
 	[_usernameField setStringValue:[_profile username] ?: @""];
-	OrbisConfigureEditorField(_usernameField, @"profile-username-field");
+	OrbisConfigureFormField(_usernameField, @"profile-username-field");
 
 	_passwordField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
 	[_passwordField setPlaceholderString:(_hasStoredPassword ? @"••••••••" : @"Optional")];
-	OrbisConfigureEditorField(_passwordField, @"profile-password-field");
+	OrbisConfigureFormField(_passwordField, @"profile-password-field");
 
 	_transportField = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
 	[_transportField addItemsWithTitles:@[ @"Native RDP", @"Cloudflare Tunnel" ]];
@@ -179,13 +128,14 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[_gatewayHostnameField setPlaceholderString:@"https://rdp.example.com"];
 	if ([[_profile transportType] isEqualToString:OrbisTransportTypeCloudflare])
 		[_gatewayHostnameField setStringValue:[_profile transportHostname]];
-	OrbisConfigureEditorField(_gatewayHostnameField, @"profile-gateway-hostname-field");
+	OrbisConfigureFormField(_gatewayHostnameField, @"profile-gateway-hostname-field");
 	_clientIDField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	[_clientIDField setPlaceholderString:@"Service Token Client ID"];
-	OrbisConfigureEditorField(_clientIDField, @"profile-client-id-field");
+	OrbisConfigureFormField(_clientIDField, @"profile-client-id-field");
 	_clientSecretField = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
-	OrbisConfigureEditorField(_clientSecretField, @"profile-client-secret-field");
-	NSDictionary *token = [OrbisCredentialStore cloudflareTokenForProfile:_profile error:nil];
+	OrbisConfigureFormField(_clientSecretField, @"profile-client-secret-field");
+	NSDictionary *token = [[_profile transportType] isEqualToString:OrbisTransportTypeCloudflare]
+	    ? [OrbisCredentialStore cloudflareTokenForProfile:_profile error:nil] : nil;
 	_savedTokenHost = token ? [[[_profile transportHostname] lowercaseString] copy] : nil;
 	_savedTokenClientID = [token[@"clientID"] copy];
 	[_clientIDField setStringValue:_savedTokenClientID ?: @""];
@@ -262,7 +212,7 @@ static NSView *OrbisEditorFlexibleSpacer(void)
 	[options setOrientation:NSUserInterfaceLayoutOrientationVertical];
 	[options setAlignment:NSLayoutAttributeLeading];
 	[options setSpacing:8.0];
-	NSStackView *preferences = OrbisEditorSection(@"Preferences", @[ options ]);
+	NSStackView *preferences = OrbisEditorSection(@"Options", @[ options ]);
 
 	NSStackView *stack = [NSStackView stackViewWithViews:@[
 		header, nameGroup, transportGroup, _endpointGroup, _gatewayHostnameGroup, _accessGroup,

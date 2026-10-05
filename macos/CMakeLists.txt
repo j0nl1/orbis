@@ -50,16 +50,25 @@ set(ORBIS_MACOS_SOURCES
 	Sources/OrbisAboutController.m
     Sources/OrbisLibraryViewController.h
     Sources/OrbisLibraryViewController.m
+    Sources/OrbisFormControls.h
+    Sources/OrbisFormControls.m
+    Sources/OrbisDisplaySettings.h
+    Sources/OrbisDisplaySettings.m
     Sources/OrbisProfileEditorController.h
     Sources/OrbisProfileEditorController.m
 	Sources/OrbisConnectionRetryPolicy.h
 	Sources/OrbisConnectionRetryPolicy.c
     Sources/OrbisSessionEndPolicy.h
     Sources/OrbisSessionEndPolicy.c
+    Sources/OrbisRemoteView.h
+    Sources/OrbisInputCapture.h
+    Sources/OrbisInputCapture.m
+    Sources/OrbisInputCaptureSettings.m
     Sources/OrbisSessionController.h
     Sources/OrbisSessionController.m
     ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.h
     ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.m
+    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisDisplayLayout.c
     ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.h
     ${ORBIS_SHARED_DIR}/Sources/Security/OrbisCredentialStore.m
 	${ORBIS_SHARED_DIR}/Sources/About/OrbisAcknowledgements.h
@@ -107,6 +116,7 @@ target_link_libraries(
     ${FOUNDATION_FRAMEWORK}
     ${SECURITY_FRAMEWORK}
     ${NETWORK_FRAMEWORK}
+    "-framework ApplicationServices"
 )
 
 target_compile_options(OrbisMac PRIVATE -fno-objc-arc)

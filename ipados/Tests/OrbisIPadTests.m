@@ -5,6 +5,10 @@
 #import "OrbisController.h"
 #import "OrbisProfileEditorController.h"
 #import "OrbisAboutController.h"
+#import "OrbisIPadDisplaySettings.h"
+#import "OrbisIPadWorkspaceGesture.h"
+#import "OrbisIPadDisplaySettingsController.h"
+#import "RDPSessionViewController.h"
 #import "OrbisConnectionTransport.h"
 #import "OrbisConnectionHealthCheck.h"
 #import "OrbisDirectTransport.h"
@@ -14,6 +18,7 @@
 #import "Bookmark.h"
 #import "ConnectionParams.h"
 #include <winpr/input.h>
+#include <math.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -21,12 +26,29 @@
 
 @interface OrbisController (OrbisTesting)
 - (void)startConnectionWithPassword:(NSString *)password;
+- (void)setConnectionBusy:(BOOL)busy status:(NSString *)status;
 - (void)refreshProfileUI;
 - (void)sessionDidEnd:(NSNotification *)notification;
 - (void)prepareStatusForCardViews:(NSDictionary *)views selected:(BOOL)selected;
 - (void)startHealthMonitoring;
 - (void)applicationWillResignActive:(NSNotification *)notification;
 - (void)applicationDidBecomeActive:(NSNotification *)notification;
+@end
+
+@interface OrbisIPadDisplaySettingsController (OrbisTesting)
+- (void)savePressed:(id)sender;
+- (void)cancelPressed:(id)sender;
+@end
+@interface RDPSessionViewController (OrbisDisplayTesting)
+- (void)sendViewportResize;
+- (IBAction)matchIPadResolution:(id)sender;
+- (void)handleScroll:(UIPanGestureRecognizer *)gesture;
+@end
+@interface OrbisTestViewportController : RDPSessionViewController
+@end
+@implementation OrbisTestViewportController
+- (CGSize)remoteSizeForCurrentViewport { return CGSizeMake(2732, 2048); }
+- (void)fitSessionViewToViewport {}
 @end
 
 @interface OrbisTestHealthCheck : OrbisConnectionHealthCheck
@@ -78,13 +100,28 @@
 
 @interface OrbisInputRecorder : NSObject
 @property(nonatomic, retain) NSMutableArray *events;
+@property(nonatomic, retain) ConnectionParams *params;
+@property(nonatomic, assign) id delegate;
 - (void)sendInputEvent:(NSDictionary *)event;
 - (CGContextRef)bitmapContext;
 @end
 @implementation OrbisInputRecorder
 - (void)sendInputEvent:(NSDictionary *)event { [self.events addObject:event]; }
 - (CGContextRef)bitmapContext { return nil; }
-- (void)dealloc { [_events release]; [super dealloc]; }
+- (rdpSettings *)getSessionParams { return NULL; }
+- (void)dealloc { [_events release]; [_params release]; [super dealloc]; }
+@end
+
+@interface OrbisTestScroll : UIPanGestureRecognizer
+@property(nonatomic) CGPoint testTranslation;
+@property(nonatomic) UIGestureRecognizerState testState;
+@property(nonatomic) UIKeyModifierFlags testModifiers;
+@end
+@implementation OrbisTestScroll
+- (CGPoint)translationInView:(UIView *)view { (void)view; return _testTranslation; }
+- (void)setTranslation:(CGPoint)value inView:(UIView *)view { (void)view; _testTranslation = value; }
+- (UIGestureRecognizerState)state { return _testState; }
+- (UIKeyModifierFlags)modifierFlags { return _testModifiers; }
 @end
 
 @interface OrbisTestKey : NSObject
@@ -139,9 +176,12 @@
 
 @interface OrbisTestRDPSession : RDPSession
 @property(nonatomic) NSUInteger rdpStarts;
+@property(nonatomic) NSUInteger resizeRequests;
+@property(nonatomic) CGSize requestedSize;
 @end
 @implementation OrbisTestRDPSession
 - (void)beginRDPConnection { self.rdpStarts++; }
+- (void)requestDesktopSize:(CGSize)size { self.resizeRequests++; self.requestedSize = size; }
 @end
 
 @interface OrbisIPadTests : XCTestCase <OrbisProfileEditorDelegate>
@@ -167,6 +207,186 @@
 	[[editor valueForKey:@"nameField"] setText:@"Test computer"];
 	[[editor valueForKey:@"usernameField"] setText:@"tester"];
 	return editor;
+}
+
+- (NSUserDefaults *)displayDefaults
+{
+	NSString *suite = [@"com.dnexus.orbis.tests.display." stringByAppendingString:[[NSUUID UUID] UUIDString]];
+	NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+	[self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+	return defaults;
+}
+
+- (void)testDisplayDefaultsKeepAutomaticResolution
+{
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:[self displayDefaults]] autorelease];
+	XCTAssertTrue(settings.automaticResolution);
+}
+
+- (void)testGlobalDisplaySettingsReachNewSessionsWithOneDesktop
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	settings.width = 2560; settings.height = 1440;
+	XCTAssertTrue([settings saveWithError:nil]);
+	for (NSString *host in @[ @"first.local", @"second.local" ])
+	{
+		OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+		ConnectionParams *params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
+		[params setValue:host forKey:@"hostname"];
+		[loaded applyToConnectionParameters:params];
+		ComputerBookmark *bookmark = [[[ComputerBookmark alloc] initWithConnectionParameters:params] autorelease];
+		RDPSession *session = [[[RDPSession alloc] initWithBookmark:bookmark] autorelease];
+		XCTAssertNotNil(session);
+		rdpSettings *rdp = [session getSessionParams];
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopWidth), 2560u);
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopHeight), 1440u);
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DesktopScaleFactor), 100u);
+		XCTAssertEqual(freerdp_settings_get_uint32(rdp, FreeRDP_DeviceScaleFactor), 100u);
+		XCTAssertFalse(freerdp_settings_get_bool(rdp, FreeRDP_UseMultimon));
+		XCTAssertFalse([session.params boolForKey:@"match_window_resolution"]);
+	}
+}
+
+- (void)testInvalidDisplayValuesDoNotOverwriteTheSavedConfiguration
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	settings.width = 1920; settings.height = 1080;
+	XCTAssertTrue([settings saveWithError:nil]);
+	for (NSArray *size in @[ @[ @1919, @1080 ], @[ @0, @1080 ], @[ @1920, @199 ], @[ @8194, @1080 ], @[ @(NSUIntegerMax), @1080 ] ])
+	{
+		settings.width = [size[0] unsignedIntegerValue]; settings.height = [size[1] unsignedIntegerValue];
+		NSError *error = nil;
+		XCTAssertFalse([settings saveWithError:&error]);
+		XCTAssertNotNil(error);
+	}
+	OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertEqual(loaded.width, 1920u); XCTAssertEqual(loaded.height, 1080u);
+}
+
+- (void)testCorruptSavedDisplayValuesFallBackToSafeDefaults
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	for (id saved in @[ @"invalid", @{ @"width" : @(-1), @"height" : @1080, @"desktopScale" : @900 },
+	    @{ @"width" : @1920.5, @"height" : @1080, @"desktopScale" : @"150" } ])
+	{
+		[defaults setObject:saved forKey:@"OrbisIPadDisplaySettings.v1"];
+		OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+		XCTAssertTrue(settings.automaticResolution);
+	}
+}
+
+- (void)testLegacyScaleIsIgnoredWithoutLosingTheSavedResolution
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	[defaults setObject:@{ @"width" : @2048, @"height" : @1536, @"desktopScale" : @200 }
+	    forKey:@"OrbisIPadDisplaySettings.v1"];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertEqual(settings.width, 2048u); XCTAssertEqual(settings.height, 1536u);
+	ConnectionParams *params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
+	[settings applyToConnectionParameters:params];
+	XCTAssertFalse([params hasValueForKey:@"desktop_scale_factor"]);
+	XCTAssertTrue([settings saveWithError:nil]);
+	XCTAssertNil([[defaults dictionaryForKey:@"OrbisIPadDisplaySettings.v1"] objectForKey:@"desktopScale"]);
+}
+
+- (void)testSuggestedResolutionsFollowDifferentIPadAndWindowProportions
+{
+	for (NSArray *pixels in @[ @[ @2732, @2048 ], @[ @2048, @2732 ], @[ @2420, @1668 ],
+	    @[ @2360, @1640 ], @[ @1366, @2048 ] ])
+	{
+		NSUInteger width = [pixels[0] unsignedIntegerValue], height = [pixels[1] unsignedIntegerValue];
+		NSArray *sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:width height:height];
+		XCTAssertEqual(sizes.count, 5u);
+		XCTAssertEqualObjects(sizes.firstObject, pixels);
+		XCTAssertEqual([[NSSet setWithArray:sizes] count], sizes.count);
+		for (NSArray *size in sizes)
+		{
+			NSUInteger w = [size[0] unsignedIntegerValue], h = [size[1] unsignedIntegerValue];
+			XCTAssertEqual(w % 2, 0u);
+			XCTAssertGreaterThanOrEqual(w, 200u); XCTAssertGreaterThanOrEqual(h, 200u);
+			XCTAssertLessThanOrEqual(w, width); XCTAssertLessThanOrEqual(h, height);
+			// Each dimension can differ by at most one pixel after rounding.
+			XCTAssertEqualWithAccuracy((double)w / h, (double)width / height,
+			    2.0 / MIN(w, h));
+		}
+	}
+}
+
+- (void)testSuggestionsUseTheIPadWindowRatherThanTheSettingsSheet
+{
+	OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc]
+	    initWithDefaults:[self displayDefaults]] autorelease];
+	[editor loadViewIfNeeded];
+	UIWindow *window = [[[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 1024, 768)] autorelease];
+	[window addSubview:editor.view];
+	editor.view.frame = CGRectMake(0, 0, 620, 620);
+	[editor viewDidLayoutSubviews];
+	UIButton *button = [editor valueForKey:@"presetButton"];
+	NSArray *sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:(NSUInteger)round(1024 * window.screen.nativeScale)
+	    height:(NSUInteger)round(768 * window.screen.nativeScale)];
+	NSString *expected = [NSString stringWithFormat:@"%@ × %@", sizes[0][0], sizes[0][1]];
+	XCTAssertEqualObjects([button.menu.children.firstObject title], expected);
+	XCTAssertEqual([editor numberOfSectionsInTableView:editor.tableView], 2);
+	[[editor valueForKey:@"automaticSwitch"] setOn:NO];
+	[[editor valueForKey:@"widthField"] setText:@"1112"];
+	[[editor valueForKey:@"heightField"] setText:@"834"];
+	window.frame = CGRectMake(0, 0, 480, 768);
+	[editor viewDidLayoutSubviews];
+	sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:(NSUInteger)round(480 * window.screen.nativeScale)
+	    height:(NSUInteger)round(768 * window.screen.nativeScale)];
+	expected = [NSString stringWithFormat:@"%@ × %@", sizes[0][0], sizes[0][1]];
+	XCTAssertEqualObjects([button.menu.children.firstObject title], expected);
+	XCTAssertEqualObjects([[editor valueForKey:@"widthField"] text], @"1112");
+	XCTAssertEqualObjects([[editor valueForKey:@"heightField"] text], @"834");
+	[editor.view removeFromSuperview];
+}
+
+- (void)testSuggestedResolutionsStayInsideRDPBounds
+{
+	XCTAssertEqual([OrbisIPadDisplaySettings resolutionsForPixelWidth:0 height:2048].count, 0u);
+	XCTAssertEqual([OrbisIPadDisplaySettings resolutionsForPixelWidth:100 height:100].count, 0u);
+	XCTAssertEqual([OrbisIPadDisplaySettings resolutionsForPixelWidth:200 height:200].count, 1u);
+	NSArray *sizes = [OrbisIPadDisplaySettings resolutionsForPixelWidth:16384 height:12288];
+	XCTAssertEqualObjects(sizes.firstObject, (@[ @8192, @6144 ]));
+	for (NSArray *size in sizes)
+	{
+		XCTAssertLessThanOrEqual([size[0] unsignedIntegerValue], 8192u);
+		XCTAssertLessThanOrEqual([size[1] unsignedIntegerValue], 8192u);
+	}
+}
+
+- (void)testSettingsCancelDiscardsEditsAndSavePersistsManualDimensions
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc] initWithDefaults:defaults] autorelease];
+	[editor loadViewIfNeeded];
+	[[editor valueForKey:@"automaticSwitch"] setOn:NO];
+	[[editor valueForKey:@"widthField"] setText:@"2560"];
+	[[editor valueForKey:@"heightField"] setText:@"1440"];
+	[editor cancelPressed:nil];
+	XCTAssertNil([defaults objectForKey:@"OrbisIPadDisplaySettings.v1"]);
+	[editor savePressed:nil];
+	OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertEqual(loaded.width, 2560u); XCTAssertEqual(loaded.height, 1440u);
+}
+
+- (void)testManualResolutionSurvivesViewportChangesUntilExplicitMatch
+{
+	OrbisTestTransport *transport = [[[OrbisTestTransport alloc] init] autorelease];
+	OrbisTestRDPSession *session = [self sessionWithTransport:transport];
+	[session.params setBool:NO forKey:@"match_window_resolution"];
+	OrbisTestViewportController *controller = [[[OrbisTestViewportController alloc]
+	    initWithNibName:nil bundle:nil session:session] autorelease];
+	[controller setValue:@YES forKey:@"session_connected"];
+	[controller sendViewportResize];
+	XCTAssertEqual(session.resizeRequests, 0u);
+	[controller matchIPadResolution:nil];
+	[NSObject cancelPreviousPerformRequestsWithTarget:controller];
+	[controller sendViewportResize];
+	XCTAssertEqual(session.resizeRequests, 1u);
+	XCTAssertTrue(CGSizeEqualToSize(session.requestedSize, CGSizeMake(2732, 2048)));
 }
 
 - (void)testDirectProfileKeepsItsDefaultTransport
@@ -274,6 +494,177 @@
 	OrbisInputRecorder *recorder = [[[OrbisInputRecorder alloc] init] autorelease];
 	recorder.events = [NSMutableArray array];
 	return recorder;
+}
+
+- (void)testWorkspaceGestureSettingsPersistAndReachNewConnections
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc]
+	    initWithDefaults:defaults] autorelease];
+	[editor loadViewIfNeeded];
+	XCTAssertTrue([[editor valueForKey:@"workspaceSwitch"] isOn]);
+	[[editor valueForKey:@"workspaceSwitch"] setOn:NO];
+	[editor cancelPressed:nil];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertTrue(settings.workspaceGesturesEnabled);
+	[editor savePressed:nil];
+	settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertFalse(settings.workspaceGesturesEnabled);
+	ConnectionParams *params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
+	[settings applyToConnectionParameters:params];
+	XCTAssertFalse([params boolForKey:@"workspace_gestures"]);
+}
+
+- (void)testSidewaysTrackpadSwipeNeedsNoAltAndFiresOnce
+{
+	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-12, 1)
+	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-70, 4)
+	    state:UIGestureRecognizerStateChanged modifiers:0 enabled:YES], OrbisIPadWorkspacePrevious);
+	for (NSNumber *state in @[ @(UIGestureRecognizerStateChanged), @(UIGestureRecognizerStateEnded) ])
+		XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-160, 4)
+		    state:state.integerValue modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(70, 0)
+	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspaceNext);
+}
+
+- (void)testActivitiesNeedsAltWhileVerticalScrollingKeepsItsDirection
+{
+	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(1, -80)
+	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspaceScroll);
+	// Once scrolling starts, diagonal movement must not switch a workspace.
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(120, -20)
+	    state:UIGestureRecognizerStateChanged modifiers:UIKeyModifierAlternate enabled:YES], OrbisIPadWorkspaceScroll);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(0, -80)
+	    state:UIGestureRecognizerStateBegan modifiers:UIKeyModifierAlternate enabled:YES], OrbisIPadWorkspaceActivities);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(0, 80)
+	    state:UIGestureRecognizerStateBegan modifiers:UIKeyModifierAlternate enabled:YES], OrbisIPadWorkspaceScroll);
+}
+
+- (void)testMovingWindowsNeedsAltShiftAndCancelledSwipesSendNothing
+{
+	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
+	UIKeyModifierFlags flags = UIKeyModifierAlternate | UIKeyModifierShift;
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-80, 0)
+	    state:UIGestureRecognizerStateBegan modifiers:flags enabled:YES], OrbisIPadWorkspaceMovePrevious);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(80, 0)
+	    state:UIGestureRecognizerStateBegan modifiers:flags enabled:YES], OrbisIPadWorkspaceMoveNext);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-15, 0)
+	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-100, 0)
+	    state:UIGestureRecognizerStateCancelled modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(20, 0)
+	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(20, 0)
+	    state:UIGestureRecognizerStateEnded modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
+}
+
+- (void)testDisabledGesturesAndOtherKeyboardModifiersLeaveScrollingAlone
+{
+	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
+	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(100, 0)
+	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:NO], OrbisIPadWorkspaceScroll);
+	for (NSNumber *flags in @[ @(UIKeyModifierControl), @(UIKeyModifierCommand), @(UIKeyModifierShift) ])
+		XCTAssertEqual([gesture updateWithTranslation:CGPointMake(100, 0)
+		    state:UIGestureRecognizerStateBegan modifiers:flags.unsignedIntegerValue enabled:YES], OrbisIPadWorkspaceScroll);
+}
+
+- (void)testWorkspaceShortcutsSendBalancedExtendedSuperAndPageKeys
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	for (NSNumber *action in @[ @(OrbisIPadWorkspacePrevious), @(OrbisIPadWorkspaceNext),
+	    @(OrbisIPadWorkspaceMovePrevious), @(OrbisIPadWorkspaceMoveNext), @(OrbisIPadWorkspaceActivities) ])
+	{
+		[recorder.events removeAllObjects];
+		[view performWorkspaceGesture:action.integerValue];
+		NSMutableSet *pressed = [NSMutableSet set];
+		for (NSDictionary *event in recorder.events)
+		{
+			NSNumber *code = event[@"scancode"];
+			if ([event[@"flags"] unsignedIntegerValue] & KBD_FLAGS_RELEASE) [pressed removeObject:code];
+			else [pressed addObject:code];
+		}
+		XCTAssertEqual(pressed.count, 0u);
+		BOOL move = action.integerValue == OrbisIPadWorkspaceMovePrevious || action.integerValue == OrbisIPadWorkspaceMoveNext;
+		NSDictionary *superDown = recorder.events[move ? 1 : 0];
+		XCTAssertEqualObjects(superDown[@"scancode"], @(0x5B));
+		XCTAssertEqualObjects(superDown[@"flags"], @(KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED));
+		if (action.integerValue != OrbisIPadWorkspaceActivities)
+		{
+			BOOL previous = action.integerValue == OrbisIPadWorkspacePrevious || action.integerValue == OrbisIPadWorkspaceMovePrevious;
+			XCTAssertEqualObjects(recorder.events[move ? 2 : 1][@"scancode"], @(previous ? 0x49 : 0x51));
+		}
+		XCTAssertEqual(recorder.events.count, action.integerValue == OrbisIPadWorkspaceActivities ? 2u : (move ? 6u : 4u));
+	}
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testWorkspaceShortcutRestoresHeldAltAndTheSamePhysicalShift
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardRightShift flags:UIKeyModifierShift text:@"" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardTab flags:UIKeyModifierAlternate | UIKeyModifierShift text:@"\t" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardTab flags:0 text:@"\t" up:YES view:view];
+	[recorder.events removeAllObjects];
+	[view performWorkspaceGesture:OrbisIPadWorkspaceMoveNext];
+	XCTAssertEqual(recorder.events.count, 10u);
+	XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x38));
+	XCTAssertEqualObjects(recorder.events[0][@"flags"], @(KBD_FLAGS_RELEASE));
+	XCTAssertEqualObjects(recorder.events[1][@"scancode"], @(0x36));
+	XCTAssertEqualObjects(recorder.events[8][@"scancode"], @(0x36));
+	XCTAssertEqualObjects(recorder.events[9][@"scancode"], @(0x38));
+	[self sendUsage:UIKeyboardHIDUsageKeyboardRightShift flags:0 text:@"" up:YES view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:0 text:@"" up:YES view:view];
+	XCTAssertEqualObjects(recorder.events[10][@"flags"], @(KBD_FLAGS_RELEASE));
+	XCTAssertEqualObjects(recorder.events[11][@"flags"], @(KBD_FLAGS_RELEASE));
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testSessionRoutesTrackpadGesturesButKeepsMouseWheelAndDisabledScroll
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	recorder.params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
+	[recorder.params setBool:YES forKey:@"workspace_gestures"];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	RDPSessionViewController *controller = [[[RDPSessionViewController alloc]
+	    initWithNibName:nil bundle:nil session:(RDPSession *)recorder] autorelease];
+	[controller setValue:view forKey:@"session_view"];
+	[controller setValue:@YES forKey:@"session_connected"];
+	OrbisTestScroll *scroll = [[[OrbisTestScroll alloc] init] autorelease];
+	scroll.allowedScrollTypesMask = UIScrollTypeMaskContinuous;
+	scroll.testState = UIGestureRecognizerStateBegan;
+	scroll.testTranslation = CGPointMake(80, 0);
+	[controller handleScroll:scroll];
+	XCTAssertEqual(recorder.events.count, 4u);
+	XCTAssertEqualObjects(recorder.events.firstObject[@"type"], @"keyboard");
+	[recorder.events removeAllObjects];
+	scroll.testState = UIGestureRecognizerStateChanged;
+	scroll.testTranslation = CGPointMake(160, 0);
+	[controller handleScroll:scroll];
+	XCTAssertEqual(recorder.events.count, 0u);
+	scroll.allowedScrollTypesMask = UIScrollTypeMaskDiscrete;
+	scroll.testTranslation = CGPointMake(0, 20);
+	[controller handleScroll:scroll];
+	XCTAssertEqual(recorder.events.count, 1u);
+	XCTAssertEqualObjects(recorder.events.firstObject[@"type"], @"mouse");
+	[recorder.events removeAllObjects];
+	[recorder.params setBool:NO forKey:@"workspace_gestures"];
+	scroll.allowedScrollTypesMask = UIScrollTypeMaskContinuous;
+	scroll.testState = UIGestureRecognizerStateBegan;
+	scroll.testTranslation = CGPointMake(80, 0);
+	[controller handleScroll:scroll];
+	XCTAssertEqual(recorder.events.count, 1u);
+	XCTAssertTrue([recorder.events.firstObject[@"flags"] unsignedIntegerValue] & PTR_FLAGS_HWHEEL);
+	[recorder.events removeAllObjects];
+	[controller setValue:@NO forKey:@"session_connected"];
+	scroll.testTranslation = CGPointMake(80, 0);
+	[controller handleScroll:scroll];
+	XCTAssertEqual(recorder.events.count, 0u);
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
 - (void)testOptionBackspaceSendsControlBackspaceWithoutAltOrDuplicateRelease
@@ -610,6 +1001,62 @@
 	}];
 	[transport completeWithError:[NSError errorWithDomain:@"test" code:403 userInfo:nil]];
 	[self waitForExpectationsWithTimeout:1 handler:nil];
+}
+
+- (void)testRemoteSessionKeepsTheDisplayAwakeUntilDisconnect
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[[OrbisController alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[library viewWillDisappear:NO];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[[NSNotificationCenter defaultCenter] postNotificationName:TSXSessionDidDisconnectNotification object:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+}
+
+- (void)testFailedConnectionRestoresAutomaticScreenLock
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[[OrbisController alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[[NSNotificationCenter defaultCenter] postNotificationName:TSXSessionDidFailToConnectNotification object:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+}
+
+- (void)testBackgroundingReleasesIdleTimerAndReturningRestoresAnActiveSession
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[[OrbisController alloc] init] autorelease];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	[library applicationWillResignActive:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+	[library applicationDidBecomeActive:nil];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[library sessionDidEnd:nil];
+	[library applicationDidBecomeActive:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+}
+
+- (void)testDiscardingAnActiveConnectionRestoresAutomaticScreenLock
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[OrbisController alloc] init];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[library release];
+	XCTAssertFalse(application.idleTimerDisabled);
 }
 
 - (void)testLeavingASessionDoesNotReplaceAvailabilityWithDisconnected
