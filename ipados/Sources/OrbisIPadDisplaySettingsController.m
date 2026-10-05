@@ -8,6 +8,7 @@
 {
 	OrbisIPadDisplaySettings *_settings;
 	UISwitch *_automaticSwitch;
+	UISwitch *_paddingSwitch;
 	UITextField *_widthField;
 	UITextField *_heightField;
 	UIButton *_presetButton;
@@ -67,11 +68,15 @@
 	_presetButton.frame = CGRectMake(0, 0, 160, 44);
 	[_presetButton setTitle:@"Choose resolution" forState:UIControlStateNormal];
 	_presetButton.showsMenuAsPrimaryAction = YES;
+	_paddingSwitch = [[UISwitch alloc] init];
+	_paddingSwitch.on = _settings.screenEdgePaddingEnabled;
+	_paddingSwitch.accessibilityIdentifier = @"display-screen-edge-padding";
 	_resolutionCells = [[NSArray alloc] initWithObjects:
 	    [self cellWithTitle:@"Automatically match window" control:_automaticSwitch],
 	    [self cellWithTitle:@"Suggested" control:_presetButton],
 	    [self cellWithTitle:@"Width" control:_widthField],
-	    [self cellWithTitle:@"Height" control:_heightField], nil];
+	    [self cellWithTitle:@"Height" control:_heightField],
+	    [self cellWithTitle:@"Black screen border" control:_paddingSwitch], nil];
 	[self updateResolutionPresets];
 	[self automaticChanged:nil];
 	_workspaceSwitch = [[UISwitch alloc] init];
@@ -142,7 +147,7 @@
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-	(void)tableView; return section == 0 ? @"Remote resolution" : (section == 1 ? @"Keyboard" : @"Diagnostics");
+	(void)tableView; return section == 0 ? @"Remote display" : (section == 1 ? @"Keyboard" : @"Diagnostics");
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
@@ -150,8 +155,8 @@
 	if (section == 2)
 		return @"Export recent session events, error codes, and available crash or hang reports. Diagnostics stay on this device until you share them.";
 	if (section == 1)
-		return @"Alt (Option) + Shift + Left or Right switches workspaces. Alt + Shift + Up toggles Activities. Alt + the key left of 1 also toggles Activities. Uses GNOME keyboard shortcuts. Trackpad swipes scroll normally. Applies to new connections.";
-	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed.";
+		return @"For GNOME: Alt (Option) + Shift + Left/Right switches workspaces; Up toggles Activities; Down sends Escape to close Activities. Alt + the key left of 1 also toggles Activities. Trackpad swipes scroll. Applies to new connections.";
+	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed. The black border adds space around the remote screen to help reach its edges.";
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path
@@ -211,6 +216,7 @@
 	_settings.width = _automaticSwitch.on ? 0 : [self dimensionFromField:_widthField];
 	_settings.height = _automaticSwitch.on ? 0 : [self dimensionFromField:_heightField];
 	_settings.workspaceShortcutsEnabled = _workspaceSwitch.on;
+	_settings.screenEdgePaddingEnabled = _paddingSwitch.on;
 	NSError *error = nil;
 	if ([_settings saveWithError:&error])
 		return [self dismissViewControllerAnimated:YES completion:nil];
@@ -229,6 +235,7 @@
 {
 	[_presetButton release]; [_resolutionCells release];
 	[_workspaceSwitch release]; [_workspaceCell release];
+	[_paddingSwitch release];
 	[_settings release]; [_automaticSwitch release]; [_widthField release]; [_heightField release];
 	[super dealloc];
 }

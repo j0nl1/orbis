@@ -58,8 +58,9 @@ and can be disabled in Settings. Alt (Option) + Shift + Left/Right switches
 workspaces; Alt + Shift + Up toggles Activities. Alt + the physical key immediately
 left of 1 also toggles Activities. Each shortcut triggers once per key press;
 repeats and releases stay consumed even when Alt is released before the arrow.
-The adapter sends GNOME's Super + Page Up/Down and Super shortcuts, temporarily
-releasing and restoring held Alt and physical Shift keys. Customized GNOME
+Alt + Shift + Down sends Escape to close Activities. Outside Activities, Escape
+is handled by the focused application. The adapter sends GNOME's Super + Page
+Up/Down and Super shortcuts, temporarily releasing and restoring held Alt and physical Shift keys. Customized GNOME
 shortcuts or other Linux desktops may behave differently.
 
 Trackpad swipes and discrete mouse wheels always scroll the remote desktop,
@@ -76,3 +77,10 @@ warnings provide context. If the app disappears with an active session, the next
 launch records an interrupted session; this alone does not confirm a crash.
 Nothing is uploaded automatically. See the shared Diagnostics README for
 retention, excluded data, OS report delivery, and matching debugging symbols.
+
+Settings → Remote display → Black screen border controls an 8-point black margin
+around the remote desktop. It is enabled by default and applies to new connections.
+The margin helps reach remote screen edges away from iPadOS resizing corners.
+Automatic resolution follows the inset viewport; manually configured resolutions
+remain unchanged. The connection screen shows the computer name and a neutral
+native Cancel button.

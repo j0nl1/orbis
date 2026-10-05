@@ -1667,10 +1667,10 @@ index c5a018e..417ceab 100644
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378c..3352890 100644
+index b6d378c..9faff35 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
-@@ -10,21 +10,22 @@
+@@ -10,21 +10,23 @@
  
  #import <QuartzCore/QuartzCore.h>
  #import <GameController/GameController.h>
@@ -1692,11 +1692,12 @@ index b6d378c..3352890 100644
 +- (void)hideConnectingView;
 +- (void)queueViewportResize;
 +- (void)sendViewportResize;
++- (CGRect)remoteViewportFrame;
 +- (CGSize)remoteSizeForCurrentViewport;
  - (UIToolbar *)keyboardToolbar;
  - (void)initGestureRecognizers;
  - (void)suspendSession;
-@@ -60,6 +61,8 @@
+@@ -60,6 +62,8 @@
  		_advanced_keyboard_visible = NO;
  		_requesting_advanced_keyboard = NO;
  		_last_session_viewport_size = CGSizeZero;
@@ -1705,7 +1706,7 @@ index b6d378c..3352890 100644
  
  		_session_toolbar_visible = NO;
  
-@@ -85,10 +88,6 @@
+@@ -85,10 +89,6 @@
  	// load default view and set background color and resizing mask
  	[super loadView];
  
@@ -1716,7 +1717,7 @@ index b6d378c..3352890 100644
  	// init keyboard handling vars
  	_keyboard_visible = NO;
  
-@@ -99,9 +98,9 @@
+@@ -99,9 +99,9 @@
  	// init gesture recognizers
  	[self initGestureRecognizers];
  
@@ -1729,7 +1730,7 @@ index b6d378c..3352890 100644
  }
  
  // Implement viewDidLoad to do additional setup after loading the view, typically from a nib.
-@@ -117,6 +116,11 @@
+@@ -117,18 +117,26 @@
  	[_session_scrollview setAlwaysBounceHorizontal:NO];
  	[_session_scrollview setAlwaysBounceVertical:NO];
  	[_session_scrollview setBounces:NO];
@@ -1741,7 +1742,12 @@ index b6d378c..3352890 100644
  }
  
  - (void)viewDidLayoutSubviews
-@@ -128,7 +132,10 @@
+ {
+ 	[super viewDidLayoutSubviews];
+ 
+-	CGRect viewportFrame = [[self view] bounds];
++	CGRect viewportFrame = [self remoteViewportFrame];
+ 	[_session_scrollview setFrame:viewportFrame];
  
  	CGSize viewportSize = [_session_scrollview bounds].size;
  	if (!CGSizeEqualToSize(viewportSize, _last_session_viewport_size))
@@ -1752,7 +1758,7 @@ index b6d378c..3352890 100644
  	else
  		[self centerSessionViewInViewport];
  }
-@@ -177,6 +184,8 @@
+@@ -177,6 +185,8 @@
  	[self setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:YES animated:animated];
@@ -1761,7 +1767,7 @@ index b6d378c..3352890 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:YES animated:animated];
  	else
-@@ -197,10 +206,11 @@
+@@ -197,10 +207,11 @@
  	if (!_session_initilized)
  	{
  		if ([_session isSuspended])
@@ -1777,7 +1783,7 @@ index b6d378c..3352890 100644
  		else
  			[_session connect];
  
-@@ -219,6 +229,7 @@
+@@ -219,6 +230,7 @@
  
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:NO animated:animated];
@@ -1785,7 +1791,7 @@ index b6d378c..3352890 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:NO animated:animated];
  	else
-@@ -236,12 +247,17 @@
+@@ -236,12 +248,17 @@
  {
  	// remove any observers
  	[[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -1803,7 +1809,7 @@ index b6d378c..3352890 100644
  	[_session release];
  	[super dealloc];
  }
-@@ -361,36 +377,86 @@
+@@ -361,36 +378,120 @@
  
  - (void)session:(RDPSession *)session didFailToConnect:(int)reason
  {
@@ -1855,6 +1861,8 @@ index b6d378c..3352890 100644
 +
 +	_connecting_view = [[UIView alloc] init];
 +	[_connecting_view setBackgroundColor:[UIColor blackColor]];
++	[_connecting_view setOverrideUserInterfaceStyle:UIUserInterfaceStyleDark];
++	[_connecting_view setAccessibilityIdentifier:@"session-connecting"];
 +	[_connecting_view setTranslatesAutoresizingMaskIntoConstraints:NO];
 +
 +	_connecting_indicator_view = [[UIActivityIndicatorView alloc]
@@ -1863,20 +1871,47 @@ index b6d378c..3352890 100644
 +
 +	UILabel *connectingLabel = [[[UILabel alloc] init] autorelease];
 +	[connectingLabel setText:NSLocalizedString(@"Connecting…", @"Connecting progress label")];
-+	[connectingLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
++	[connectingLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleTitle2]];
 +	[connectingLabel setAdjustsFontForContentSizeCategory:YES];
-+	[connectingLabel setTextColor:[UIColor secondaryLabelColor]];
++	[connectingLabel setTextColor:[UIColor labelColor]];
++	[connectingLabel setTextAlignment:NSTextAlignmentCenter];
++	[connectingLabel setNumberOfLines:0];
++	[connectingLabel setLineBreakMode:NSLineBreakByWordWrapping];
++	[connectingLabel setAccessibilityTraits:UIAccessibilityTraitHeader];
++
++	UILabel *destinationLabel = [[[UILabel alloc] init] autorelease];
++	[destinationLabel setText:[session sessionName]];
++	[destinationLabel setHidden:![destinationLabel text].length];
++	[destinationLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
++	[destinationLabel setAdjustsFontForContentSizeCategory:YES];
++	[destinationLabel setTextColor:[UIColor secondaryLabelColor]];
++	[destinationLabel setTextAlignment:NSTextAlignmentCenter];
++	[destinationLabel setNumberOfLines:0];
++	[destinationLabel setLineBreakMode:NSLineBreakByWordWrapping];
 +
 +	UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
-+	[cancelButton setTitle:@"Cancel" forState:UIControlStateNormal];
++	UIButtonConfiguration *cancelConfiguration = [UIButtonConfiguration glassButtonConfiguration];
++	cancelConfiguration.title = @"Cancel";
++	cancelConfiguration.baseForegroundColor = [UIColor labelColor];
++	cancelConfiguration.buttonSize = UIButtonConfigurationSizeLarge;
++	cancelConfiguration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
++	cancelConfiguration.contentInsets = NSDirectionalEdgeInsetsMake(12.0, 28.0, 12.0, 28.0);
++	[cancelButton setConfiguration:cancelConfiguration];
++	[cancelButton setAccessibilityIdentifier:@"session-cancel-connection"];
 +	[cancelButton addTarget:self action:@selector(cancelButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
 +	[[cancelButton heightAnchor] constraintGreaterThanOrEqualToConstant:44.0].active = YES;
 +	UIStackView *connectingStack = [[[UIStackView alloc]
-+	    initWithArrangedSubviews:@[ _connecting_indicator_view, connectingLabel, cancelButton ]] autorelease];
++	    initWithArrangedSubviews:@[ _connecting_indicator_view, connectingLabel, destinationLabel, cancelButton ]] autorelease];
 +	[connectingStack setAxis:UILayoutConstraintAxisVertical];
-+	[connectingStack setAlignment:UIStackViewAlignmentCenter];
-+	[connectingStack setSpacing:14.0];
++	[connectingStack setAlignment:UIStackViewAlignmentFill];
++	[connectingStack setSpacing:12.0];
++	[connectingStack setCustomSpacing:24.0 afterView:_connecting_indicator_view];
++	[connectingStack setCustomSpacing:28.0 afterView:destinationLabel];
 +	[connectingStack setTranslatesAutoresizingMaskIntoConstraints:NO];
++
++	NSLayoutConstraint *preferredWidth = [[connectingStack widthAnchor] constraintEqualToConstant:320.0];
++	preferredWidth.priority = UILayoutPriorityDefaultHigh;
++	preferredWidth.active = YES;
 +
 +	[_connecting_view addSubview:connectingStack];
  	[[self view] addSubview:_connecting_view];
@@ -1886,7 +1921,12 @@ index b6d378c..3352890 100644
 +		[[_connecting_view topAnchor] constraintEqualToAnchor:[[self view] topAnchor]],
 +		[[_connecting_view bottomAnchor] constraintEqualToAnchor:[[self view] bottomAnchor]],
 +		[[connectingStack centerXAnchor] constraintEqualToAnchor:[_connecting_view centerXAnchor]],
-+		[[connectingStack centerYAnchor] constraintEqualToAnchor:[_connecting_view centerYAnchor]],
++		[[connectingStack centerYAnchor] constraintEqualToAnchor:[_connecting_view safeAreaLayoutGuide].centerYAnchor],
++		[[connectingStack widthAnchor] constraintLessThanOrEqualToConstant:320.0],
++		[[connectingStack leadingAnchor] constraintGreaterThanOrEqualToAnchor:[_connecting_view safeAreaLayoutGuide].leadingAnchor constant:32.0],
++		[[connectingStack trailingAnchor] constraintLessThanOrEqualToAnchor:[_connecting_view safeAreaLayoutGuide].trailingAnchor constant:-32.0],
++		[[connectingStack topAnchor] constraintGreaterThanOrEqualToAnchor:[_connecting_view safeAreaLayoutGuide].topAnchor constant:24.0],
++		[[connectingStack bottomAnchor] constraintLessThanOrEqualToAnchor:[_connecting_view safeAreaLayoutGuide].bottomAnchor constant:-24.0],
 +	]];
  	[_connecting_indicator_view startAnimating];
  }
@@ -1910,7 +1950,7 @@ index b6d378c..3352890 100644
  	// register keyboard notification handlers
  	[[NSNotificationCenter defaultCenter] addObserver:self
  	                                         selector:@selector(keyboardWillShow:)
-@@ -419,11 +485,7 @@
+@@ -419,11 +520,7 @@
  	                                             name:GCKeyboardDidDisconnectNotification
  	                                           object:nil];
  	[self hardwareKeyboardChanged:nil];
@@ -1923,7 +1963,7 @@ index b6d378c..3352890 100644
  
  	// check if session settings changed ...
  	// The 2nd width check is to ignore changes in resolution settings due to the RDVH display bug
-@@ -451,10 +513,17 @@
+@@ -451,10 +548,17 @@
  
  - (void)sessionWillDisconnect:(RDPSession *)session
  {
@@ -1941,7 +1981,7 @@ index b6d378c..3352890 100644
  	// return to bookmark list
  	[[self navigationController] popViewControllerAnimated:YES];
  }
-@@ -492,13 +561,28 @@
+@@ -492,13 +596,28 @@
  	if (!_has_cursor_view_position)
  		(void)[self currentCursorViewPosition];
  
@@ -1973,7 +2013,7 @@ index b6d378c..3352890 100644
  }
  
  - (void)session:(RDPSession *)session didSetRemoteCursor:(RDPCursor *)cursor
-@@ -553,26 +637,58 @@
+@@ -553,26 +672,69 @@
  
  - (void)session:(RDPSession *)session verifyCertificateWithParams:(NSMutableDictionary *)params
  {
@@ -2024,12 +2064,23 @@ index b6d378c..3352890 100644
 +	return [self remoteSizeForCurrentViewport];
 +}
 +
++- (CGRect)remoteViewportFrame
++{
++	// Keep the remote edges away from iPadOS window resize handles.
++	CGRect bounds = [[self view] bounds];
++	ConnectionParams *parameters = [_session params];
++	if ([parameters hasValueForKey:@"screen_edge_padding"] &&
++	    ![parameters boolForKey:@"screen_edge_padding"]) return bounds;
++	CGFloat inset = MIN(8.0, MAX(0.0, MIN(bounds.size.width, bounds.size.height) * 0.5));
++	return CGRectInset(bounds, inset, inset);
++}
++
 +- (CGSize)remoteSizeForCurrentViewport
 +{
 +	// Use the native viewport resolution so text and application chrome remain crisp.
 +	CGSize size = [_session_scrollview bounds].size;
 +	if (size.width <= 0.0f || size.height <= 0.0f)
-+		size = [self view].bounds.size;
++		size = [self remoteViewportFrame].size;
  	UIScreen *screen = [[self view] window] ? [[[self view] window] screen] : [UIScreen mainScreen];
 -	CGFloat scale =
 +	CGFloat nativeScale =
@@ -2046,7 +2097,7 @@ index b6d378c..3352890 100644
  
  	CGFloat maxDimension = MAX(size.width, size.height);
  	if (maxDimension > 4096.0f)
-@@ -584,9 +700,42 @@
+@@ -584,9 +746,42 @@
  
  	size.width = MAX(64.0f, size.width);
  	size.height = MAX(64.0f, size.height);
@@ -2089,7 +2140,7 @@ index b6d378c..3352890 100644
  #pragma mark - Keyboard Toolbar Handlers
  
  - (void)showAdvancedKeyboardAnimated
-@@ -702,6 +851,15 @@
+@@ -702,6 +897,15 @@
  	}
  }
  
@@ -2105,7 +2156,7 @@ index b6d378c..3352890 100644
  - (IBAction)disconnectSession:(id)sender
  {
  	[_session disconnect];
-@@ -902,20 +1060,30 @@
+@@ -902,20 +1106,30 @@
  
  - (void)handleScroll:(UIPanGestureRecognizer *)gesture
  {
@@ -2144,7 +2195,7 @@ index b6d378c..3352890 100644
  }
  
  - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
-@@ -998,35 +1166,9 @@
+@@ -998,35 +1212,9 @@
  
  - (void)showSessionToolbar:(BOOL)show
  {
@@ -2183,7 +2234,7 @@ index b6d378c..3352890 100644
  }
  
  - (UIToolbar *)keyboardToolbar
-@@ -1143,7 +1285,11 @@
+@@ -1143,7 +1331,11 @@
  	UIPanGestureRecognizer *scrollRecognizer =
  	    [[[UIPanGestureRecognizer alloc] initWithTarget:self
  	                                             action:@selector(handleScroll:)] autorelease];
@@ -2196,7 +2247,7 @@ index b6d378c..3352890 100644
  	[scrollRecognizer setDelegate:self];
  
  	// double long press gesture recognizer
-@@ -1163,6 +1309,8 @@
+@@ -1163,6 +1355,8 @@
  
  	// Reserve one finger for the mouse; two fingers still pan/zoom the viewport.
  	[[_session_scrollview panGestureRecognizer] setMinimumNumberOfTouches:2];
@@ -2205,7 +2256,7 @@ index b6d378c..3352890 100644
  
  	// add gestures to scroll view
  	[_session_scrollview addGestureRecognizer:singleTapRecognizer];
-@@ -1171,6 +1319,7 @@
+@@ -1171,6 +1365,7 @@
  	[_session_scrollview addGestureRecognizer:hoverRecognizer];
  	[_session_scrollview addGestureRecognizer:secondaryTapRecognizer];
  	[_session_scrollview addGestureRecognizer:scrollRecognizer];
@@ -2918,7 +2969,7 @@ index 722bccc..41b32e1 100644
  - (void)setRemoteCursorPosition:(CGPoint)position;
  - (void)showRemoteCursor;
 diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView.m
-index c7e2f41..25a00d9 100644
+index c7e2f41..c53371f 100644
 --- a/client/iOS/Views/RDPSessionView.m
 +++ b/client/iOS/Views/RDPSessionView.m
 @@ -9,6 +9,7 @@
@@ -3033,7 +3084,7 @@ index c7e2f41..25a00d9 100644
  	[commandBuffer commit];
  
  	if (!_hasPendingDirtyRect)
-@@ -454,6 +501,61 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -454,6 +501,70 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	}
  }
  
@@ -3065,8 +3116,9 @@ index c7e2f41..25a00d9 100644
 +- (void)performWorkspaceAction:(OrbisIPadWorkspaceAction)action
 +{
 +	BOOL activities = action == OrbisIPadWorkspaceActivities;
++	BOOL closeActivities = action == OrbisIPadWorkspaceCloseActivities;
 +	BOOL previous = action == OrbisIPadWorkspacePrevious;
-+	if (!activities && !previous && action != OrbisIPadWorkspaceNext)
++	if (!activities && !closeActivities && !previous && action != OrbisIPadWorkspaceNext)
 +		return;
 +	RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
 +	if (_commandControlDown || keyboard.ctrlPressed || keyboard.winPressed) return;
@@ -3078,14 +3130,22 @@ index c7e2f41..25a00d9 100644
 +	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:YES];
 +	if (keyboard.shiftPressed && ![shifts containsObject:@(VK_LSHIFT)])
 +		[keyboard sendVirtualKey:VK_LSHIFT up:YES];
-+	[keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:NO];
-+	if (!activities)
++	if (closeActivities)
 +	{
-+		int key = (previous ? VK_PRIOR : VK_NEXT) | KBDEXT;
-+		[keyboard sendVirtualKey:key up:NO];
-+		[keyboard sendVirtualKey:key up:YES];
++		[keyboard sendVirtualKey:VK_ESCAPE up:NO];
++		[keyboard sendVirtualKey:VK_ESCAPE up:YES];
 +	}
-+	[keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:YES];
++	else
++	{
++		[keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:NO];
++		if (!activities)
++		{
++			int key = (previous ? VK_PRIOR : VK_NEXT) | KBDEXT;
++			[keyboard sendVirtualKey:key up:NO];
++			[keyboard sendVirtualKey:key up:YES];
++		}
++		[keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:YES];
++	}
 +	if (keyboard.shiftPressed && ![shifts containsObject:@(VK_LSHIFT)])
 +		[keyboard sendVirtualKey:VK_LSHIFT up:NO];
 +	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:NO];
@@ -3095,7 +3155,7 @@ index c7e2f41..25a00d9 100644
  - (BOOL)canBecomeFirstResponder
  {
  	return _hardwareKeyboardActive;
-@@ -467,7 +569,160 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -467,7 +578,162 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		if (key == nil)
  			continue;
  
@@ -3183,7 +3243,8 @@ index c7e2f41..25a00d9 100644
 +			continue;
 +		}
 +		BOOL workspaceArrow = usage == UIKeyboardHIDUsageKeyboardLeftArrow ||
-+		    usage == UIKeyboardHIDUsageKeyboardRightArrow || usage == UIKeyboardHIDUsageKeyboardUpArrow;
++		    usage == UIKeyboardHIDUsageKeyboardRightArrow || usage == UIKeyboardHIDUsageKeyboardUpArrow ||
++		    usage == UIKeyboardHIDUsageKeyboardDownArrow;
 +		// Consume repeats even when the modifiers are released before the arrow.
 +		if (!up && workspaceArrow && [_optionConsumedKeys containsObject:physicalKey]) continue;
 +		if (!up && (key.modifierFlags & UIKeyModifierAlternate) &&
@@ -3193,8 +3254,9 @@ index c7e2f41..25a00d9 100644
 +			if (shortcutsEnabled && workspaceArrow && (key.modifierFlags & UIKeyModifierShift))
 +			{
 +				OrbisIPadWorkspaceAction action = usage == UIKeyboardHIDUsageKeyboardUpArrow ?
-+				    OrbisIPadWorkspaceActivities : (usage == UIKeyboardHIDUsageKeyboardLeftArrow ?
-+				    OrbisIPadWorkspacePrevious : OrbisIPadWorkspaceNext);
++				    OrbisIPadWorkspaceActivities : (usage == UIKeyboardHIDUsageKeyboardDownArrow ?
++				    OrbisIPadWorkspaceCloseActivities : (usage == UIKeyboardHIDUsageKeyboardLeftArrow ?
++				    OrbisIPadWorkspacePrevious : OrbisIPadWorkspaceNext));
 +				[self performWorkspaceAction:action];
 +				[_optionConsumedKeys addObject:physicalKey];
 +				continue;
@@ -3257,7 +3319,7 @@ index c7e2f41..25a00d9 100644
  		if (vk != 0)
  			[[RDPKeyboard getSharedRDPKeyboard] sendVirtualKey:vk up:up];
  	}
-@@ -481,6 +736,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -481,6 +747,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		[super pressesBegan:presses withEvent:event];
  }
  
@@ -3270,7 +3332,7 @@ index c7e2f41..25a00d9 100644
  - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
  {
  	if (_hardwareKeyboardActive)
-@@ -491,6 +752,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -491,6 +763,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  
  - (void)dealloc
  {
@@ -3278,7 +3340,7 @@ index c7e2f41..25a00d9 100644
  	[_displayLinkTarget clearView];
  	[_displayLink invalidate];
  	[_displayLink release];
-@@ -500,6 +762,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -500,6 +773,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	[_commandQueue release];
  	[_metalDevice release];
  	[_cursorImageView release];
