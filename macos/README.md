@@ -88,3 +88,26 @@ actions with Command consume that tap even when modifier events arrive later.
 Keys forwarded while Command is held are released when Command is released or
 focus cleanup runs; a missing key-up does not keep the remote key pressed, and
 a delayed key-up does not release it twice.
+
+## Fullscreen input capture
+
+Enable **Capture Mac input in full screen** in Settings to forward physical keys
+and pointer input to the active remote desktop before macOS handles shortcuts.
+This option is off by default and uses macOS input-control permission. Select
+**Allow input capture…** and approve Orbis in the system settings if prompted.
+Capture starts only with a connected, focused remote window in native fullscreen.
+It stops when switching apps, opening a menu or sheet, leaving fullscreen, or
+disconnecting, and releases held remote keys, modifiers, and mouse buttons.
+
+Command becomes remote Super/Windows and Option becomes Alt; physical keys use
+the remote keyboard layout. Macros that generate keyboard or mouse events follow
+this routing. Macros that directly run a Mac script, open a Mac app, or invoke a
+registered system action do not become Linux commands. RDP supports the first
+five mouse buttons; additional buttons need a macro that generates supported
+keyboard or mouse events. Media keys and gestures are outside this capture mode.
+
+Press **Control + Option + Command + Esc** to release capture for the current
+fullscreen focus episode. Leaving fullscreen or switching away and returning
+rearms the option. If macOS disables its event filter, capture stops automatically;
+input resumes locally without silently recapturing. Windowed sessions
+and sessions with the option off retain their existing Mac shortcut behavior.

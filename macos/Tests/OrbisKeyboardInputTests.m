@@ -2,17 +2,25 @@
 
 #import <AppKit/AppKit.h>
 #import "MRDPView.h"
+#import "OrbisInputCapture.h"
 
 static NSMutableArray *events;
 static NSUInteger failures;
 static NSUInteger mouseEvents;
 static NSUInteger displayPointerEvents;
+static UINT16 displayPointerFlags;
 static NSPoint displayPointerPoint;
 BOOL OrbisRecordDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 flags, INT32 x, INT32 y)
 {
-	(void)context; (void)relative; (void)flags;
+	(void)context; (void)relative;
+	displayPointerFlags = flags;
 	displayPointerEvents++; displayPointerPoint = NSMakePoint(x, y);
 	return TRUE;
+}
+
+BOOL OrbisRecordExtendedDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 flags, INT32 x, INT32 y)
+{
+    return OrbisRecordDisplayPointer(context, relative, flags, x, y);
 }
 
 void OrbisRecordMouseButton(void *context, int button, int x, int y, BOOL down)
@@ -45,6 +53,36 @@ BOOL OrbisRecordUnicodeKeyboardEvent(rdpInput *input, UINT16 flags, UINT16 code)
 	mfContext _contextFixture;
 	rdpInput _inputFixture;
 }
+@end
+
+@interface OrbisCaptureTestWindow : NSWindow
+@property(nonatomic) BOOL captureFullscreen;
+@end
+@implementation OrbisCaptureTestWindow
+@synthesize captureFullscreen;
+- (NSWindowStyleMask)styleMask
+{
+    return [super styleMask] | (captureFullscreen ? NSWindowStyleMaskFullScreen : 0);
+}
+@end
+
+@interface OrbisCaptureTestDelegate : NSObject <OrbisInputCaptureDelegate>
+@property(nonatomic, assign) MRDPView *view;
+@property(nonatomic) BOOL eligible;
+@end
+@implementation OrbisCaptureTestDelegate
+@synthesize view, eligible;
+- (MRDPView *)inputCaptureKeyboardTarget { return eligible ? view : nil; }
+- (MRDPView *)inputCapturePointerTargetAtScreenPoint:(NSPoint)point { (void)point; return eligible ? view : nil; }
+@end
+
+@interface OrbisTestInputCapture : OrbisInputCapture
+@property(nonatomic) BOOL allowTap;
+@property(nonatomic) NSUInteger tapAttempts;
+@end
+@implementation OrbisTestInputCapture
+@synthesize allowTap, tapAttempts;
+- (BOOL)installTap { tapAttempts++; return allowTap; }
 @end
 
 @implementation OrbisKeyboardTestView
@@ -354,12 +392,129 @@ static void CheckCommandReleaseTransitions(void)
     mouseEvents = 0;
 }
 
+static CGEventRef CaptureKey(CGEventType type, unsigned short code, CGEventFlags flags)
+{
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, code, type != kCGEventKeyUp);
+    CGEventSetType(event, type); CGEventSetFlags(event, flags);
+    return event;
+}
+
+static void CheckFullscreenInputCapture(void)
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    id original = [[defaults objectForKey:OrbisFullscreenInputCaptureKey] retain];
+    OrbisCaptureTestWindow *window = [[OrbisCaptureTestWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    [window setReleasedWhenClosed:NO];
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    [view setDisplayRegion:NSMakeRect(0, 0, 800, 600)];
+    [window.contentView addSubview:view];
+    OrbisCaptureTestDelegate *delegate = [[OrbisCaptureTestDelegate alloc] init];
+    delegate.view = view; delegate.eligible = YES;
+    OrbisTestInputCapture *capture = [[OrbisTestInputCapture alloc] initWithDelegate:delegate];
+    capture.allowTap = YES;
+    CGEventRef down = CaptureKey(kCGEventKeyDown, 48, kCGEventFlagMaskCommand);
+    CGEventRef up = CaptureKey(kCGEventKeyUp, 48, kCGEventFlagMaskCommand);
+    CGEventRef released = CaptureKey(kCGEventFlagsChanged, 55, 0);
+    [defaults setBool:NO forKey:OrbisFullscreenInputCaptureKey]; window.captureFullscreen = YES;
+    [events removeAllObjects];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown] && !capture.active && !capture.tapAttempts && !events.count,
+        @"Disabled capture must leave Mac input unchanged and never request a system filter");
+    [defaults setBool:YES forKey:OrbisFullscreenInputCaptureKey]; window.captureFullscreen = NO;
+    Require(![capture consumeEvent:down type:kCGEventKeyDown] && !capture.tapAttempts,
+        @"An enabled setting must still preserve windowed input");
+    window.captureFullscreen = YES;
+    Require([capture consumeEvent:down type:kCGEventKeyDown] && [capture consumeEvent:up type:kCGEventKeyUp] &&
+        [capture consumeEvent:released type:kCGEventFlagsChanged] && capture.active,
+        @"Fullscreen Command+Tab must be consumed before the Mac app switcher");
+    Require(events.count == 4 && [events[0][@"code"] unsignedIntValue] == 0x5B &&
+        [events[1][@"code"] unsignedIntValue] == 0x0F &&
+        ([events[2][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) &&
+        ([events[3][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Captured Command+Tab must reach RDP as a complete physical Super+Tab sequence");
+    [events removeAllObjects];
+    CGEventRef optionDown = CaptureKey(kCGEventKeyDown, 19, kCGEventFlagMaskAlternate);
+    CGEventRef optionUp = CaptureKey(kCGEventKeyUp, 19, kCGEventFlagMaskAlternate);
+    [capture consumeEvent:optionDown type:kCGEventKeyDown]; [capture consumeEvent:optionUp type:kCGEventKeyUp];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    Require(events.count == 4 && [events[0][@"code"] unsignedIntValue] == 0x38 &&
+        [events[1][@"code"] unsignedIntValue] == 0x03 && !UnicodeEvents().count,
+        @"Captured Option macros must forward physical Alt+2 rather than a Mac-generated Unicode symbol");
+    [events removeAllObjects];
+    [capture consumeEvent:down type:kCGEventKeyDown]; delegate.eligible = NO; [capture refresh];
+    Require(!capture.active && events.count == 4 &&
+        ([events[2][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) &&
+        ([events[3][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Changing apps must release a held key and Super before restoring local input");
+    Require(![capture consumeEvent:up type:kCGEventKeyUp], @"Inactive capture must pass subsequent input to macOS");
+    delegate.eligible = YES; [capture refresh]; [events removeAllObjects];
+    CGEventFlags escapeFlags = kCGEventFlagMaskCommand | kCGEventFlagMaskControl | kCGEventFlagMaskAlternate;
+    CGEventRef escapeDown = CaptureKey(kCGEventKeyDown, 53, escapeFlags);
+    CGEventRef escapeUp = CaptureKey(kCGEventKeyUp, 53, escapeFlags);
+    [capture consumeEvent:down type:kCGEventKeyDown];
+    Require([capture consumeEvent:escapeDown type:kCGEventKeyDown] && !capture.active && events.count == 4,
+        @"The release chord must finish remote input without sending Escape or reactivating capture");
+    Require([capture consumeEvent:escapeUp type:kCGEventKeyUp] &&
+        [capture consumeEvent:released type:kCGEventFlagsChanged] && !capture.suppressesLocalModifiers,
+        @"Escape and modifier releases must drain locally without a stray remote Super tap");
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"Capture stays suspended in the same fullscreen focus episode");
+    delegate.eligible = NO; [capture refresh]; delegate.eligible = YES; [capture refresh];
+    Require(capture.active, @"Returning from another app must rearm opted-in fullscreen capture");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowWillExitFullScreenNotification object:window];
+    [capture refresh];
+    Require(!capture.active, @"Capture must stop throughout the exit animation even while the fullscreen style bit remains set");
+    window.captureFullscreen = NO;
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowDidExitFullScreenNotification object:window];
+    [capture refresh]; window.captureFullscreen = YES; [capture refresh];
+    Require(capture.active, @"A later fullscreen entry must rearm capture after the completed transition");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidBeginTrackingNotification object:nil];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"Mac menus must receive local shortcuts during menu tracking");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidBeginTrackingNotification object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidEndTrackingNotification object:nil];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"Closing a submenu must not recapture input while the main menu is still tracking");
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSMenuDidEndTrackingNotification object:nil];
+    Require(capture.active, @"Closing a native menu must resume the opted-in fullscreen session");
+    [events removeAllObjects]; displayPointerEvents = 0;
+    CGEventRef click = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, CGPointMake(200, 200), kCGMouseButtonLeft);
+    CGEventSetFlags(click, 0);
+    Require([capture consumeEvent:click type:kCGEventLeftMouseDown] && displayPointerEvents == 1 &&
+        (displayPointerFlags & PTR_FLAGS_DOWN), @"Captured macro clicks must reach the normal remote pointer boundary exactly once");
+    window.captureFullscreen = NO; [capture refresh];
+    Require(displayPointerEvents == 2 && !(displayPointerFlags & PTR_FLAGS_DOWN) && !capture.active,
+        @"Leaving fullscreen while a mouse button is held must release it remotely");
+    window.captureFullscreen = YES; [capture refresh];
+    CGEventRef back = CGEventCreateMouseEvent(NULL, kCGEventOtherMouseDown, CGPointMake(200, 200), (CGMouseButton)3);
+    displayPointerEvents = 0;
+    [capture consumeEvent:back type:kCGEventOtherMouseDown];
+    Require(displayPointerEvents == 1 && displayPointerFlags == (PTR_XFLAGS_DOWN | PTR_XFLAGS_BUTTON1),
+        @"Captured side buttons must use the extended RDP button protocol");
+    CGEventSetType(back, kCGEventOtherMouseUp); [capture consumeEvent:back type:kCGEventOtherMouseUp];
+    Require(displayPointerEvents == 2 && displayPointerFlags == PTR_XFLAGS_BUTTON1,
+        @"A side-button release must use the same extended button without a duplicate local click");
+    CFRelease(back);
+    [capture consumeEvent:down type:kCGEventKeyDown]; [events removeAllObjects];
+    [capture consumeEvent:NULL type:kCGEventTapDisabledByTimeout];
+    Require(!capture.active && events.count == 2,
+        @"A disabled system tap must release remote state and return local control");
+    Require(![capture consumeEvent:down type:kCGEventKeyDown], @"A timed-out tap must stay suspended until focus changes");
+    [capture stop]; capture.allowTap = NO; [events removeAllObjects];
+    Require(![capture consumeEvent:down type:kCGEventKeyDown] && !events.count,
+        @"A missing OS permission must never swallow input or claim capture is active");
+    CFRelease(down); CFRelease(up); CFRelease(released); CFRelease(optionDown); CFRelease(optionUp);
+    CFRelease(escapeDown); CFRelease(escapeUp); CFRelease(click);
+    [capture release]; [delegate release]; [view removeFromSuperview]; [view release]; [window release];
+    if (original) [defaults setObject:original forKey:OrbisFullscreenInputCaptureKey];
+    else [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
+    [original release];
+}
+
 int main(void)
 {
 	@autoreleasepool
 	{
 		[NSApplication sharedApplication];
 		events = [[NSMutableArray alloc] init];
+        CheckFullscreenInputCapture();
         CheckCommandEventOrdering();
         CheckCommandReleaseTransitions();
 		CheckDisplayViewports();

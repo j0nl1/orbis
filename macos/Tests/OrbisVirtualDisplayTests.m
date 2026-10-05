@@ -40,6 +40,10 @@ BOOL OrbisRecordDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 
     [pointerEvents addObject:@{ @"flags": @(flags), @"x": @(x), @"y": @(y) }];
     return TRUE;
 }
+BOOL OrbisRecordExtendedDisplayPointer(rdpClientContext *context, BOOL relative, UINT16 flags, INT32 x, INT32 y)
+{
+    return OrbisRecordDisplayPointer(context, relative, flags, x, y);
+}
 void OrbisRecordMouseButton(void *context, int button, int x, int y, BOOL down)
 {
     (void)context; (void)button; (void)x; (void)y; (void)down;

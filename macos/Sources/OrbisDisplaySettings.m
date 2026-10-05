@@ -2,6 +2,8 @@
 #import "OrbisDisplaySettings.h"
 #import "OrbisProfile.h"
 #import "OrbisFormControls.h"
+#import "OrbisInputCapture.h"
+#import <ApplicationServices/ApplicationServices.h>
 #include <float.h>
 
 static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
@@ -216,7 +218,7 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
 @implementation OrbisDisplaySettingsController
 - (instancetype)initWithSettings:(OrbisDisplaySettings *)settings
 {
-    NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 620)
+    NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 780)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO] autorelease];
     if (!(self = [super initWithWindow:window])) return nil;
     _settings = [settings copy];
@@ -272,6 +274,19 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
     [_validationLabel setTextColor:[NSColor systemRedColor]];
     [_validationLabel setHidden:YES];
     [rows addObjectsFromArray:@[ note, _validationLabel ]];
+    NSTextField *inputTitle = [NSTextField labelWithString:@"Input"];
+    [inputTitle setFont:[NSFont systemFontOfSize:18 weight:NSFontWeightSemibold]];
+    _captureInput = [[NSButton checkboxWithTitle:@"Capture Mac input in full screen" target:nil action:nil] retain];
+    [_captureInput setState:[[NSUserDefaults standardUserDefaults] boolForKey:OrbisFullscreenInputCaptureKey]
+        ? NSControlStateValueOn : NSControlStateValueOff];
+    [_captureInput setAccessibilityIdentifier:@"settings-fullscreen-input-capture"];
+    NSTextField *inputHint = [NSTextField wrappingLabelWithString:
+        @"Forward physical keys, shortcuts, mouse buttons and macros that generate input to the active remote desktop. Command becomes Super and Option becomes Alt. Control + Option + Command + Esc releases capture until you leave full screen or switch apps. Windowed sessions keep their usual Mac shortcuts."];
+    [inputHint setTextColor:[NSColor secondaryLabelColor]];
+    NSButton *permission = [NSButton buttonWithTitle:@"Allow input capture…" target:self action:@selector(requestInputPermission:)];
+    [permission setBezelStyle:NSBezelStyleRounded];
+    [permission setToolTip:@"Allow Orbis to control input in macOS Privacy & Security settings. Required for full screen capture."];
+    [rows addObjectsFromArray:@[ inputTitle, _captureInput, inputHint, permission ]];
     NSButton *cancel = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     NSButton *save = [NSButton buttonWithTitle:@"Save settings" target:self action:@selector(save:)];
     [cancel setKeyEquivalent:@"\033"]; [save setKeyEquivalent:@"\r"];
@@ -290,7 +305,8 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
     [stack setOrientation:NSUserInterfaceLayoutOrientationVertical];
     [stack setAlignment:NSLayoutAttributeLeading]; [stack setSpacing:16];
     [stack setTranslatesAutoresizingMaskIntoConstraints:NO]; [content addSubview:stack];
-    for (NSView *row in rows) [[row widthAnchor] constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    for (NSView *row in rows)
+        if (row != permission) [[row widthAnchor] constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [NSLayoutConstraint activateConstraints:@[
         [stack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:32],
         [stack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-32],
@@ -351,12 +367,22 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
         }
     [self resolutionChanged:nil];
     [_settings saveToDefaults:[NSUserDefaults standardUserDefaults]];
+    BOOL enabled = _captureInput.state == NSControlStateValueOn;
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:OrbisFullscreenInputCaptureKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:OrbisInputCaptureSettingsDidChangeNotification object:nil];
+    if (enabled && !AXIsProcessTrusted()) [self requestInputPermission:nil];
     [self.window.sheetParent endSheet:self.window];
+}
+- (void)requestInputPermission:(id)sender
+{
+    (void)sender;
+    AXIsProcessTrustedWithOptions((CFDictionaryRef)@{ (id)kAXTrustedCheckOptionPrompt: @YES });
 }
 - (void)cancel:(id)sender { (void)sender; [self.window.sheetParent endSheet:self.window]; }
 - (void)dealloc
 {
     [_settings release]; [_arrangementView release]; [_validationLabel release];
+    [_captureInput release];
     for (NSUInteger i = 0; i < 2; i++) { [_modes[i] release]; [_widths[i] release]; [_heights[i] release]; }
     [super dealloc];
 }

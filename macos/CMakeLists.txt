@@ -61,6 +61,9 @@ set(ORBIS_MACOS_SOURCES
     Sources/OrbisSessionEndPolicy.h
     Sources/OrbisSessionEndPolicy.c
     Sources/OrbisRemoteView.h
+    Sources/OrbisInputCapture.h
+    Sources/OrbisInputCapture.m
+    Sources/OrbisInputCaptureSettings.m
     Sources/OrbisSessionController.h
     Sources/OrbisSessionController.m
     ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisProfile.h
@@ -113,6 +116,7 @@ target_link_libraries(
     ${FOUNDATION_FRAMEWORK}
     ${SECURITY_FRAMEWORK}
     ${NETWORK_FRAMEWORK}
+    "-framework ApplicationServices"
 )
 
 target_compile_options(OrbisMac PRIVATE -fno-objc-arc)

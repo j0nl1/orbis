@@ -26,6 +26,8 @@
 - (void)setActiveDisplayResolution:(NSSize)resolution { (void)resolution; }
 - (BOOL)activeDisplayMatchesWindow { return NO; }
 - (void)setActiveDisplayMatchesWindow:(BOOL)enabled { (void)enabled; }
+- (MRDPView *)inputCaptureKeyboardTarget { return nil; }
+- (MRDPView *)inputCapturePointerTargetAtScreenPoint:(NSPoint)point { (void)point; return nil; }
 @end
 
 static void Require(BOOL condition, const char *message)

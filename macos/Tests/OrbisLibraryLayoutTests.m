@@ -8,6 +8,7 @@
 #import "OrbisProfileEditorController.h"
 #import "OrbisAboutController.h"
 #import "OrbisDisplaySettings.h"
+#import "OrbisInputCapture.h"
 
 static NSView *FindViewWithAccessibilityIdentifier(NSView *view, NSString *identifier)
 {
@@ -329,6 +330,31 @@ static void DrainSheetCompletion(void)
 	[recorder release];
 	[editor release];
 	[profile release];
+}
+
+- (void)testInputCaptureDefaultsOffAndCancelDoesNotEnableIt
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    id original = [[defaults objectForKey:OrbisFullscreenInputCaptureKey] retain];
+    [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
+    OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] init] autorelease];
+    OrbisDisplaySettingsController *editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
+    NSButton *capture = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-fullscreen-input-capture");
+    XCTAssertNotNil(capture);
+    XCTAssertEqual(capture.state, NSControlStateValueOff);
+    capture.state = NSControlStateValueOn;
+    NSButton *cancel = FindButtonWithTitle(editor.window.contentView, @"Cancel");
+    [cancel sendAction:cancel.action to:cancel.target];
+    XCTAssertFalse([defaults boolForKey:OrbisFullscreenInputCaptureKey]);
+    [editor release];
+    [defaults setBool:YES forKey:OrbisFullscreenInputCaptureKey];
+    editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
+    capture = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-fullscreen-input-capture");
+    XCTAssertEqual(capture.state, NSControlStateValueOn);
+    [editor release];
+    if (original) [defaults setObject:original forKey:OrbisFullscreenInputCaptureKey];
+    else [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
+    [original release];
 }
 
 - (void)testDisplaySettingsPersistResolutionsAndDraggedOffsetsWithoutChangingConnections

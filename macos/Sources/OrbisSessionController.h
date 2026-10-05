@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 #import "OrbisDisplayLayout.h"
+#import "OrbisInputCapture.h"
 
 @class OrbisProfile;
 @class OrbisDisplaySettings;
@@ -17,7 +18,7 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 
 @end
 
-@interface OrbisSessionController : NSObject <NSWindowDelegate>
+@interface OrbisSessionController : NSObject <NSWindowDelegate, OrbisInputCaptureDelegate>
 {
 	id<OrbisSessionControllerDelegate> _delegate;
 	OrbisProfile *_profile;
@@ -41,6 +42,7 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 	NSTextField *_connectingStatusLabel;
 	id _modifierEventMonitor;
 	NSTimer *_modifierPollTimer;
+	OrbisInputCapture *_inputCapture;
 	void *_context;
 	BOOL _stopping;
 	BOOL _stopCompletionDelivered;

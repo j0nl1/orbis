@@ -199,6 +199,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	    [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskFlagsChanged
 	                                        handler:^NSEvent *(NSEvent *event) {
 		MRDPView *focusedView = [self focusedRemoteView];
+		if ([_inputCapture suppressesLocalModifiers]) return nil;
 		if (!_stopping && focusedView && [focusedView is_connected])
 		{
 			[focusedView flagsChanged:event];
@@ -206,6 +207,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 		}
 		return event;
 	}];
+	_inputCapture = [[OrbisInputCapture alloc] initWithDelegate:self];
 	_modifierPollTimer =
 	    [[NSTimer scheduledTimerWithTimeInterval:0.01
 	                                    target:self
@@ -351,6 +353,8 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 - (void)pollModifierFlags:(NSTimer *)timer
 {
 	(void)timer;
+	[_inputCapture refresh];
+	if ([_inputCapture active] || [_inputCapture suppressesLocalModifiers]) return;
 	MRDPView *view = [self focusedRemoteView];
 	if (_stopping || !view || ![view is_connected])
 	{
@@ -359,6 +363,30 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	}
 	BOOL commandIsDown = (CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState) & kCGEventFlagMaskCommand) != 0;
 	[view setCommandKeyDown:commandIsDown];
+}
+
+- (MRDPView *)inputCaptureKeyboardTarget
+{
+	MRDPView *view = [self focusedRemoteView];
+	if (_stopping || ![NSApp isActive] || !view.is_connected || view.window.attachedSheet ||
+	    !(view.window.styleMask & NSWindowStyleMaskFullScreen)) return nil;
+	return view;
+}
+
+- (MRDPView *)inputCapturePointerTargetAtScreenPoint:(NSPoint)point
+{
+	if (![self inputCaptureKeyboardTarget]) return nil;
+	NSInteger hitWindow = [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0];
+	for (MRDPView *view in @[ _remoteView ?: [NSNull null], _secondaryView ?: [NSNull null] ])
+	{
+		if ((id)view == [NSNull null]) continue;
+		NSWindow *window = view.window;
+		if (!view.is_connected || !window.isVisible || !window.isOnActiveSpace || window.attachedSheet ||
+		    !(window.styleMask & NSWindowStyleMaskFullScreen) || hitWindow != window.windowNumber) continue;
+		NSPoint local = [view convertPoint:[window convertPointFromScreen:point] fromView:nil];
+		if (NSPointInRect(local, view.bounds)) return view;
+	}
+	return nil;
 }
 
 - (BOOL)beginConnection
@@ -1056,6 +1084,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	if (_stopping)
 		return;
 	_stopping = YES;
+	[_inputCapture stop];
 	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applyWindowResolutions) object:nil];
 	_windowResolutionDirty = 0;
 	[_displayChangeTimer invalidate]; [_displayChangeTimer release]; _displayChangeTimer = nil;
@@ -1132,6 +1161,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[_password release];
 	[_profile release];
 	[_displaySettings release];
+	[_inputCapture release];
 	[_transport release];
 	[super dealloc];
 }
