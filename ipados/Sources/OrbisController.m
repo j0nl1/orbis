@@ -16,6 +16,7 @@
 #import "OrbisConnectionHealthCheck.h"
 #import "OrbisAboutController.h"
 #import "OrbisIPadDisplaySettings.h"
+#import "OrbisDiagnostics.h"
 #import "OrbisIPadDisplaySettingsController.h"
 #import "OrbisProfile.h"
 #import "OrbisProfileEditorController.h"
@@ -1101,6 +1102,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	NSString *password = [self savedPasswordForProfile:profile error:&error];
 	if (error)
 	{
+		[[OrbisDiagnostics sharedDiagnostics] recordError:error event:@"credentials.read_failed"];
 		[self showErrorWithTitle:@"Keychain Error" message:[error localizedDescription]];
 		return;
 	}
@@ -1246,6 +1248,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 
 - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"ui.error_presented" values:nil];
 	[self setConnectionBusy:NO status:@"Ready to connect"];
 	UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
 	                                                               message:message

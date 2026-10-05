@@ -58,6 +58,8 @@ disabled in Settings. Swipe two fingers left or right without clicking to switch
 workspaces; hold Alt (Option) and swipe up to open Activities. Alt + Shift with a
 sideways swipe moves the active window to the neighboring workspace. The adapter
 sends GNOME's Super + Page Up/Down, Super, and Super + Shift + Page Up/Down shortcuts.
+Alt (Option) + the physical key immediately left of 1 also toggles Activities
+without a gesture; key repeats trigger it only once per press.
 GNOME's dynamic workspace behavior creates an additional empty workspace when a
 window moves into the final empty workspace; Orbis does not create workspaces
 through RDP. Customized shortcuts or other Linux desktops may behave differently.
@@ -68,3 +70,8 @@ disabling the option restores horizontal trackpad scrolling. Alt and physical
 Shift states are preserved around the generated shortcut. Three-finger trackpad
 system gestures remain handled by iPadOS. Tests cover synthetic gesture sequences
 and resulting RDP key events; physical trackpad behavior needs device verification.
+
+Settings → Diagnostics → Export Diagnostics shares the local JSON history, with
+recent session events, numeric error codes, and available MetricKit crash or hang
+reports. Nothing is uploaded automatically. See the shared Diagnostics README for
+retention, excluded data, OS report delivery, and matching debugging symbols.

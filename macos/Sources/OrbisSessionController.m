@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #import "OrbisSessionController.h"
+#import "OrbisDiagnostics.h"
 
 #import <freerdp/client.h>
 #import <freerdp/client/disp.h>
@@ -158,6 +159,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (BOOL)start
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.connecting" values:nil];
 	if (_context || _connectionPending || _stopping)
 		return NO;
 
@@ -768,11 +770,15 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	    _displayMaxArea && area <= _displayMaxArea;
 	UINT status = valid ? channel->SendMonitorLayout(channel, layout.count, monitors) : CHANNEL_RC_BAD_CHANNEL;
 	[_displayLock unlock];
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:valid && status == CHANNEL_RC_OK ? @"display.requested" : @"display.request_failed"
+	    values:@{ @"code" : @(status), @"display_count" : @(layout.count),
+	        @"width" : @(layout.monitors[0].width), @"height" : @(layout.monitors[0].height) }];
 	return valid && status == CHANNEL_RC_OK;
 }
 
 - (void)showDisplayError:(NSString *)message
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"display.failed" values:nil];
 	NSAlert *alert = [[[NSAlert alloc] init] autorelease];
 	[alert setMessageText:@"Display configuration could not be applied"];
 	[alert setInformativeText:message];
@@ -900,11 +906,13 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)windowDidChangeScreen:(NSNotification *)notification
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"window.screen_changed" values:nil];
 	[self windowDidResize:notification];
 }
 
 - (void)windowDidEnterFullScreen:(NSNotification *)notification
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"window.fullscreen_entered" values:nil];
 	[self windowDidResize:notification];
 	if (_connectionPending && !_stopping)
 		[self beginConnection];
@@ -919,6 +927,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"window.fullscreen_exited" values:nil];
 	[self windowDidResize:notification];
 	NSWindow *window = [notification object];
 	if (window == _closingSecondaryWindow)
@@ -982,6 +991,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	}
 
 	_wasConnected = YES;
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.connected" values:nil];
 	_windowResolutionDirty |= 3;
 	[self scheduleWindowResolutions];
 	[self updateDisplayControls];
@@ -1021,6 +1031,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)finishWithMessage:(NSString *)message code:(NSInteger)code
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.failed" values:@{ @"code" : @(code) }];
 	[_finishError release];
 	_finishError = [[NSError alloc] initWithDomain:OrbisSessionErrorDomain
 	                                        code:code
@@ -1083,6 +1094,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 {
 	if (_stopping)
 		return;
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.stopping" values:nil];
 	_stopping = YES;
 	[_inputCapture stop];
 	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applyWindowResolutions) object:nil];

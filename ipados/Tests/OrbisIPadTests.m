@@ -128,9 +128,10 @@
 @property(nonatomic) UIKeyboardHIDUsage keyCode;
 @property(nonatomic) UIKeyModifierFlags modifierFlags;
 @property(nonatomic, copy) NSString *characters;
+@property(nonatomic, copy) NSString *charactersIgnoringModifiers;
 @end
 @implementation OrbisTestKey
-- (void)dealloc { [_characters release]; [super dealloc]; }
+- (void)dealloc { [_characters release]; [_charactersIgnoringModifiers release]; [super dealloc]; }
 @end
 @interface OrbisTestPress : NSObject
 @property(nonatomic, retain) OrbisTestKey *key;
@@ -328,7 +329,7 @@
 	    height:(NSUInteger)round(768 * window.screen.nativeScale)];
 	NSString *expected = [NSString stringWithFormat:@"%@ × %@", sizes[0][0], sizes[0][1]];
 	XCTAssertEqualObjects([button.menu.children.firstObject title], expected);
-	XCTAssertEqual([editor numberOfSectionsInTableView:editor.tableView], 2);
+	XCTAssertEqual([editor numberOfSectionsInTableView:editor.tableView], 3);
 	[[editor valueForKey:@"automaticSwitch"] setOn:NO];
 	[[editor valueForKey:@"widthField"] setText:@"1112"];
 	[[editor valueForKey:@"heightField"] setText:@"834"];
@@ -474,7 +475,7 @@
               up:(BOOL)up view:(RDPSessionView *)view
 {
 	OrbisTestKey *key = [[[OrbisTestKey alloc] init] autorelease];
-	key.keyCode = usage; key.modifierFlags = flags; key.characters = text;
+	key.keyCode = usage; key.modifierFlags = flags; key.characters = text; key.charactersIgnoringModifiers = text;
 	OrbisTestPress *press = [[[OrbisTestPress alloc] init] autorelease];
 	press.key = key;
 	[view handlePresses:[NSSet setWithObject:press] up:up];
@@ -664,6 +665,43 @@
 	scroll.testTranslation = CGPointMake(80, 0);
 	[controller handleScroll:scroll];
 	XCTAssertEqual(recorder.events.count, 0u);
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testOptionKeyLeftOfOneTogglesActivitiesOnceWithoutTypingOrLeavingAltPressed
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:UIKeyModifierAlternate text:@"" up:NO view:view];
+	for (NSUInteger repeat = 0; repeat < 3; repeat++)
+		[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:UIKeyModifierAlternate text:@"º" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:0 text:@"" up:YES view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:0 text:@"º" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 2u);
+	XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x5B));
+	XCTAssertEqualObjects(recorder.events[1][@"scancode"], @(0x5B));
+	XCTAssertEqualObjects(recorder.events[1][@"flags"], @(KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE));
+	// A later press is a new gesture, even if the earlier key release came after Alt.
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:UIKeyModifierAlternate text:@"º" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:0 text:@"º" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 4u);
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testActivitiesShortcutAcceptsSpanishISOSectionKeyAndPreservesTheAngleBracketKey
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardNonUSBackslash flags:UIKeyModifierAlternate text:@"º" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardNonUSBackslash flags:0 text:@"º" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 2u);
+	XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x5B));
+	[recorder.events removeAllObjects];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:UIKeyModifierAlternate text:@"<" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:0 text:@"<" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 2u);
+	XCTAssertEqualObjects(recorder.events[0][@"subtype"], @"unicode");
+	XCTAssertEqualObjects(recorder.events[0][@"unicode_char"], @('<'));
 	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
