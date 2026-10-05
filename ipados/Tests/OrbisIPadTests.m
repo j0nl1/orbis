@@ -25,6 +25,7 @@
 
 @interface OrbisController (OrbisTesting)
 - (void)startConnectionWithPassword:(NSString *)password;
+- (void)setConnectionBusy:(BOOL)busy status:(NSString *)status;
 - (void)refreshProfileUI;
 - (void)sessionDidEnd:(NSNotification *)notification;
 - (void)prepareStatusForCardViews:(NSDictionary *)views selected:(BOOL)selected;
@@ -812,6 +813,62 @@
 	}];
 	[transport completeWithError:[NSError errorWithDomain:@"test" code:403 userInfo:nil]];
 	[self waitForExpectationsWithTimeout:1 handler:nil];
+}
+
+- (void)testRemoteSessionKeepsTheDisplayAwakeUntilDisconnect
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[[OrbisController alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[library viewWillDisappear:NO];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[[NSNotificationCenter defaultCenter] postNotificationName:TSXSessionDidDisconnectNotification object:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+}
+
+- (void)testFailedConnectionRestoresAutomaticScreenLock
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[[OrbisController alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[[NSNotificationCenter defaultCenter] postNotificationName:TSXSessionDidFailToConnectNotification object:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+}
+
+- (void)testBackgroundingReleasesIdleTimerAndReturningRestoresAnActiveSession
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[[OrbisController alloc] init] autorelease];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	[library applicationWillResignActive:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+	[library applicationDidBecomeActive:nil];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[library sessionDidEnd:nil];
+	[library applicationDidBecomeActive:nil];
+	XCTAssertFalse(application.idleTimerDisabled);
+}
+
+- (void)testDiscardingAnActiveConnectionRestoresAutomaticScreenLock
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	BOOL previous = application.idleTimerDisabled;
+	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
+	OrbisController *library = [[OrbisController alloc] init];
+	[library setConnectionBusy:YES status:@"Connecting…"];
+	XCTAssertTrue(application.idleTimerDisabled);
+	[library release];
+	XCTAssertFalse(application.idleTimerDisabled);
 }
 
 - (void)testLeavingASessionDoesNotReplaceAvailabilityWithDisconnected

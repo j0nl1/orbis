@@ -81,6 +81,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 - (BOOL)savePassword:(NSString *)password forProfile:(OrbisProfile *)profile error:(NSError **)error;
 - (BOOL)discardStoredCertificateForProfile:(OrbisProfile *)profile error:(NSError **)error;
 - (void)setConnectionBusy:(BOOL)busy status:(NSString *)status;
+- (void)updateIdleTimer;
 - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message;
 - (void)sessionDidEnd:(NSNotification *)notification;
 - (void)startHealthMonitoring;
@@ -302,12 +303,14 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 - (void)applicationDidBecomeActive:(NSNotification *)notification
 {
 	(void)notification;
+	[self updateIdleTimer];
 	[self startHealthMonitoring];
 }
 
 - (void)applicationWillResignActive:(NSNotification *)notification
 {
 	(void)notification;
+	[[UIApplication sharedApplication] setIdleTimerDisabled:NO];
 	[self stopHealthMonitoring];
 }
 
@@ -1215,9 +1218,18 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	[[self navigationController] pushViewController:controller animated:YES];
 }
 
+- (void)updateIdleTimer
+{
+	UIApplication *application = [UIApplication sharedApplication];
+	// Connection busy remains true from Connect until the remote session ends.
+	[application setIdleTimerDisabled:_isStartingConnection &&
+	    application.applicationState == UIApplicationStateActive];
+}
+
 - (void)setConnectionBusy:(BOOL)busy status:(NSString *)status
 {
 	_isStartingConnection = busy;
+	[self updateIdleTimer];
 	if (busy)
 		[self stopHealthMonitoring];
 	NSString *newStatus = [status copy];
@@ -1254,6 +1266,8 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 
 - (void)dealloc
 {
+	if (_isStartingConnection)
+		[[UIApplication sharedApplication] setIdleTimerDisabled:NO];
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	[self stopHealthMonitoring];
 	[_profileHealth release];

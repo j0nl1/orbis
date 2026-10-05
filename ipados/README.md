@@ -46,3 +46,9 @@ Suggestions update when the window rotates or resizes; the Settings sheet's own
 size does not determine them. Custom dimensions remain available. Settings changes
 apply on the next connection. Legacy desktop scale preferences are ignored and
 removed on the next save. The iPad uses one remote display.
+
+Orbis keeps the iPad display awake while a remote connection is starting or active
+in the foreground. Automatic screen lock is restored when the session ends, the
+connection fails, or the app becomes inactive. Returning to an ongoing session
+keeps the display awake again. Connection availability checks do not prevent
+screen lock.
