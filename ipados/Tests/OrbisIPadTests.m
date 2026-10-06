@@ -7,6 +7,8 @@
 #import "OrbisAboutController.h"
 #import "OrbisIPadDisplaySettings.h"
 #import "OrbisIPadWorkspaceShortcuts.h"
+#import "OrbisWorkspaceShortcuts.h"
+#import "OrbisIPadShortcutsController.h"
 #import "OrbisIPadDisplaySettingsController.h"
 #import "RDPSessionViewController.h"
 #import "OrbisConnectionTransport.h"
@@ -47,6 +49,21 @@
 @interface OrbisIPadDisplaySettingsController (OrbisTesting)
 - (void)savePressed:(id)sender;
 - (void)cancelPressed:(id)sender;
+@end
+@interface OrbisIPadShortcutsController (ShortcutTesting)
+- (void)savePressed:(id)sender;
+- (void)cancelPressed:(id)sender;
+@end
+@interface UIViewController (ShortcutRecorderTesting)
+- (void)useSuggested:(id)sender;
+@end
+@interface OrbisTestShortcutSettings : OrbisIPadShortcutsController
+@property(nonatomic, retain) UIViewController *recordingNavigation;
+@end
+@implementation OrbisTestShortcutSettings
+- (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion
+{ (void)animated; self.recordingNavigation = controller; if (completion) completion(); }
+- (void)dealloc { [_recordingNavigation release]; [super dealloc]; }
 @end
 @interface RDPSessionViewController (OrbisDisplayTesting)
 - (CGRect)remoteViewportFrame;
@@ -310,6 +327,31 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 @property(nonatomic, retain) NSDictionary *savedToken;
 @end
 @implementation OrbisIPadTests
+- (void)setUp
+{
+    [super setUp];
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSString *key = @"OrbisWorkspaceShortcuts.v1.ipados";
+    id saved = [defaults objectForKey:key];
+    [defaults removeObjectForKey:key];
+    [self addTeardownBlock:^{
+        if (saved) [defaults setObject:saved forKey:key]; else [defaults removeObjectForKey:key];
+    }];
+}
+- (void)assignUsage:(NSUInteger)usage modifiers:(OrbisShortcutModifiers)modifiers action:(OrbisWorkspaceAction)action
+{
+    OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc]
+        initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"ipados"] autorelease];
+    XCTAssertTrue([model assignKeyCode:usage modifiers:modifiers label:@"Test shortcut" toAction:action error:nil]);
+    [model save];
+}
+- (void)assignWorkspaceArrows
+{
+    [self assignUsage:80 modifiers:5 action:OrbisWorkspacePrevious];
+    [self assignUsage:79 modifiers:5 action:OrbisWorkspaceNext];
+    [self assignUsage:82 modifiers:5 action:OrbisWorkspaceActivities];
+    [self assignUsage:81 modifiers:5 action:OrbisWorkspaceCloseActivities];
+}
 - (BOOL)profileEditor:(OrbisProfileEditorController *)editor didSaveProfile:(OrbisProfile *)profile
              password:(NSString *)password cloudflareToken:(NSDictionary *)token
 {
@@ -1000,31 +1042,63 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	OrbisInputRecorder *recorder = [[[OrbisInputRecorder alloc] init] autorelease];
 	recorder.events = [NSMutableArray array];
 	recorder.params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
-	[recorder.params setBool:YES forKey:@"workspace_shortcuts"];
 	return recorder;
 }
 
-- (void)testWorkspaceShortcutSettingsPersistAndReachNewConnections
+- (void)testShortcutSettingsSaveAndCancelDrafts
 {
-	NSUserDefaults *defaults = [self displayDefaults];
-	OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc]
-	    initWithDefaults:defaults] autorelease];
-	[editor loadViewIfNeeded];
-	XCTAssertTrue([[editor valueForKey:@"workspaceSwitch"] isOn]);
-	[[editor valueForKey:@"workspaceSwitch"] setOn:NO];
-	[editor cancelPressed:nil];
-	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	XCTAssertTrue(settings.workspaceShortcutsEnabled);
-	[editor savePressed:nil];
-	settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	XCTAssertFalse(settings.workspaceShortcutsEnabled);
-	ConnectionParams *params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
-	[settings applyToConnectionParameters:params];
-	XCTAssertFalse([params boolForKey:@"workspace_shortcuts"]);
+    NSUserDefaults *defaults = [self displayDefaults];
+    OrbisIPadShortcutsController *editor = [[[OrbisIPadShortcutsController alloc] initWithDefaults:defaults] autorelease];
+    [editor loadViewIfNeeded];
+    XCTAssertEqual([editor tableView:editor.tableView numberOfRowsInSection:0], 6);
+    OrbisWorkspaceShortcuts *draft = [editor valueForKey:@"shortcuts"];
+    [draft assignKeyCode:82 modifiers:5 label:@"Option Shift Up" toAction:OrbisWorkspaceActivities error:nil];
+    [editor cancelPressed:nil];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"ipados"] autorelease];
+    XCTAssertEqual(saved.bindings.count, 0u);
+    [editor savePressed:nil];
+    saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"ipados"] autorelease];
+    XCTAssertEqual([saved actionForKeyCode:82 modifiers:5], OrbisWorkspaceActivities);
+}
+
+- (void)testScreenshotSuggestionsCanBeAssignedWithoutTriggeringSystemCapture
+{
+    NSUserDefaults *defaults = [self displayDefaults];
+    OrbisTestShortcutSettings *editor = [[[OrbisTestShortcutSettings alloc] initWithDefaults:defaults] autorelease];
+    [editor loadViewIfNeeded];
+    for (NSUInteger row = 4; row <= 5; row++) {
+        [editor tableView:editor.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
+        UIViewController *recorder = [(UINavigationController *)editor.recordingNavigation topViewController];
+        [recorder loadViewIfNeeded]; [recorder useSuggested:nil];
+    }
+    [editor savePressed:nil];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"ipados"] autorelease];
+    XCTAssertEqual([saved actionForKeyCode:32 modifiers:9], OrbisWorkspaceScreenshotScreen);
+    XCTAssertEqual([saved actionForKeyCode:33 modifiers:9], OrbisWorkspaceScreenshotWindow);
+}
+
+- (void)testConfiguredScreenshotRestoresThePhysicalRightControlKey
+{
+    [self assignUsage:32 modifiers:OrbisShortcutControl action:OrbisWorkspaceScreenshotScreen];
+    OrbisInputRecorder *recorder = [self recorder];
+    RDPSessionView *view = [self inputViewWithRecorder:recorder];
+    [self sendUsage:UIKeyboardHIDUsageKeyboardRightControl flags:UIKeyModifierControl text:@"" up:NO view:view];
+    [recorder.events removeAllObjects];
+    [self sendUsage:32 flags:UIKeyModifierControl text:@"3" up:NO view:view];
+    XCTAssertEqual(recorder.events.count, 6u);
+    XCTAssertEqualObjects(recorder.events[0][@"scancode"], @0x1D);
+    XCTAssertEqualObjects(recorder.events[0][@"flags"], @(KBD_FLAGS_RELEASE | KBD_FLAGS_EXTENDED));
+    XCTAssertEqualObjects(recorder.events[5][@"flags"], @(KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED));
+    [self sendUsage:32 flags:0 text:@"3" up:YES view:view];
+    [self sendUsage:UIKeyboardHIDUsageKeyboardRightControl flags:0 text:@"" up:YES view:view];
+    XCTAssertEqual(recorder.events.count, 7u);
+    XCTAssertEqualObjects(recorder.events.lastObject[@"flags"], @(KBD_FLAGS_RELEASE | KBD_FLAGS_EXTENDED));
+    [[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
 - (void)testAltShiftArrowsSwitchWorkspacesAndOpenOrCloseActivitiesOncePerPress
 {
+    [self assignWorkspaceArrows];
 	OrbisInputRecorder *recorder = [self recorder];
 	RDPSessionView *view = [self inputViewWithRecorder:recorder];
 	UIKeyModifierFlags flags = UIKeyModifierAlternate | UIKeyModifierShift;
@@ -1057,12 +1131,16 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 
 - (void)testWorkspaceArrowRequiresAltShiftAndCanBeDisabled
 {
+    [self assignWorkspaceArrows];
 	UIKeyModifierFlags both = UIKeyModifierAlternate | UIKeyModifierShift;
 	for (NSNumber *flags in @[ @0, @(UIKeyModifierAlternate), @(UIKeyModifierShift),
 	    @(both | UIKeyModifierControl), @(both | UIKeyModifierCommand), @(both) ])
 	{
 		OrbisInputRecorder *recorder = [self recorder];
-		if (flags.unsignedIntegerValue == both) [recorder.params setBool:NO forKey:@"workspace_shortcuts"];
+		if (flags.unsignedIntegerValue == both) {
+            OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"ipados"] autorelease];
+            [model clearAction:OrbisWorkspacePrevious]; [model save];
+        }
 		RDPSessionView *view = [self inputViewWithRecorder:recorder];
 		[self sendUsage:UIKeyboardHIDUsageKeyboardLeftArrow flags:flags.unsignedIntegerValue text:@"" up:NO view:view];
 		[self sendUsage:UIKeyboardHIDUsageKeyboardLeftArrow flags:0 text:@"" up:YES view:view];
@@ -1082,7 +1160,8 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	[defaults setObject:@{ @"width" : @1920, @"height" : @1080, @"workspaceGesturesEnabled" : @NO }
 	    forKey:@"OrbisIPadDisplaySettings.v1"];
 	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	XCTAssertTrue(settings.workspaceShortcutsEnabled);
+	OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"ipados"] autorelease];
+    XCTAssertEqual(model.bindings.count, 0u);
 	XCTAssertEqual(settings.width, 1920u);
 	XCTAssertTrue([settings saveWithError:nil]);
 	XCTAssertNil([defaults dictionaryForKey:@"OrbisIPadDisplaySettings.v1"][@"workspaceGesturesEnabled"]);
@@ -1120,6 +1199,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 
 - (void)testWorkspaceShortcutRestoresHeldAltAndTheSamePhysicalShift
 {
+    [self assignWorkspaceArrows];
 	for (NSNumber *arrow in @[@(UIKeyboardHIDUsageKeyboardRightArrow), @(UIKeyboardHIDUsageKeyboardDownArrow)])
 	{
 		OrbisInputRecorder *recorder = [self recorder];
@@ -1181,6 +1261,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 
 - (void)testOptionKeyLeftOfOneTogglesActivitiesOnceWithoutTypingOrLeavingAltPressed
 {
+    [self assignUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde modifiers:OrbisShortcutOption action:OrbisWorkspaceActivities];
 	OrbisInputRecorder *recorder = [self recorder];
 	RDPSessionView *view = [self inputViewWithRecorder:recorder];
 	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:UIKeyModifierAlternate text:@"" up:NO view:view];
@@ -1201,6 +1282,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 
 - (void)testActivitiesShortcutAcceptsSpanishISOSectionKeyAndPreservesTheAngleBracketKey
 {
+    [self assignUsage:UIKeyboardHIDUsageKeyboardNonUSBackslash modifiers:OrbisShortcutOption action:OrbisWorkspaceActivities];
 	OrbisInputRecorder *recorder = [self recorder];
 	RDPSessionView *view = [self inputViewWithRecorder:recorder];
 	[self sendUsage:UIKeyboardHIDUsageKeyboardNonUSBackslash flags:UIKeyModifierAlternate text:@"º" up:NO view:view];
@@ -1214,6 +1296,45 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	XCTAssertEqualObjects(recorder.events[0][@"subtype"], @"unicode");
 	XCTAssertEqualObjects(recorder.events[0][@"unicode_char"], @('<'));
 	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testScreenshotBindingsSendBalancedPrintChordsAndConsumeReleases
+{
+    OrbisInputRecorder *recorder = [self recorder];
+    RDPSessionView *view = [self inputViewWithRecorder:recorder];
+    for (NSNumber *action in @[@8, @9]) {
+        [self assignUsage:32 modifiers:OrbisShortcutCommand | OrbisShortcutShift action:action.integerValue];
+        [recorder.events removeAllObjects];
+        [self sendUsage:32 flags:UIKeyModifierCommand | UIKeyModifierShift text:@"3" up:NO view:view];
+        NSUInteger count = recorder.events.count;
+        [self sendUsage:32 flags:UIKeyModifierCommand | UIKeyModifierShift text:@"3" up:NO view:view];
+        [self sendUsage:32 flags:0 text:@"3" up:YES view:view];
+        XCTAssertEqual(recorder.events.count, count);
+        XCTAssertEqual(count, 4u);
+        NSUInteger printIndex = 1;
+        XCTAssertEqualObjects(recorder.events[printIndex][@"scancode"], @0x37);
+        XCTAssertEqualObjects(recorder.events[printIndex][@"flags"], @(KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED));
+        XCTAssertEqualObjects(recorder.events[printIndex + 1][@"flags"], @(KBD_FLAGS_RELEASE | KBD_FLAGS_EXTENDED));
+        if (printIndex) XCTAssertEqualObjects(recorder.events[0][@"scancode"], action.integerValue == 8 ? @0x2A : @0x38);
+        OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"ipados"] autorelease];
+        [model clearAction:action.integerValue]; [model save];
+    }
+    [[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testUnassignedWorkspaceCombinationForwardsOrdinaryArrow
+{
+    OrbisInputRecorder *recorder = [self recorder];
+    RDPSessionView *view = [self inputViewWithRecorder:recorder];
+    [self sendUsage:80 flags:UIKeyModifierAlternate | UIKeyModifierShift text:@"" up:NO view:view];
+    [self sendUsage:80 flags:0 text:@"" up:YES view:view];
+    BOOL foundArrow = NO;
+    for (NSDictionary *event in recorder.events) {
+        if ([event[@"scancode"] isEqual:@0x4B]) foundArrow = YES;
+        XCTAssertNotEqualObjects(event[@"scancode"], @0x5B);
+    }
+    XCTAssertTrue(foundArrow);
+    [[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
 - (void)testOptionBackspaceSendsControlBackspaceWithoutAltOrDuplicateRelease

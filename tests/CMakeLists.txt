@@ -67,6 +67,8 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
     ${keyboard_source}/include ${keyboard_source}/winpr/include
     ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
   target_compile_options(orbis_virtual_display_tests PRIVATE -fno-objc-arc -fblocks)
+  target_compile_definitions(orbis_virtual_display_tests PRIVATE
+    freerdp_input_send_keyboard_event=OrbisRecordWorkspaceKeyboardEvent)
   target_link_libraries(orbis_virtual_display_tests PRIVATE orbis_macos_ui ${APPKIT_FRAMEWORK}
     "-framework IOKit" "-framework CoreGraphics"
     "${keyboard_runtime}/libfreerdp3.3.dylib"
@@ -118,6 +120,7 @@ add_library(
   STATIC
   ${PROJECT_SOURCE_DIR}/shared/Sources/About/OrbisAcknowledgements.m
   ${PROJECT_SOURCE_DIR}/shared/Sources/Profiles/OrbisProfile.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Profiles/OrbisWorkspaceShortcuts.m
   ${PROJECT_SOURCE_DIR}/shared/Sources/Profiles/OrbisDisplayLayout.c
   ${PROJECT_SOURCE_DIR}/shared/Sources/Security/OrbisCredentialStore.m
 )
@@ -145,6 +148,7 @@ add_library(
   STATIC
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisFormControls.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisDisplaySettings.m
+  ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisShortcutsController.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputCaptureSettings.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAboutController.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisLibraryViewController.m
@@ -223,6 +227,7 @@ xctest_add_bundle(
   OrbisSharedTests
   orbis_shared
   ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisSharedTests.m
+  ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisWorkspaceShortcutsTests.m
 )
 target_compile_options(OrbisSharedTests PRIVATE -fno-objc-arc)
 xctest_add_test(unit.shared OrbisSharedTests)

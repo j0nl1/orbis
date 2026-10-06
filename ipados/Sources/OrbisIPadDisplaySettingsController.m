@@ -2,6 +2,7 @@
 #import "OrbisIPadDisplaySettingsController.h"
 #import "OrbisIPadDisplaySettings.h"
 #import "OrbisDiagnostics.h"
+#import "OrbisIPadShortcutsController.h"
 #include <math.h>
 
 @implementation OrbisIPadDisplaySettingsController
@@ -14,13 +15,14 @@
 	UIButton *_presetButton;
 	NSArray *_resolutionCells;
 	CGSize _presetPixelSize;
-	UISwitch *_workspaceSwitch;
+	NSUserDefaults *_defaults;
 	UITableViewCell *_workspaceCell;
 }
 
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults
 {
 	if (!(self = [super initWithStyle:UITableViewStyleInsetGrouped])) return nil;
+	_defaults = [defaults retain];
 	_settings = [[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults];
 	return self;
 }
@@ -79,10 +81,9 @@
 	    [self cellWithTitle:@"Black screen border" control:_paddingSwitch], nil];
 	[self updateResolutionPresets];
 	[self automaticChanged:nil];
-	_workspaceSwitch = [[UISwitch alloc] init];
-	_workspaceSwitch.on = _settings.workspaceShortcutsEnabled;
-	_workspaceSwitch.accessibilityIdentifier = @"keyboard-workspace-shortcuts";
-	_workspaceCell = [[self cellWithTitle:@"Workspace shortcuts" control:_workspaceSwitch] retain];
+	_workspaceCell = [[self cellWithTitle:@"Keyboard shortcuts" control:nil] retain];
+	_workspaceCell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+	_workspaceCell.selectionStyle = UITableViewCellSelectionStyleDefault;
 }
 
 - (void)viewDidLayoutSubviews
@@ -155,13 +156,17 @@
 	if (section == 2)
 		return @"Export recent session events, error codes, and available crash or hang reports. Diagnostics stay on this device until you share them.";
 	if (section == 1)
-		return @"For GNOME: Alt (Option) + Shift + Left/Right switches workspaces; Up toggles Activities; Down sends Escape to close Activities. Alt + the key left of 1 also toggles Activities. Trackpad swipes scroll. Applies to new connections.";
+		return @"Choose your own shortcuts for GNOME Activities and workspaces. None are assigned by default. Trackpad swipes scroll.";
 	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed. The black border adds space around the remote screen to help reach its edges.";
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path
 {
 	[tableView deselectRowAtIndexPath:path animated:YES];
+	if (path.section == 1) {
+		OrbisIPadShortcutsController *controller = [[[OrbisIPadShortcutsController alloc] initWithDefaults:_defaults] autorelease];
+		[self.navigationController pushViewController:controller animated:YES]; return;
+	}
 	if (path.section != 2) return;
 	tableView.userInteractionEnabled = NO;
 	dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -215,7 +220,7 @@
 	[self.view endEditing:YES];
 	_settings.width = _automaticSwitch.on ? 0 : [self dimensionFromField:_widthField];
 	_settings.height = _automaticSwitch.on ? 0 : [self dimensionFromField:_heightField];
-	_settings.workspaceShortcutsEnabled = _workspaceSwitch.on;
+
 	_settings.screenEdgePaddingEnabled = _paddingSwitch.on;
 	NSError *error = nil;
 	if ([_settings saveWithError:&error])
@@ -234,7 +239,7 @@
 - (void)dealloc
 {
 	[_presetButton release]; [_resolutionCells release];
-	[_workspaceSwitch release]; [_workspaceCell release];
+	[_defaults release]; [_workspaceCell release];
 	[_paddingSwitch release];
 	[_settings release]; [_automaticSwitch release]; [_widthField release]; [_heightField release];
 	[super dealloc];

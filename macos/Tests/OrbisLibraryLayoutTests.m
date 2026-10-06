@@ -9,6 +9,8 @@
 #import "OrbisAboutController.h"
 #import "OrbisDisplaySettings.h"
 #import "OrbisInputCapture.h"
+#import "OrbisShortcutsController.h"
+#import "OrbisWorkspaceShortcuts.h"
 
 static NSView *FindViewWithAccessibilityIdentifier(NSView *view, NSString *identifier)
 {
@@ -107,10 +109,54 @@ static void DrainSheetCompletion(void)
 - (void)save:(id)sender;
 @end
 
+@interface OrbisShortcutsController (ShortcutTesting)
+- (void)save:(id)sender;
+- (void)cancel:(id)sender;
+- (void)clear:(NSButton *)sender;
+- (void)useSuggested:(NSButton *)sender;
+@end
+
 @interface OrbisLibraryLayoutTests : XCTestCase
 @end
 
 @implementation OrbisLibraryLayoutTests
+
+- (void)testShortcutRecorderPersistsOnlySavedDraftsAndRejectsCollisions
+{
+    NSString *suite = [@"OrbisMacShortcutTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+    [self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+    OrbisShortcutsController *editor = [[[OrbisShortcutsController alloc] initWithDefaults:defaults] autorelease];
+    NSButton *screen = (NSButton *)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-shortcut-8");
+    NSButton *window = (NSButton *)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-shortcut-9");
+    XCTAssertEqualObjects(screen.title, @"Not assigned");
+    XCTAssertNotNil(window);
+    NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagCommand | NSEventModifierFlagShift timestamp:0 windowNumber:editor.window.windowNumber
+        context:nil characters:@"3" charactersIgnoringModifiers:@"3" isARepeat:NO keyCode:20];
+    [editor.window makeFirstResponder:screen]; [screen keyDown:event];
+    XCTAssertEqualObjects(screen.title, @"⇧⌘3");
+    [editor.window makeFirstResponder:window]; [window keyDown:event];
+    OrbisWorkspaceShortcuts *draft = [editor valueForKey:@"shortcuts"];
+    XCTAssertEqual(draft.bindings.count, 1u);
+    XCTAssertTrue([[editor valueForKey:@"feedback"] stringValue].length > 0);
+    [editor cancel:nil];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual(saved.bindings.count, 0u);
+    [editor save:nil];
+    saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForKeyCode:20 modifiers:9], OrbisWorkspaceScreenshotScreen);
+    NSButton *clear = [[[NSButton alloc] init] autorelease]; clear.tag = 8;
+    [editor clear:clear]; [editor save:nil];
+    saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual(saved.bindings.count, 0u);
+    NSButton *suggested = [[[NSButton alloc] init] autorelease];
+    suggested.tag = 8; [editor useSuggested:suggested];
+    suggested.tag = 9; [editor useSuggested:suggested]; [editor save:nil];
+    saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForKeyCode:20 modifiers:9], OrbisWorkspaceScreenshotScreen);
+    XCTAssertEqual([saved actionForKeyCode:21 modifiers:9], OrbisWorkspaceScreenshotWindow);
+}
 
 + (void)setUp
 {

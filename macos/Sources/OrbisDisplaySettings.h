@@ -37,6 +37,7 @@
     NSPopUpButton *_modes[2];
     NSTextField *_widths[2], *_heights[2], *_validationLabel;
     NSButton *_captureInput;
+    NSWindowController *_shortcutsController;
 }
 - (instancetype)initWithSettings:(OrbisDisplaySettings *)settings;
 - (void)beginSheetForWindow:(NSWindow *)window;

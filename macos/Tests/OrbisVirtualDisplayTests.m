@@ -8,6 +8,7 @@
 #import "MRDPView.h"
 #import "OrbisRemoteView.h"
 #import "OrbisAppDelegate.h"
+#import "OrbisWorkspaceShortcuts.h"
 #import <objc/runtime.h>
 
 /* Give the SSH fixture a deterministic active window without replacing menu or session code. */
@@ -63,6 +64,30 @@ void OrbisRecordMouseButton(void *context, int button, int x, int y, BOOL down)
 {
     mfc = fixture; context = (rdpContext *)fixture; instance = context->instance;
     [self setIs_connected:1];
+}
+@end
+
+static NSMutableArray *workspaceKeyboardEvents;
+BOOL OrbisRecordWorkspaceKeyboardEvent(rdpInput *input, UINT16 flags, UINT8 code)
+{
+    (void)input;
+    [workspaceKeyboardEvents addObject:@{ @"flags": @(flags), @"code": @(code) }];
+    return TRUE;
+}
+@interface OrbisShortcutFixtureView : OrbisRemoteView
+{
+    mfContext _fixture; freerdp _instance; rdpInput _input;
+}
+@end
+@implementation OrbisShortcutFixtureView
+- (instancetype)init
+{
+    if (!(self = [super initWithFrame:NSMakeRect(0, 0, 800, 600)])) return nil;
+    mfc = &_fixture; context = (rdpContext *)mfc; instance = &_instance;
+    instance->context = context; context->input = &_input; context->instance = instance;
+    mfc->appleKeyboardType = APPLE_KEYBOARD_TYPE_ANSI;
+    [self setIs_connected:1]; [self setMapsCommandShortcutsToControl:YES];
+    return self;
 }
 @end
 
@@ -379,6 +404,58 @@ static void CheckResolutionMenu(OrbisAppDelegate *delegate, NSMenu *menu)
     }
 }
 
+static NSEvent *ShortcutEvent(NSEventType type, NSUInteger code, NSEventModifierFlags flags)
+{
+    return [NSEvent keyEventWithType:type location:NSZeroPoint modifierFlags:flags timestamp:0
+        windowNumber:0 context:nil characters:@"3" charactersIgnoringModifiers:@"3" isARepeat:NO keyCode:code];
+}
+static void CheckConfiguredShortcuts(void)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSString *key = @"OrbisWorkspaceShortcuts.v1.macos";
+    id saved = [[defaults objectForKey:key] retain]; [defaults removeObjectForKey:key];
+    workspaceKeyboardEvents = [[NSMutableArray alloc] init];
+    OrbisShortcutFixtureView *view = [[OrbisShortcutFixtureView alloc] init];
+    [view keyDown:ShortcutEvent(NSEventTypeKeyDown, 20, 0)];
+    [view keyUp:ShortcutEvent(NSEventTypeKeyUp, 20, 0)];
+    Require(workspaceKeyboardEvents.count == 2 && [workspaceKeyboardEvents[0][@"code"] intValue] == 0x04,
+        "Unassigned keys must retain ordinary remote typing");
+    for (NSNumber *action in @[@5, @6, @1, @2, @8, @9]) {
+        OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+        [model assignKeyCode:20 modifiers:OrbisShortcutCommand | OrbisShortcutShift label:@"Command Shift 3" toAction:action.integerValue error:nil];
+        [model save];
+        [workspaceKeyboardEvents removeAllObjects];
+        [view keyDown:ShortcutEvent(NSEventTypeKeyDown, 20, NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+        NSUInteger count = workspaceKeyboardEvents.count;
+        [view keyDown:ShortcutEvent(NSEventTypeKeyDown, 20, NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+        [view keyUp:ShortcutEvent(NSEventTypeKeyUp, 20, 0)];
+        [view flagsChanged:ShortcutEvent(NSEventTypeFlagsChanged, 55, 0)];
+        Require(workspaceKeyboardEvents.count == count, "Custom repeats and late key releases must not send stray events");
+        Require(count == (action.integerValue == 5 || action.integerValue == 6 ? 2u : 4u),
+            "Custom actions must send complete canonical GNOME chords");
+        if (action.integerValue >= 8) {
+            Require([workspaceKeyboardEvents[1][@"code"] intValue] == 0x37 &&
+                [workspaceKeyboardEvents[1][@"flags"] intValue] == (KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED),
+                "Screenshot actions must send extended Print Screen");
+            Require([workspaceKeyboardEvents[0][@"code"] intValue] == (action.integerValue == 8 ? 0x2A : 0x38),
+                "Remote screenshots must select screen with Shift or window with Alt");
+        }
+        [workspaceKeyboardEvents removeAllObjects];
+        CGEventRef event = CGEventCreateKeyboardEvent(NULL, 20, true);
+        CGEventSetFlags(event, kCGEventFlagMaskCommand | kCGEventFlagMaskShift);
+        [view sendCapturedEvent:event windowPoint:NSZeroPoint];
+        count = workspaceKeyboardEvents.count;
+        [view sendCapturedEvent:event windowPoint:NSZeroPoint];
+        CGEventSetType(event, kCGEventKeyUp); CGEventSetFlags(event, 0);
+        [view sendCapturedEvent:event windowPoint:NSZeroPoint]; CFRelease(event);
+        Require(workspaceKeyboardEvents.count == count, "Physical capture must consume custom key repeats and releases");
+        Require(count >= 2, "Custom actions must also run during full screen physical capture");
+        [model clearAction:action.integerValue]; [model save];
+    }
+    [view releaseCapturedInput]; [view release]; [workspaceKeyboardEvents release]; workspaceKeyboardEvents = nil;
+    if (saved) [defaults setObject:saved forKey:key]; else [defaults removeObjectForKey:key]; [saved release];
+}
+
 int main(void)
 {
     @autoreleasepool
@@ -462,6 +539,7 @@ int main(void)
         CheckResolutionMenu(delegate, resolutionMenu);
         CheckAutomaticWindowResolution(delegate, resolutionMenu);
         CheckConnectingOverlayRemoval();
+        CheckConfiguredShortcuts();
         [delegate release]; [pointerEvents release];
         if (originalSettings) [[NSUserDefaults standardUserDefaults] setObject:originalSettings forKey:@"OrbisDisplaySettings.v1"];
         else [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OrbisDisplaySettings.v1"];

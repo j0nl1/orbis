@@ -7,4 +7,6 @@ typedef NS_ENUM(NSInteger, OrbisIPadWorkspaceAction) {
 	OrbisIPadWorkspaceNext = 2,
 	OrbisIPadWorkspaceActivities = 5,
 	OrbisIPadWorkspaceCloseActivities = 6,
+	OrbisIPadWorkspaceScreenshotScreen = 8,
+	OrbisIPadWorkspaceScreenshotWindow = 9,
 };

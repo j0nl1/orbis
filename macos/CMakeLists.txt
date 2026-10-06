@@ -44,6 +44,10 @@ find_library(NETWORK_FRAMEWORK Network REQUIRED)
 find_library(METRICKIT_FRAMEWORK MetricKit REQUIRED)
 
 set(ORBIS_MACOS_SOURCES
+    Sources/OrbisShortcutsController.h
+    Sources/OrbisShortcutsController.m
+    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisWorkspaceShortcuts.h
+    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisWorkspaceShortcuts.m
     ${ORBIS_SHARED_DIR}/Sources/Diagnostics/OrbisDiagnostics.h
     ${ORBIS_SHARED_DIR}/Sources/Diagnostics/OrbisDiagnostics.m
     Sources/main.m

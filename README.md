@@ -75,6 +75,27 @@ Both apps use `com.dnexus.orbis`. Local versions use the UTC build date:
 add a revision to the build number (`YYYYMMDD.N`) so several updates can be
 published on the same day.
 
+## Remote keyboard shortcuts
+
+Open **Settings → Keyboard shortcuts** on iPad or **Display Settings → Keyboard
+shortcuts** on Mac to assign combinations for opening or closing GNOME Activities,
+changing workspaces, capturing the entire remote screen, or capturing the active
+remote window. All six actions start unassigned. Select an action, press the desired
+combination, and save. Clear removes an assignment; duplicate combinations are rejected.
+The screenshot actions also offer explicit Command-Shift-3 and Command-Shift-4
+assignment buttons; these select the remote screen and remote window respectively,
+without triggering a local screenshot while recording the shortcut. iPadOS may
+reserve those combinations, so choose alternatives if it captures them locally.
+
+Copy, paste, and text deletion retain their usual translations unless you explicitly
+assign their combination to a custom action. Custom shortcuts can override typing,
+editing, and system functions. Some combinations are reserved by the operating
+system and never reach Orbis. On Mac, forwarding system shortcuts such as
+Command-Shift-3 requires full screen input capture and its macOS permission.
+Screenshots are saved on the Linux computer; image clipboard transfer is not supported.
+The screenshot actions use GNOME's Shift-Print and Alt-Print bindings, so changes
+to those bindings on the remote computer affect their behavior.
+
 ## macOS updates
 
 GitHub release builds include **Orbis > Check for Updates…** and check for new

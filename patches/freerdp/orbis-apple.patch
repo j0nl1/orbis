@@ -1439,7 +1439,7 @@ index 1f4f473..cc28352 100644
  	 Called when the application is about to terminate.
  	 Save data if appropriate.
 diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
-index b1cc404..0ca5a74 100644
+index b1cc404..62fb92b 100644
 --- a/client/iOS/CMakeLists.txt
 +++ b/client/iOS/CMakeLists.txt
 @@ -30,6 +30,11 @@ project(iFreeRDP VERSION ${FREERDP_DEFAULT_PROJECT_VERSION})
@@ -1488,10 +1488,14 @@ index b1cc404..0ca5a74 100644
  
  # Dependencies
  include(ExternalDeps)
-@@ -115,6 +126,17 @@ set(SRCS
+@@ -115,6 +126,21 @@ set(SRCS
      Controllers/CredentialsEditorController.m
      Controllers/CredentialsInputController.h
      Controllers/CredentialsInputController.m
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadShortcutsController.h
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadShortcutsController.m
++    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisWorkspaceShortcuts.h
++    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisWorkspaceShortcuts.m
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisController.h
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisController.m
 +    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadDisplaySettings.h
@@ -1506,7 +1510,7 @@ index b1cc404..0ca5a74 100644
      Controllers/EditorBaseController.h
      Controllers/EditorBaseController.m
      Controllers/EditorSelectionController.h
-@@ -123,14 +145,14 @@ set(SRCS
+@@ -123,14 +149,14 @@ set(SRCS
      Controllers/EncryptionController.m
      Controllers/MainTabBarController.h
      Controllers/MainTabBarController.m
@@ -1523,7 +1527,7 @@ index b1cc404..0ca5a74 100644
      FreeRDP/ios_cliprdr.h
      FreeRDP/ios_cliprdr.m
      FreeRDP/ios_freerdp_events.h
-@@ -155,6 +177,21 @@ set(SRCS
+@@ -155,6 +181,21 @@ set(SRCS
      Models/Encryptor.m
      Models/GlobalDefaults.h
      Models/GlobalDefaults.m
@@ -1545,7 +1549,7 @@ index b1cc404..0ca5a74 100644
      Models/RDPKeyboard.h
      Models/RDPKeyboard.m
      Models/RDPSession.h
-@@ -204,10 +241,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
+@@ -204,10 +245,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
      Resources/EditSubEditTableViewCell.xib
      Resources/EditTextTableViewCell.xib
      Resources/MainWindow.xib
@@ -1556,7 +1560,7 @@ index b1cc404..0ca5a74 100644
  )
  
  set(IOS_CLIENT_RESOURCES_PNGS
-@@ -224,6 +259,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
+@@ -224,6 +263,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
      Resources/alert-window-landscape.png
      Resources/alert-window.png
      Resources/cancel_button_background.png
@@ -1564,7 +1568,7 @@ index b1cc404..0ca5a74 100644
      Resources/Default@2x.png
      Resources/Default-568h@2x.png
      Resources/Default-Landscape@2x~ipad.png
-@@ -287,6 +323,17 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
+@@ -287,6 +327,17 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
  find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
  find_library(WEBKIT_FRAMEWORK WebKit REQUIRED)
  find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
@@ -1582,7 +1586,7 @@ index b1cc404..0ca5a74 100644
  
  set(EXTRA_LIBS
      ${FOUNDATION_FRAMEWORK}
-@@ -298,9 +345,11 @@ set(EXTRA_LIBS
+@@ -298,9 +349,11 @@ set(EXTRA_LIBS
      ${SYSTEMCONFIGURATION_FRAMEWORK}
      ${WEBKIT_FRAMEWORK}
      ${GAMECONTROLLER_FRAMEWORK}
@@ -1595,7 +1599,7 @@ index b1cc404..0ca5a74 100644
                ${IOS_CLIENT_RESOURCES_DIR}/en.lproj ${IOS_CLIENT_DIR}/Defaults.plist
  )
  
-@@ -325,7 +374,11 @@ add_executable(
+@@ -325,7 +378,11 @@ add_executable(
  add_dependencies(${PROJECT_NAME} freerdp)
  
  set_target_properties(
@@ -1608,7 +1612,7 @@ index b1cc404..0ca5a74 100644
                               RESOURCE "${RESOURCES}"
  )
  
-@@ -347,6 +400,26 @@ if(TARGET winpr3-lib)
+@@ -347,6 +404,26 @@ if(TARGET winpr3-lib)
    list(APPEND _ios_embed_frameworks "${_ios_winpr_runtime_location}")
  endif()
  
@@ -1635,7 +1639,7 @@ index b1cc404..0ca5a74 100644
  if(AVCODEC_LIBRARIES MATCHES "\\.framework/")
    get_filename_component(_ios_ffmpeg_framework "${AVCODEC_LIBRARIES}" DIRECTORY)
    list(APPEND _ios_embed_frameworks "${_ios_ffmpeg_framework}")
-@@ -358,3 +431,11 @@ if(_ios_embed_frameworks)
+@@ -358,3 +435,11 @@ if(_ios_embed_frameworks)
                                 XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
    )
  endif()
@@ -3270,18 +3274,19 @@ index 722bccc..41b32e1 100644
  - (void)setRemoteCursorPosition:(CGPoint)position;
  - (void)showRemoteCursor;
 diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView.m
-index c7e2f41..126ea40 100644
+index c7e2f41..776ff0a 100644
 --- a/client/iOS/Views/RDPSessionView.m
 +++ b/client/iOS/Views/RDPSessionView.m
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,8 @@
   */
  
  #import "RDPSessionView.h"
 +#import "OrbisDiagnostics.h"
++#import "OrbisWorkspaceShortcuts.h"
  #import "RDPCursor.h"
  #import "RDPKeyboard.h"
  
-@@ -39,10 +40,20 @@
+@@ -39,10 +41,22 @@
  	RDPSessionDisplayLinkTarget *_displayLinkTarget;
  	CGRect _pendingDirtyRect;
  	BOOL _hasPendingDirtyRect;
@@ -3299,10 +3304,12 @@ index c7e2f41..126ea40 100644
 +	NSMutableSet *_optionConsumedKeys;
 +	BOOL _remoteOptionDown;
 +	NSMutableSet *_remoteShiftKeys;
++	NSMutableSet *_remoteControlKeys;
++	NSMutableSet *_workspaceConsumedKeys;
  }
  
  - (void)configureMetal;
-@@ -75,6 +86,8 @@
+@@ -75,6 +89,8 @@
  
  @implementation RDPSessionView
  
@@ -3311,7 +3318,7 @@ index c7e2f41..126ea40 100644
  + (Class)layerClass
  {
  	return [CAMetalLayer class];
-@@ -84,7 +97,6 @@
+@@ -84,7 +100,6 @@
  {
  	_session = session;
  	[self configureDesktopTexture];
@@ -3319,7 +3326,7 @@ index c7e2f41..126ea40 100644
  }
  
  - (void)awakeFromNib
-@@ -99,9 +111,17 @@
+@@ -99,9 +114,19 @@
  	_session = nil;
  	_pendingDirtyRect = CGRectNull;
  	_hasPendingDirtyRect = NO;
@@ -3334,10 +3341,12 @@ index c7e2f41..126ea40 100644
 +	_commandConsumedKeys = [[NSMutableSet alloc] init];
 +	_optionConsumedKeys = [[NSMutableSet alloc] init];
 +	_remoteShiftKeys = [[NSMutableSet alloc] init];
++	_remoteControlKeys = [[NSMutableSet alloc] init];
++	_workspaceConsumedKeys = [[NSMutableSet alloc] init];
  	_cursorImageView = [[UIImageView alloc] initWithFrame:CGRectZero];
  	[_cursorImageView setUserInteractionEnabled:NO];
  	[_cursorImageView setContentMode:UIViewContentModeTopLeft];
-@@ -258,6 +278,10 @@
+@@ -258,6 +283,10 @@
  	[_displayLink setPaused:YES];
  	_hasPendingDirtyRect = NO;
  	_pendingDirtyRect = CGRectNull;
@@ -3348,7 +3357,7 @@ index c7e2f41..126ea40 100644
  	[_desktopTexture release];
  	_desktopTexture = nil;
  }
-@@ -277,6 +301,12 @@
+@@ -277,6 +306,12 @@
  	[self scheduleRender];
  }
  
@@ -3361,7 +3370,7 @@ index c7e2f41..126ea40 100644
  - (void)scheduleRender
  {
  	if ([self window] && _displayLink && _hasPendingDirtyRect)
-@@ -360,6 +390,23 @@
+@@ -360,6 +395,23 @@
  	[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
  	[encoder endEncoding];
  	[commandBuffer presentDrawable:drawable];
@@ -3385,7 +3394,7 @@ index c7e2f41..126ea40 100644
  	[commandBuffer commit];
  
  	if (!_hasPendingDirtyRect)
-@@ -454,6 +501,114 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -454,6 +506,131 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	}
  }
  
@@ -3417,19 +3426,34 @@ index c7e2f41..126ea40 100644
 +	BOOL activities = action == OrbisIPadWorkspaceActivities;
 +	BOOL closeActivities = action == OrbisIPadWorkspaceCloseActivities;
 +	BOOL previous = action == OrbisIPadWorkspacePrevious;
-+	if (!activities && !closeActivities && !previous && action != OrbisIPadWorkspaceNext)
++	BOOL screenshot = action >= OrbisIPadWorkspaceScreenshotScreen && action <= OrbisIPadWorkspaceScreenshotWindow;
++	if (!screenshot && !activities && !closeActivities && !previous && action != OrbisIPadWorkspaceNext)
 +		return;
 +	RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
-+	if (_commandControlDown || keyboard.ctrlPressed || keyboard.winPressed) return;
++	NSMutableArray *controls = [NSMutableArray arrayWithArray:_remoteControlKeys.allObjects];
++	if ((_commandControlDown || keyboard.ctrlPressed) && ![controls containsObject:@(VK_LCONTROL)])
++		[controls addObject:@(VK_LCONTROL)];
++	for (NSNumber *control in controls) [keyboard sendVirtualKey:control.intValue up:YES];
++	BOOL restoreWin = keyboard.winPressed;
++	if (restoreWin) [keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:YES];
 +	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"workspace.action" values:@{ @"action" : @(action) }];
-+	// Local Alt and Shift select the action without modifying the remote Super shortcut.
++	// Local modifiers select the action without altering the remote chord.
 +	BOOL restoreAlt = _remoteOptionDown || keyboard.altPressed;
 +	NSArray *shifts = [_remoteShiftKeys allObjects];
 +	if (restoreAlt) [keyboard sendVirtualKey:VK_LMENU up:YES];
 +	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:YES];
 +	if (keyboard.shiftPressed && ![shifts containsObject:@(VK_LSHIFT)])
 +		[keyboard sendVirtualKey:VK_LSHIFT up:YES];
-+	if (closeActivities)
++	if (screenshot)
++	{
++		int modifier = action == OrbisIPadWorkspaceScreenshotScreen ? VK_LSHIFT :
++		    (action == OrbisIPadWorkspaceScreenshotWindow ? VK_LMENU : 0);
++		if (modifier) [keyboard sendVirtualKey:modifier up:NO];
++		[keyboard sendVirtualKey:(VK_SNAPSHOT | KBDEXT) up:NO];
++		[keyboard sendVirtualKey:(VK_SNAPSHOT | KBDEXT) up:YES];
++		if (modifier) [keyboard sendVirtualKey:modifier up:YES];
++	}
++	else if (closeActivities)
 +	{
 +		[keyboard sendVirtualKey:VK_ESCAPE up:NO];
 +		[keyboard sendVirtualKey:VK_ESCAPE up:YES];
@@ -3449,6 +3473,8 @@ index c7e2f41..126ea40 100644
 +		[keyboard sendVirtualKey:VK_LSHIFT up:NO];
 +	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:NO];
 +	if (restoreAlt) [keyboard sendVirtualKey:VK_LMENU up:NO];
++	for (NSNumber *control in controls) [keyboard sendVirtualKey:control.intValue up:NO];
++	if (restoreWin) [keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:NO];
 +}
 +
 +- (void)sendDeleteShortcutToLineStart:(BOOL)lineStart
@@ -3500,12 +3526,29 @@ index c7e2f41..126ea40 100644
  - (BOOL)canBecomeFirstResponder
  {
  	return _hardwareKeyboardActive;
-@@ -467,7 +622,177 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -467,7 +644,170 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		if (key == nil)
  			continue;
  
 -		int vk = VKFromHIDUsage(key.keyCode);
 +		UIKeyboardHIDUsage usage = key.keyCode;
++		if ([_workspaceConsumedKeys containsObject:@(usage)]) {
++			if (up) [_workspaceConsumedKeys removeObject:@(usage)];
++			continue;
++		}
++		if (!up && usage < 224) {
++			OrbisShortcutModifiers modifiers = ((key.modifierFlags & UIKeyModifierShift) ? OrbisShortcutShift : 0) |
++			    ((key.modifierFlags & UIKeyModifierControl) ? OrbisShortcutControl : 0) |
++			    ((key.modifierFlags & UIKeyModifierAlternate) ? OrbisShortcutOption : 0) |
++			    ((key.modifierFlags & UIKeyModifierCommand) ? OrbisShortcutCommand : 0);
++			OrbisWorkspaceShortcuts *shortcuts = [[[OrbisWorkspaceShortcuts alloc]
++			    initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"ipados"] autorelease];
++			OrbisWorkspaceAction action = [shortcuts actionForKeyCode:usage modifiers:modifiers];
++			if (action != OrbisWorkspaceNone) {
++				[self performWorkspaceAction:(OrbisIPadWorkspaceAction)action];
++				[_workspaceConsumedKeys addObject:@(usage)]; continue;
++			}
++		}
 +		BOOL isCommandKey = usage == UIKeyboardHIDUsageKeyboardLeftGUI ||
 +		                    usage == UIKeyboardHIDUsageKeyboardRightGUI;
 +		if (isCommandKey)
@@ -3602,37 +3645,9 @@ index c7e2f41..126ea40 100644
 +			[_optionConsumedKeys removeObject:physicalKey];
 +			continue;
 +		}
-+		BOOL workspaceArrow = usage == UIKeyboardHIDUsageKeyboardLeftArrow ||
-+		    usage == UIKeyboardHIDUsageKeyboardRightArrow || usage == UIKeyboardHIDUsageKeyboardUpArrow ||
-+		    usage == UIKeyboardHIDUsageKeyboardDownArrow;
-+		// Consume repeats even when the modifiers are released before the arrow.
-+		if (!up && workspaceArrow && [_optionConsumedKeys containsObject:physicalKey]) continue;
 +		if (!up && (key.modifierFlags & UIKeyModifierAlternate) &&
 +		    !(key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierControl)))
 +		{
-+			BOOL shortcutsEnabled = [[_session params] boolForKey:@"workspace_shortcuts"];
-+			if (shortcutsEnabled && workspaceArrow && (key.modifierFlags & UIKeyModifierShift))
-+			{
-+				OrbisIPadWorkspaceAction action = usage == UIKeyboardHIDUsageKeyboardUpArrow ?
-+				    OrbisIPadWorkspaceActivities : (usage == UIKeyboardHIDUsageKeyboardDownArrow ?
-+				    OrbisIPadWorkspaceCloseActivities : (usage == UIKeyboardHIDUsageKeyboardLeftArrow ?
-+				    OrbisIPadWorkspacePrevious : OrbisIPadWorkspaceNext));
-+				[self performWorkspaceAction:action];
-+				[_optionConsumedKeys addObject:physicalKey];
-+				continue;
-+			}
-+			NSString *unmodified = key.charactersIgnoringModifiers;
-+			BOOL activitiesKey = (usage == UIKeyboardHIDUsageKeyboardGraveAccentAndTilde &&
-+			    ![unmodified isEqualToString:@"<"] && ![unmodified isEqualToString:@">"]) ||
-+			    (usage == UIKeyboardHIDUsageKeyboardNonUSBackslash && unmodified.length == 1 &&
-+			     [unmodified rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"ºª§±"]].location != NSNotFound);
-+			if (shortcutsEnabled && activitiesKey && !(key.modifierFlags & UIKeyModifierShift))
-+			{
-+				if (![_optionConsumedKeys containsObject:physicalKey])
-+					[self performWorkspaceAction:OrbisIPadWorkspaceActivities];
-+				[_optionConsumedKeys addObject:physicalKey];
-+				continue;
-+			}
 +			if (usage == UIKeyboardHIDUsageKeyboardDeleteOrBackspace)
 +			{
 +				if (_remoteOptionDown) [keyboard sendVirtualKey:VK_LMENU up:YES];
@@ -3676,10 +3691,14 @@ index c7e2f41..126ea40 100644
 +			if (up) [_remoteShiftKeys removeObject:@(vk)];
 +			else [_remoteShiftKeys addObject:@(vk)];
 +		}
++		if (vk == VK_LCONTROL || vk == (VK_RCONTROL | KBDEXT)) {
++			if (up) [_remoteControlKeys removeObject:@(vk)];
++			else [_remoteControlKeys addObject:@(vk)];
++		}
  		if (vk != 0)
  			[[RDPKeyboard getSharedRDPKeyboard] sendVirtualKey:vk up:up];
  	}
-@@ -481,6 +806,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -481,6 +821,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		[super pressesBegan:presses withEvent:event];
  }
  
@@ -3692,7 +3711,7 @@ index c7e2f41..126ea40 100644
  - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
  {
  	if (_hardwareKeyboardActive)
-@@ -491,6 +822,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -491,6 +837,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  
  - (void)dealloc
  {
@@ -3700,7 +3719,7 @@ index c7e2f41..126ea40 100644
  	[_displayLinkTarget clearView];
  	[_displayLink invalidate];
  	[_displayLink release];
-@@ -500,6 +832,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -500,6 +847,11 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	[_commandQueue release];
  	[_metalDevice release];
  	[_cursorImageView release];
@@ -3708,6 +3727,7 @@ index c7e2f41..126ea40 100644
 +	[_commandConsumedKeys release];
 +	[_optionConsumedKeys release];
 +	[_remoteShiftKeys release];
++	[_remoteControlKeys release]; [_workspaceConsumedKeys release];
  	[super dealloc];
  }
  

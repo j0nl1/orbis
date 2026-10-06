@@ -5,6 +5,7 @@ execute_process(COMMAND xcrun --sdk iphonesimulator --show-sdk-platform-path
   COMMAND_ERROR_IS_FATAL ANY)
 set(ORBIS_XCTEST_FRAMEWORKS "${ORBIS_SIMULATOR_PLATFORM}/Developer/Library/Frameworks")
 add_library(OrbisIPadTests MODULE OrbisIPadTests.m ${ORBIS_SHARED_DIR}/Tests/OrbisDiagnosticsTests.m
+  ${ORBIS_SHARED_DIR}/Tests/OrbisWorkspaceShortcutsTests.m
   ${IOS_CLIENT_FREERDP_DIR}/ios_cliprdr.m)
 set_source_files_properties(${ORBIS_SHARED_DIR}/Tests/OrbisDiagnosticsTests.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fblocks")
 # Xcode installs app-hosted tests relative to the host app in this build directory.
