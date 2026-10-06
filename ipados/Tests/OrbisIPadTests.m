@@ -22,6 +22,7 @@
 #import "Bookmark.h"
 #import "ConnectionParams.h"
 #include <winpr/input.h>
+#include <freerdp/error.h>
 #include <math.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -33,6 +34,10 @@
 - (void)setConnectionBusy:(BOOL)busy status:(NSString *)status;
 - (void)refreshProfileUI;
 - (void)sessionDidEnd:(NSNotification *)notification;
+- (void)presentRecoveryForSession:(RDPSession *)session profileIdentifier:(NSString *)identifier;
+- (void)retryProfileWithIdentifier:(NSString *)identifier automatically:(BOOL)automatic;
+- (void)recoveryTimerFired:(NSTimer *)timer;
+- (void)clearRecoveryAlert;
 - (void)prepareStatusForCardViews:(NSDictionary *)views selected:(BOOL)selected;
 - (void)startHealthMonitoring;
 - (void)applicationWillResignActive:(NSNotification *)notification;
@@ -92,11 +97,67 @@
 	return YES;
 }
 @end
+@interface OrbisTestRecoveryLibrary : OrbisTestLibrary
+@property(nonatomic, retain) UIAlertController *shownAlert;
+@property(nonatomic) NSUInteger retries;
+@property(nonatomic) BOOL missingPassword;
+- (void)startRealConnectionWithPassword:(NSString *)password;
+@end
+@implementation OrbisTestRecoveryLibrary
+- (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion
+{
+	(void)animated;
+	self.shownAlert = (UIAlertController *)controller;
+	if (completion) completion();
+}
+- (UIViewController *)presentedViewController { return self.shownAlert; }
+- (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion
+{
+	(void)animated;
+	self.shownAlert = nil;
+	if (completion) completion();
+}
+- (NSString *)savedPasswordForProfile:(OrbisProfile *)profile error:(NSError **)error
+{
+	(void)profile; (void)error;
+	return self.missingPassword ? nil : @"test-password";
+}
+- (void)startConnectionWithPassword:(NSString *)password
+{
+	(void)password;
+	self.retries++;
+}
+- (void)startRealConnectionWithPassword:(NSString *)password
+{
+	[super startConnectionWithPassword:password];
+}
+- (void)dealloc { [_shownAlert release]; [super dealloc]; }
+@end
+
+@interface OrbisTestRecoveryNavigation : UINavigationController
+@property(nonatomic, retain) UIViewController *pushedController;
+@end
+@implementation OrbisTestRecoveryNavigation
+- (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated
+{
+	if ([controller isKindOfClass:[RDPSessionViewController class]])
+		self.pushedController = controller; // Capture the native controller without opening a network connection.
+	else
+		[super pushViewController:controller animated:animated];
+}
+- (void)dealloc { [_pushedController release]; [super dealloc]; }
+@end
+
 @interface OrbisTestProfileStore : NSObject
 @property(nonatomic, retain) OrbisProfile *selectedProfile;
 @property(nonatomic, retain) NSArray *profiles;
 @end
 @implementation OrbisTestProfileStore
+- (void)selectProfileWithIdentifier:(NSString *)identifier
+{
+	for (OrbisProfile *profile in self.profiles)
+		if ([profile.identifier isEqual:identifier]) self.selectedProfile = profile;
+}
 - (void)dealloc { [_selectedProfile release]; [_profiles release]; [super dealloc]; }
 @end
 
@@ -229,6 +290,21 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	return CHANNEL_RC_OK;
 }
 
+static UINT OrbisCaptureDisplayLayout(DispClientContext *disp, UINT32 count,
+                                     DISPLAY_CONTROL_MONITOR_LAYOUT *layouts)
+{
+	NSMutableArray *sent = (NSMutableArray *)disp->handle;
+	[sent addObject:@{ @"width" : @(layouts[0].Width), @"height" : @(layouts[0].Height), @"count" : @(count) }];
+	return CHANNEL_RC_OK;
+}
+
+static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count,
+                                         DISPLAY_CONTROL_MONITOR_LAYOUT *layouts)
+{
+	OrbisCaptureDisplayLayout(disp, count, layouts);
+	return [(NSMutableArray *)disp->handle count] == 1 ? CHANNEL_RC_BAD_CHANNEL : CHANNEL_RC_OK;
+}
+
 @interface OrbisIPadTests : XCTestCase <OrbisProfileEditorDelegate>
 @property(nonatomic, retain) OrbisProfile *savedProfile;
 @property(nonatomic, retain) NSDictionary *savedToken;
@@ -262,6 +338,228 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	return defaults;
 }
 
+- (void)testInitialDisplayRequestsFromBothCallersSendOnlyOneLayout
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	NSMutableArray *sent = [NSMutableArray array];
+	DispClientContext disp = { 0 };
+	disp.handle = sent;
+	disp.SendMonitorLayout = OrbisCaptureDisplayLayout;
+	info->context->disp = &disp;
+	// Exercise the viewport-before-capabilities order through both production paths.
+	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 0u);
+	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 1u);
+	info->context->disp = NULL;
+}
+
+- (void)testDisplayCapabilitiesBeforeViewportDoNotDuplicateAndAReplacementChannelResends
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	NSMutableArray *sent = [NSMutableArray array];
+	DispClientContext disp = { 0 };
+	disp.handle = sent; disp.SendMonitorLayout = OrbisCaptureDisplayLayout;
+	info->context->disp = &disp;
+	freerdp_settings_set_uint32(info->_context->settings, FreeRDP_DesktopWidth, 2050);
+	freerdp_settings_set_uint32(info->_context->settings, FreeRDP_DesktopHeight, 1536);
+	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 1u);
+	XCTAssertEqual(ios_events_send_display_resize(info, 1920, 1080), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 2u);
+	ios_events_display_control_reset(info);
+	info->context->disp = NULL;
+	XCTAssertEqual(ios_events_send_display_resize(info, 2560, 1600), CHANNEL_RC_OK);
+	info->context->disp = &disp;
+	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 3u);
+	XCTAssertEqualObjects(sent.lastObject[@"width"], @2560);
+	XCTAssertNotEqual(ios_events_send_display_resize(info, 1, 1600), CHANNEL_RC_OK);
+	ios_events_display_control_reset(info);
+	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqualObjects(sent.lastObject[@"width"], @2560);
+	info->context->disp = NULL;
+}
+
+- (void)testRemoteErrorSnapshotSurvivesTeardownAndAmbiguousLogoffNeverRetriesAutomatically
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	freerdp_set_error_info(info->_context->rdp, ERRINFO_LOGOFF_BY_USER);
+	[session recordRDPStop:OrbisRDPStopReceiveFailed waitError:0];
+	freerdp_set_error_info(info->_context->rdp, 0);
+	[session sessionDidDisconnect];
+	XCTAssertFalse(session.connectionEndedIntentionally);
+	XCTAssertFalse(session.canAutomaticallyReconnect);
+	XCTAssertTrue([session.connectionEndMessage containsString:@"ended the session"]);
+}
+
+- (void)testAutomaticRecoveryUsesExplicitTransientErrorsAndExcludesCredentialsAndCancellation
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	freerdp_set_error_info(info->_context->rdp, ERRINFO_GRAPHICS_SUBSYSTEM_FAILED);
+	[session recordRDPStop:OrbisRDPStopReceiveFailed waitError:0];
+	XCTAssertTrue(session.canAutomaticallyReconnect);
+	XCTAssertTrue([session.connectionEndMessage containsString:@"graphics"]);
+	freerdp_set_error_info(info->_context->rdp, 0);
+	freerdp_set_last_error(info->_context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
+	[session recordRDPStop:OrbisRDPStopReceiveFailed waitError:0];
+	XCTAssertTrue(session.canAutomaticallyReconnect);
+	for (NSNumber *code in @[ @(FREERDP_ERROR_AUTHENTICATION_FAILED), @(FREERDP_ERROR_CONNECT_WRONG_PASSWORD),
+	    @(FREERDP_ERROR_TLS_CONNECT_FAILED), @(FREERDP_ERROR_CONNECT_CANCELLED) ])
+	{
+		freerdp_set_last_error(info->_context, code.unsignedIntValue);
+		[session recordRDPStop:OrbisRDPStopConnectFailed waitError:0];
+		XCTAssertFalse(session.canAutomaticallyReconnect);
+	}
+	freerdp_set_last_error(info->_context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
+	[session recordRDPStop:OrbisRDPStopCancelled waitError:0];
+	XCTAssertTrue(session.connectionEndedIntentionally);
+	XCTAssertFalse(session.canAutomaticallyReconnect);
+}
+
+- (void)testUnexpectedSessionEndOffersRetryButIntentionalDisconnectDoesNot
+{
+	OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	[library presentRecoveryForSession:session profileIdentifier:@"test"];
+	XCTAssertEqualObjects(library.shownAlert.title, @"Connection Interrupted");
+	XCTAssertTrue([library.shownAlert.message containsString:@"unexpectedly"]);
+	XCTAssertEqualObjects(library.shownAlert.actions[1].title, @"Retry");
+	XCTAssertNil([library valueForKey:@"recoveryTimer"]);
+	[library clearRecoveryAlert];
+	library.shownAlert = nil;
+	[session disconnect];
+	[library presentRecoveryForSession:session profileIdentifier:@"test"];
+	XCTAssertNil(library.shownAlert);
+}
+
+- (void)testAutomaticRecoveryIsBoundedAndBackgroundingCancelsItsTimer
+{
+	OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease];
+	OrbisTestProfileStore *store = [[[OrbisTestProfileStore alloc] init] autorelease];
+	store.profiles = @[ profile ]; store.selectedProfile = profile;
+	[library setValue:store forKey:@"profileStore"];
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	freerdp_set_error_info([session mfi]->_context->rdp, ERRINFO_GRAPHICS_SUBSYSTEM_FAILED);
+	[session recordRDPStop:OrbisRDPStopReceiveFailed waitError:0];
+	[library presentRecoveryForSession:session profileIdentifier:profile.identifier];
+	XCTAssertNotNil([library valueForKey:@"recoveryTimer"]);
+	[library applicationWillResignActive:nil];
+	XCTAssertNil([library valueForKey:@"recoveryTimer"]);
+	XCTAssertTrue([library.shownAlert.message containsString:@"paused"]);
+	[library clearRecoveryAlert];
+	[library setValue:@YES forKey:@"libraryVisible"];
+	[library retryProfileWithIdentifier:profile.identifier automatically:YES];
+	[library retryProfileWithIdentifier:profile.identifier automatically:YES];
+	XCTAssertEqual(library.retries, 1u);
+	[library presentRecoveryForSession:session profileIdentifier:profile.identifier];
+	XCTAssertNil([library valueForKey:@"recoveryTimer"]);
+	XCTAssertFalse([library.shownAlert.message containsString:@"two seconds"]);
+	[library clearRecoveryAlert];
+	[library retryProfileWithIdentifier:@"deleted-profile" automatically:YES];
+	XCTAssertEqual(library.retries, 1u);
+}
+
+- (void)testAutomaticTimerStartsOneRetryAndLateCancelledTimersDoNothing
+{
+	OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	[library setValue:@YES forKey:@"libraryVisible"];
+	OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease];
+	OrbisTestProfileStore *store = [[[OrbisTestProfileStore alloc] init] autorelease];
+	store.profiles = @[ profile ]; store.selectedProfile = profile;
+	[library setValue:store forKey:@"profileStore"];
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	freerdp_set_error_info([session mfi]->_context->rdp, ERRINFO_GRAPHICS_SUBSYSTEM_FAILED);
+	[session recordRDPStop:OrbisRDPStopReceiveFailed waitError:0];
+	[library presentRecoveryForSession:session profileIdentifier:profile.identifier];
+	NSTimer *timer = [[[library valueForKey:@"recoveryTimer"] retain] autorelease];
+	[library recoveryTimerFired:timer];
+	XCTAssertEqual(library.retries, 1u);
+	XCTAssertNil([library valueForKey:@"recoveryTimer"]);
+	[library recoveryTimerFired:timer];
+	XCTAssertEqual(library.retries, 1u);
+	[library presentRecoveryForSession:session profileIdentifier:profile.identifier];
+	XCTAssertNil([library valueForKey:@"recoveryTimer"]);
+	[library clearRecoveryAlert];
+}
+
+- (void)testAutomaticRetryNeverPromptsForMissingCredentialsAndNeverRunsWhileInactive
+{
+	OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];
+	[library loadViewIfNeeded];
+	OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease];
+	OrbisTestProfileStore *store = [[[OrbisTestProfileStore alloc] init] autorelease];
+	store.profiles = @[ profile ]; store.selectedProfile = profile;
+	[library setValue:store forKey:@"profileStore"];
+	[library retryProfileWithIdentifier:profile.identifier automatically:YES];
+	XCTAssertEqual(library.retries, 0u);
+	[library setValue:@YES forKey:@"libraryVisible"];
+	library.missingPassword = YES;
+	[library retryProfileWithIdentifier:profile.identifier automatically:YES];
+	XCTAssertEqual(library.retries, 0u);
+	XCTAssertEqualObjects(library.shownAlert.title, @"Retry Required");
+}
+
+- (void)testRealConnectionWiresDisconnectPresentationAndResetsTheManualRetryBudget
+{
+	OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];
+	OrbisTestRecoveryNavigation *navigation = [[[OrbisTestRecoveryNavigation alloc]
+	    initWithRootViewController:library] autorelease];
+	[library loadViewIfNeeded];
+	OrbisProfile *profile = [[[OrbisProfile alloc] init] autorelease];
+	profile.host = @"desktop.local"; profile.username = @"tester"; profile.name = @"Test computer";
+	OrbisTestProfileStore *store = [[[OrbisTestProfileStore alloc] init] autorelease];
+	store.profiles = @[ profile ]; store.selectedProfile = profile;
+	[library setValue:store forKey:@"profileStore"];
+	[library setValue:@1 forKey:@"automaticRetryCount"];
+	[library startRealConnectionWithPassword:@"test-password"];
+	XCTAssertEqualObjects([library valueForKey:@"automaticRetryCount"], @0);
+	RDPSessionViewController *controller = (RDPSessionViewController *)navigation.pushedController;
+	XCTAssertNotNil(controller.recoveryHandler);
+	RDPSession *session = [controller valueForKey:@"session"];
+	[session sessionDidDisconnect];
+	XCTAssertEqualObjects(library.shownAlert.actions[1].title, @"Retry");
+	XCTAssertEqualObjects([library valueForKey:@"isStartingConnection"], @NO);
+	[library clearRecoveryAlert];
+}
+
+- (void)testFailedDisplaySendsRemainRetryableAndConcurrentInitialCallersCoalesce
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	NSMutableArray *sent = [NSMutableArray array];
+	DispClientContext disp = { 0 };
+	disp.handle = sent; disp.SendMonitorLayout = OrbisCaptureDisplayFailureOnce;
+	info->context->disp = &disp;
+	ios_events_send_display_resize(info, 2050, 1536);
+	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_BAD_CHANNEL);
+	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 2u);
+	ios_events_display_control_reset(info);
+	[sent removeAllObjects];
+	disp.SendMonitorLayout = OrbisCaptureDisplayLayout;
+	dispatch_apply(40, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t index) {
+		@autoreleasepool {
+			if (index % 2) ios_events_display_control_ready(info);
+			else ios_events_send_display_resize(info, 2050, 1536);
+		}
+	});
+	XCTAssertEqual(sent.count, 1u);
+	info->context->disp = NULL;
+}
+
 - (void)testRemoteClipboardTextReachesTheIPadPasteboard
 {
 	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
@@ -293,20 +591,21 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	unavailable.common.msgFlags = CB_RESPONSE_FAIL;
 	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &unavailable), CHANNEL_RC_OK);
 	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
-	XCTestExpectation *delivered = [self expectationWithDescription:@"Remote clipboard published on main queue"];
-	dispatch_async(dispatch_get_main_queue(), ^{
-		XCTAssertEqualObjects([UIPasteboard generalPasteboard].string, expected);
-		[delivered fulfill];
-	});
+	// Native delivery uses performSelectorOnMainThread, not the dispatch queue's FIFO order.
+	XCTestExpectation *delivered = [self expectationForPredicate:[NSPredicate predicateWithBlock:
+	    ^BOOL(id object, NSDictionary *bindings) {
+		(void)object; (void)bindings;
+		return [[UIPasteboard generalPasteboard].string isEqual:expected];
+	}] evaluatedWithObject:nil handler:nil];
 	[self waitForExpectations:@[delivered] timeout:2];
 	response.common.dataLen = sizeof(terminator);
 	response.requestedFormatData = (const BYTE *)&terminator;
 	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
-	XCTestExpectation *cleared = [self expectationWithDescription:@"Empty remote text replaces previous clipboard contents"];
-	dispatch_async(dispatch_get_main_queue(), ^{
-		XCTAssertEqualObjects([UIPasteboard generalPasteboard].string, @"");
-		[cleared fulfill];
-	});
+	XCTestExpectation *cleared = [self expectationForPredicate:[NSPredicate predicateWithBlock:
+	    ^BOOL(id object, NSDictionary *bindings) {
+		(void)object; (void)bindings;
+		return [[UIPasteboard generalPasteboard].string isEqual:@""];
+	}] evaluatedWithObject:nil handler:nil];
 	[self waitForExpectations:@[cleared] timeout:2];
 	mfi->connection_state = TSXConnectionDisconnected;
 	free(context->serverFormats); context->serverFormats = NULL; context->numServerFormats = 0;

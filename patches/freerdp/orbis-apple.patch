@@ -1648,7 +1648,7 @@ index b1cc404..0ca5a74 100644
 +  add_subdirectory(${ORBIS_IPADOS_APP_DIR}/Tests ${CMAKE_CURRENT_BINARY_DIR}/orbis-tests)
 +endif()
 diff --git a/client/iOS/Controllers/RDPSessionViewController.h b/client/iOS/Controllers/RDPSessionViewController.h
-index c5a018e..c2fb158 100644
+index c5a018e..b1b5daa 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.h
 +++ b/client/iOS/Controllers/RDPSessionViewController.h
 @@ -18,7 +18,7 @@
@@ -1660,7 +1660,15 @@ index c5a018e..c2fb158 100644
  {
  	// scrollview that hosts the rdp session view
  	IBOutlet UIScrollView *_session_scrollview;
-@@ -54,6 +54,10 @@
+@@ -44,6 +44,7 @@
+ 
+ 	// rdp session
+ 	RDPSession *_session;
++	void (^_recoveryHandler)(RDPSession *session);
+ 	BOOL _session_initilized;
+ 
+ 	// flag that indicates whether the keyboard is visible or not
+@@ -54,6 +55,10 @@
  	BOOL _advanced_keyboard_visible;
  	BOOL _requesting_advanced_keyboard;
  	CGSize _last_session_viewport_size;
@@ -1671,8 +1679,17 @@ index c5a018e..c2fb158 100644
  
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
+@@ -66,6 +71,8 @@
+ 	BOOL _pointer_is_indirect;
+ }
+ 
++@property(nonatomic, copy) void (^recoveryHandler)(RDPSession *session);
++
+ - (id)initWithNibName:(NSString *)nibNameOrNil
+                bundle:(NSBundle *)nibBundleOrNil
+               session:(RDPSession *)session;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378c..1114e06 100644
+index b6d378c..3d6e415 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
 @@ -10,21 +10,25 @@
@@ -1704,7 +1721,16 @@ index b6d378c..1114e06 100644
  - (UIToolbar *)keyboardToolbar;
  - (void)initGestureRecognizers;
  - (void)suspendSession;
-@@ -60,7 +64,10 @@
+@@ -43,6 +47,8 @@
+ 
+ @implementation RDPSessionViewController
+ 
++@synthesize recoveryHandler = _recoveryHandler;
++
+ #pragma mark class methods
+ 
+ - (id)initWithNibName:(NSString *)nibNameOrNil
+@@ -60,7 +66,10 @@
  		_advanced_keyboard_visible = NO;
  		_requesting_advanced_keyboard = NO;
  		_last_session_viewport_size = CGSizeZero;
@@ -1715,7 +1741,7 @@ index b6d378c..1114e06 100644
  		_session_toolbar_visible = NO;
  
  		_cursor_view_position = CGPointZero;
-@@ -85,10 +92,6 @@
+@@ -85,10 +94,6 @@
  	// load default view and set background color and resizing mask
  	[super loadView];
  
@@ -1726,7 +1752,7 @@ index b6d378c..1114e06 100644
  	// init keyboard handling vars
  	_keyboard_visible = NO;
  
-@@ -99,9 +102,9 @@
+@@ -99,9 +104,9 @@
  	// init gesture recognizers
  	[self initGestureRecognizers];
  
@@ -1739,7 +1765,7 @@ index b6d378c..1114e06 100644
  }
  
  // Implement viewDidLoad to do additional setup after loading the view, typically from a nib.
-@@ -117,18 +120,32 @@
+@@ -117,18 +122,32 @@
  	[_session_scrollview setAlwaysBounceHorizontal:NO];
  	[_session_scrollview setAlwaysBounceVertical:NO];
  	[_session_scrollview setBounces:NO];
@@ -1773,7 +1799,7 @@ index b6d378c..1114e06 100644
  	else
  		[self centerSessionViewInViewport];
  }
-@@ -177,6 +194,8 @@
+@@ -177,6 +196,8 @@
  	[self setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:YES animated:animated];
@@ -1782,7 +1808,7 @@ index b6d378c..1114e06 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:YES animated:animated];
  	else
-@@ -197,10 +216,11 @@
+@@ -197,10 +218,11 @@
  	if (!_session_initilized)
  	{
  		if ([_session isSuspended])
@@ -1798,7 +1824,7 @@ index b6d378c..1114e06 100644
  		else
  			[_session connect];
  
-@@ -219,6 +239,7 @@
+@@ -219,6 +241,7 @@
  
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:NO animated:animated];
@@ -1806,7 +1832,7 @@ index b6d378c..1114e06 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:NO animated:animated];
  	else
-@@ -234,14 +255,20 @@
+@@ -234,15 +257,22 @@
  
  - (void)dealloc
  {
@@ -1825,10 +1851,35 @@ index b6d378c..1114e06 100644
 +	[_session_view setPresentationDelegate:nil];
 +	[self hideConnectingView];
  	[_session release];
++	[_recoveryHandler release];
  	[super dealloc];
  }
-@@ -361,36 +388,120 @@
  
+@@ -359,38 +389,127 @@
+ #pragma mark -
+ #pragma mark RDPSessionDelegate functions
+ 
++- (void)returnToLibraryAfterSession:(RDPSession *)session
++{
++	[self endSessionBackgroundTask];
++	_session_in_background = NO;
++	_session_connected = NO;
++	[self hideConnectingView];
++	UINavigationController *navigation = [self navigationController];
++	[navigation popViewControllerAnimated:YES];
++	if (session.connectionEndedIntentionally) return;
++	void (^presentError)(void) = ^{
++		if (_recoveryHandler) _recoveryHandler(session);
++	};
++	id<UIViewControllerTransitionCoordinator> transition = [navigation transitionCoordinator];
++	if (transition)
++		[transition animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
++			(void)context;
++			presentError();
++		}];
++	else presentError();
++}
++
  - (void)session:(RDPSession *)session didFailToConnect:(int)reason
  {
 -	// remove and release connecting view
@@ -1839,23 +1890,7 @@ index b6d378c..1114e06 100644
 -	// return to bookmark list
 -	[[self navigationController] popViewControllerAnimated:YES];
 +	(void)reason;
-+	[self hideConnectingView];
-+	UINavigationController *navigation = [self navigationController];
-+	NSString *message = [session connectionFailureMessage];
-+	[navigation popViewControllerAnimated:YES];
-+	void (^presentError)(void) = ^{
-+		UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Connection Failed"
-+		    message:message preferredStyle:UIAlertControllerStyleAlert];
-+		[alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-+		[[navigation topViewController] presentViewController:alert animated:YES completion:nil];
-+	};
-+	id<UIViewControllerTransitionCoordinator> transition = [navigation transitionCoordinator];
-+	if (transition)
-+		[transition animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
-+			(void)context;
-+			presentError();
-+		}];
-+	else presentError();
++	[self returnToLibraryAfterSession:session];
  }
  
  - (void)sessionWillConnect:(RDPSession *)session
@@ -1968,7 +2003,7 @@ index b6d378c..1114e06 100644
  	// register keyboard notification handlers
  	[[NSNotificationCenter defaultCenter] addObserver:self
  	                                         selector:@selector(keyboardWillShow:)
-@@ -419,11 +530,7 @@
+@@ -419,11 +538,7 @@
  	                                             name:GCKeyboardDidDisconnectNotification
  	                                           object:nil];
  	[self hardwareKeyboardChanged:nil];
@@ -1981,7 +2016,7 @@ index b6d378c..1114e06 100644
  
  	// check if session settings changed ...
  	// The 2nd width check is to ignore changes in resolution settings due to the RDVH display bug
-@@ -451,10 +558,19 @@
+@@ -451,12 +566,15 @@
  
  - (void)sessionWillDisconnect:(RDPSession *)session
  {
@@ -1993,15 +2028,13 @@ index b6d378c..1114e06 100644
  
  - (void)sessionDidDisconnect:(RDPSession *)session
  {
-+	[self endSessionBackgroundTask];
-+	_session_in_background = NO;
-+	(void)session;
-+	_session_connected = NO;
-+	[self hideConnectingView];
- 	// return to bookmark list
- 	[[self navigationController] popViewControllerAnimated:YES];
+-	// return to bookmark list
+-	[[self navigationController] popViewControllerAnimated:YES];
++	[self returnToLibraryAfterSession:session];
  }
-@@ -492,13 +608,28 @@
+ 
+ - (void)sessionBitmapContextWillChange:(RDPSession *)session
+@@ -492,13 +610,28 @@
  	if (!_has_cursor_view_position)
  		(void)[self currentCursorViewPosition];
  
@@ -2033,7 +2066,7 @@ index b6d378c..1114e06 100644
  }
  
  - (void)session:(RDPSession *)session didSetRemoteCursor:(RDPCursor *)cursor
-@@ -553,26 +684,69 @@
+@@ -553,26 +686,69 @@
  
  - (void)session:(RDPSession *)session verifyCertificateWithParams:(NSMutableDictionary *)params
  {
@@ -2117,7 +2150,7 @@ index b6d378c..1114e06 100644
  
  	CGFloat maxDimension = MAX(size.width, size.height);
  	if (maxDimension > 4096.0f)
-@@ -584,9 +758,42 @@
+@@ -584,9 +760,42 @@
  
  	size.width = MAX(64.0f, size.width);
  	size.height = MAX(64.0f, size.height);
@@ -2160,7 +2193,7 @@ index b6d378c..1114e06 100644
  #pragma mark - Keyboard Toolbar Handlers
  
  - (void)showAdvancedKeyboardAnimated
-@@ -702,6 +909,63 @@
+@@ -702,6 +911,63 @@
  	}
  }
  
@@ -2224,7 +2257,7 @@ index b6d378c..1114e06 100644
  - (IBAction)disconnectSession:(id)sender
  {
  	[_session disconnect];
-@@ -902,20 +1166,30 @@
+@@ -902,20 +1168,30 @@
  
  - (void)handleScroll:(UIPanGestureRecognizer *)gesture
  {
@@ -2263,7 +2296,7 @@ index b6d378c..1114e06 100644
  }
  
  - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
-@@ -998,35 +1272,9 @@
+@@ -998,35 +1274,9 @@
  
  - (void)showSessionToolbar:(BOOL)show
  {
@@ -2302,7 +2335,7 @@ index b6d378c..1114e06 100644
  }
  
  - (UIToolbar *)keyboardToolbar
-@@ -1143,7 +1391,11 @@
+@@ -1143,7 +1393,11 @@
  	UIPanGestureRecognizer *scrollRecognizer =
  	    [[[UIPanGestureRecognizer alloc] initWithTarget:self
  	                                             action:@selector(handleScroll:)] autorelease];
@@ -2315,7 +2348,7 @@ index b6d378c..1114e06 100644
  	[scrollRecognizer setDelegate:self];
  
  	// double long press gesture recognizer
-@@ -1163,6 +1415,8 @@
+@@ -1163,6 +1417,8 @@
  
  	// Reserve one finger for the mouse; two fingers still pan/zoom the viewport.
  	[[_session_scrollview panGestureRecognizer] setMinimumNumberOfTouches:2];
@@ -2324,7 +2357,7 @@ index b6d378c..1114e06 100644
  
  	// add gestures to scroll view
  	[_session_scrollview addGestureRecognizer:singleTapRecognizer];
-@@ -1171,6 +1425,7 @@
+@@ -1171,6 +1427,7 @@
  	[_session_scrollview addGestureRecognizer:hoverRecognizer];
  	[_session_scrollview addGestureRecognizer:secondaryTapRecognizer];
  	[_session_scrollview addGestureRecognizer:scrollRecognizer];
@@ -2333,7 +2366,7 @@ index b6d378c..1114e06 100644
  	[_session_scrollview addGestureRecognizer:single3FingersTapRecognizer];
  
 diff --git a/client/iOS/FreeRDP/ios_freerdp.h b/client/iOS/FreeRDP/ios_freerdp.h
-index 1d454f6..e1cf6a7 100644
+index 1d454f6..0040b49 100644
 --- a/client/iOS/FreeRDP/ios_freerdp.h
 +++ b/client/iOS/FreeRDP/ios_freerdp.h
 @@ -10,12 +10,14 @@
@@ -2351,7 +2384,7 @@ index 1d454f6..e1cf6a7 100644
  
  @class RDPSession, RDPSessionView;
  
-@@ -33,11 +35,13 @@ typedef struct mf_context
+@@ -33,11 +35,17 @@ typedef struct mf_context
  
  	BOOL clipboardSync;
  	wClipboard *clipboard;
@@ -2362,11 +2395,15 @@ index 1d454f6..e1cf6a7 100644
  	CLIPRDR_FORMAT *serverFormats;
  	CliprdrClientContext *cliprdr;
 +	DispClientContext *disp;
++	// Display requests share a session lock across RDP and dynamic-channel workers.
++	BOOL displayControlReady;
++	UINT32 desiredDisplayWidth, desiredDisplayHeight;
++	UINT32 sentDisplayWidth, sentDisplayHeight;
  	UINT32 clipboardCapabilities;
  	WINPR_ATTR_NODISCARD pServerCutText ServerCutText;
  } mfContext;
 diff --git a/client/iOS/FreeRDP/ios_freerdp.m b/client/iOS/FreeRDP/ios_freerdp.m
-index 75b790b..f5f0257 100644
+index 75b790b..6b8b341 100644
 --- a/client/iOS/FreeRDP/ios_freerdp.m
 +++ b/client/iOS/FreeRDP/ios_freerdp.m
 @@ -19,6 +19,8 @@
@@ -2378,7 +2415,7 @@ index 75b790b..f5f0257 100644
  
  #import "ios_freerdp.h"
  #import "ios_freerdp_ui.h"
-@@ -41,6 +43,23 @@ typedef struct
+@@ -41,6 +43,24 @@ typedef struct
  
  #pragma mark Connection helpers
  
@@ -2393,40 +2430,49 @@ index 75b790b..f5f0257 100644
 +		return CHANNEL_RC_BAD_CHANNEL_HANDLE;
 +
 +	mfContext *afc = (mfContext *)disp->custom;
-+	rdpSettings *settings = afc->_p.settings;
-+	return ios_events_send_display_resize(afc->mfi,
-+	    freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
-+	    freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
++	@synchronized (afc->mfi->session)
++	{
++		if (disp != afc->disp) return CHANNEL_RC_BAD_CHANNEL_HANDLE;
++		return ios_events_display_control_ready(afc->mfi);
++	}
 +}
 +
  static void ios_OnChannelConnectedEventHandler(void *context, const ChannelConnectedEventArgs *e)
  {
  	WLog_INFO(TAG, "ios_OnChannelConnectedEventHandler, channel %s", e->name);
-@@ -72,6 +91,12 @@ static void ios_OnChannelConnectedEventHandler(void *context, const ChannelConne
+@@ -72,6 +92,16 @@ static void ios_OnChannelConnectedEventHandler(void *context, const ChannelConne
  	{
  		ios_cliprdr_init(afc, (CliprdrClientContext *)e->pInterface);
  	}
 +	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
 +	{
-+		afc->disp = (DispClientContext *)e->pInterface;
-+		afc->disp->custom = afc;
-+		afc->disp->DisplayControlCaps = ios_DisplayControlCaps;
++		@synchronized (afc->mfi->session)
++		{
++			ios_events_display_control_reset(afc->mfi);
++			afc->disp = (DispClientContext *)e->pInterface;
++			afc->disp->custom = afc;
++			afc->disp->DisplayControlCaps = ios_DisplayControlCaps;
++		}
 +	}
  }
  
  static void ios_OnChannelDisconnectedEventHandler(void *context,
-@@ -106,6 +131,10 @@ static void ios_OnChannelDisconnectedEventHandler(void *context,
+@@ -106,6 +136,14 @@ static void ios_OnChannelDisconnectedEventHandler(void *context,
  	{
  		ios_cliprdr_uninit(afc, (CliprdrClientContext *)e->pInterface);
  	}
 +	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
 +	{
-+		afc->disp = nullptr;
++		@synchronized (afc->mfi->session)
++		{
++			ios_events_display_control_reset(afc->mfi);
++			afc->disp = nullptr;
++		}
 +	}
  }
  
  static BOOL ios_pre_connect(freerdp *instance)
-@@ -338,16 +367,22 @@ int ios_run_freerdp(freerdp *instance)
+@@ -338,16 +376,22 @@ int ios_run_freerdp(freerdp *instance)
  
  	if (!freerdp_connect(instance))
  	{
@@ -2450,7 +2496,7 @@ index 75b790b..f5f0257 100644
  
  	while (!freerdp_shall_disconnect_context(instance->context))
  	{
-@@ -359,6 +394,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -359,6 +403,7 @@ int ios_run_freerdp(freerdp *instance)
  		nCount = freerdp_get_event_handles(instance->context, handles, ARRAYSIZE(handles));
  		if (nCount == 0)
  		{
@@ -2458,7 +2504,7 @@ index 75b790b..f5f0257 100644
  			NSLog(@"%s: freerdp_get_event_handles failed", __func__);
  			break;
  		}
-@@ -369,6 +405,8 @@ int ios_run_freerdp(freerdp *instance)
+@@ -369,6 +414,8 @@ int ios_run_freerdp(freerdp *instance)
  
  		if (WAIT_FAILED == status)
  		{
@@ -2467,7 +2513,7 @@ index 75b790b..f5f0257 100644
  			NSLog(@"%s: WaitForMultipleObjects failed!", __func__);
  			break;
  		}
-@@ -376,6 +414,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -376,6 +423,7 @@ int ios_run_freerdp(freerdp *instance)
  		// Check the libfreerdp fds
  		if (!freerdp_check_event_handles(instance->context))
  		{
@@ -2475,7 +2521,7 @@ index 75b790b..f5f0257 100644
  			NSLog(@"%s: freerdp_check_event_handles failed.", __func__);
  			break;
  		}
-@@ -383,6 +422,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -383,6 +431,7 @@ int ios_run_freerdp(freerdp *instance)
  		// Check input event fds
  		if (ios_events_check_handle(mfi) != TRUE)
  		{
@@ -2483,7 +2529,7 @@ index 75b790b..f5f0257 100644
  			// This event will fail when the app asks for a disconnect.
  			// NSLog(@"%s: ios_events_check_fds failed: terminating connection.", __func__);
  			break;
-@@ -392,6 +432,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -392,6 +441,7 @@ int ios_run_freerdp(freerdp *instance)
  		pool = nil;
  	}
  
@@ -2491,7 +2537,7 @@ index 75b790b..f5f0257 100644
  	CGContextRelease(mfi->bitmap_context);
  	mfi->bitmap_context = nullptr;
  	mfi->connection_state = TSXConnectionDisconnected;
-@@ -505,7 +546,15 @@ void ios_send_clipboard_data(void *context, const void *data, UINT32 size)
+@@ -505,7 +555,15 @@ void ios_send_clipboard_data(void *context, const void *data, UINT32 size)
  {
  	mfContext *afc = (mfContext *)context;
  	ClipboardLock(afc->clipboard);
@@ -2509,20 +2555,22 @@ index 75b790b..f5f0257 100644
  	{
  		if (!ClipboardSetData(afc->clipboard, formatId, data, size))
 diff --git a/client/iOS/FreeRDP/ios_freerdp_events.h b/client/iOS/FreeRDP/ios_freerdp_events.h
-index a3c76a0..244f6af 100644
+index a3c76a0..2982d56 100644
 --- a/client/iOS/FreeRDP/ios_freerdp_events.h
 +++ b/client/iOS/FreeRDP/ios_freerdp_events.h
-@@ -16,6 +16,8 @@
+@@ -16,6 +16,10 @@
  
  // For UI: use to send events
  BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description);
 +BOOL ios_events_send_clipboard(mfInfo *mfi, NSString *text);
 +UINT ios_events_send_display_resize(mfInfo *mfi, UINT32 width, UINT32 height);
++UINT ios_events_display_control_ready(mfInfo *mfi);
++void ios_events_display_control_reset(mfInfo *mfi);
  
  // For connection runloop: use to poll for queued input events
  HANDLE ios_events_get_handle(mfInfo *mfi);
 diff --git a/client/iOS/FreeRDP/ios_freerdp_events.m b/client/iOS/FreeRDP/ios_freerdp_events.m
-index 3abbbd1..fd3bfc6 100644
+index 3abbbd1..404e0c2 100644
 --- a/client/iOS/FreeRDP/ios_freerdp_events.m
 +++ b/client/iOS/FreeRDP/ios_freerdp_events.m
 @@ -10,7 +10,11 @@
@@ -2537,50 +2585,83 @@ index 3abbbd1..fd3bfc6 100644
  
  #pragma mark -
  #pragma mark Sending compacted input events (from main thread)
-@@ -46,6 +50,67 @@ BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description)
+@@ -46,6 +50,100 @@ BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description)
  	return TRUE;
  }
  
 +UINT ios_events_send_display_resize(mfInfo *mfi, UINT32 width, UINT32 height)
 +{
-+	WINPR_ASSERT(mfi);
-+	WINPR_ASSERT(mfi->instance);
-+	WINPR_ASSERT(mfi->instance->context);
-+
-+	mfContext *context = mfi->context;
-+	DispClientContext *disp = context ? context->disp : nullptr;
-+	if ((width < DISPLAY_CONTROL_MIN_MONITOR_WIDTH) ||
-+	    (width > DISPLAY_CONTROL_MAX_MONITOR_WIDTH) ||
-+	    (height < DISPLAY_CONTROL_MIN_MONITOR_HEIGHT) ||
-+	    (height > DISPLAY_CONTROL_MAX_MONITOR_HEIGHT))
++	@synchronized (mfi->session)
 +	{
-+		NSLog(@"Orbis ignored invalid display size %ux%u", width, height);
-+		return CHANNEL_RC_BAD_CHANNEL;
++		WINPR_ASSERT(mfi);
++		WINPR_ASSERT(mfi->instance);
++		WINPR_ASSERT(mfi->instance->context);
++
++		mfContext *context = mfi->context;
++		DispClientContext *disp = context ? context->disp : nullptr;
++		if ((width < DISPLAY_CONTROL_MIN_MONITOR_WIDTH) ||
++		    (width > DISPLAY_CONTROL_MAX_MONITOR_WIDTH) ||
++		    (height < DISPLAY_CONTROL_MIN_MONITOR_HEIGHT) ||
++		    (height > DISPLAY_CONTROL_MAX_MONITOR_HEIGHT))
++		{
++			NSLog(@"Orbis ignored invalid display size %ux%u", width, height);
++			return CHANNEL_RC_BAD_CHANNEL;
++		}
++		context->desiredDisplayWidth = width;
++		context->desiredDisplayHeight = height;
++		if (!disp || !disp->SendMonitorLayout || !context->displayControlReady)
++			return CHANNEL_RC_OK; // Keep the latest target until capabilities arrive.
++		if (context->sentDisplayWidth == width && context->sentDisplayHeight == height)
++			return CHANNEL_RC_OK;
++
++		rdpSettings *settings = mfi->instance->context->settings;
++		DISPLAY_CONTROL_MONITOR_LAYOUT layout = WINPR_C_ARRAY_INIT;
++		layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
++		layout.Width = width;
++		layout.Height = height;
++		layout.Orientation = (width >= height) ? ORIENTATION_LANDSCAPE : ORIENTATION_PORTRAIT;
++		layout.DesktopScaleFactor =
++		    freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
++		layout.DeviceScaleFactor = freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor);
++
++		const UINT rc = disp->SendMonitorLayout(disp, 1, &layout);
++		[[OrbisDiagnostics sharedDiagnostics] recordEvent:rc == CHANNEL_RC_OK ? @"display.requested" : @"display.request_failed"
++		    values:@{ @"code" : @(rc), @"width" : @(width), @"height" : @(height) }];
++		if (rc != CHANNEL_RC_OK)
++			NSLog(@"Orbis display resize %ux%u failed: %u", width, height, rc);
++		else
++		{
++			context->sentDisplayWidth = width;
++			context->sentDisplayHeight = height;
++			NSLog(@"Orbis requested remote display %ux%u", width, height);
++		}
++		return rc;
 +	}
-+	if (!disp || !disp->SendMonitorLayout)
++}
++
++UINT ios_events_display_control_ready(mfInfo *mfi)
++{
++	@synchronized (mfi->session)
 +	{
-+		NSLog(@"Orbis display-control channel is not available");
-+		return CHANNEL_RC_NOT_INITIALIZED;
++		mfContext *context = mfi->context;
++		if (!context || !context->disp) return CHANNEL_RC_BAD_CHANNEL_HANDLE;
++		context->displayControlReady = YES;
++		// A viewport request received before capabilities takes precedence over negotiated settings.
++		rdpSettings *settings = mfi->instance->context->settings;
++		UINT32 width = context->desiredDisplayWidth ?: freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
++		UINT32 height = context->desiredDisplayHeight ?: freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
++		return ios_events_send_display_resize(mfi, width, height);
 +	}
++}
 +
-+	rdpSettings *settings = mfi->instance->context->settings;
-+	DISPLAY_CONTROL_MONITOR_LAYOUT layout = WINPR_C_ARRAY_INIT;
-+	layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
-+	layout.Width = width;
-+	layout.Height = height;
-+	layout.Orientation = (width >= height) ? ORIENTATION_LANDSCAPE : ORIENTATION_PORTRAIT;
-+	layout.DesktopScaleFactor =
-+	    freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
-+	layout.DeviceScaleFactor = freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor);
-+
-+	const UINT rc = disp->SendMonitorLayout(disp, 1, &layout);
-+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:rc == CHANNEL_RC_OK ? @"display.requested" : @"display.request_failed"
-+	    values:@{ @"code" : @(rc), @"width" : @(width), @"height" : @(height) }];
-+	if (rc != CHANNEL_RC_OK)
-+		NSLog(@"Orbis display resize %ux%u failed: %u", width, height, rc);
-+	else
-+		NSLog(@"Orbis requested remote display %ux%u", width, height);
-+	return rc;
++void ios_events_display_control_reset(mfInfo *mfi)
++{
++	@synchronized (mfi->session)
++	{
++		mfContext *context = mfi->context;
++		context->displayControlReady = NO;
++		context->sentDisplayWidth = context->sentDisplayHeight = 0;
++	}
 +}
 +
 +// Keep each clipboard message below the event pipe's encoded size limit.
@@ -2605,7 +2686,7 @@ index 3abbbd1..fd3bfc6 100644
  #pragma mark -
  #pragma mark Processing compacted input events (from connection thread runloop)
  
-@@ -89,6 +154,46 @@ static BOOL ios_events_handle_event(mfInfo *mfi, NSDictionary *event_description
+@@ -89,6 +187,46 @@ static BOOL ios_events_handle_event(mfInfo *mfi, NSDictionary *event_description
  			NSLog(@"%s: doesn't know how to send keyboard input with subtype %@", __func__,
  			      [event_description objectForKey:@"subtype"]);
  	}
@@ -2695,7 +2776,7 @@ index accafd2e5..154c376a6 100644
  
  DWORD ios_ui_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
 diff --git a/client/iOS/Models/RDPSession.h b/client/iOS/Models/RDPSession.h
-index 131fdc1..9a91a7d 100644
+index 131fdc1..a84d72c 100644
 --- a/client/iOS/Models/RDPSession.h
 +++ b/client/iOS/Models/RDPSession.h
 @@ -12,6 +12,8 @@
@@ -2724,7 +2805,7 @@ index 131fdc1..9a91a7d 100644
  // rdp session
  @interface RDPSession : NSObject
  {
-@@ -64,11 +76,21 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -64,11 +76,28 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  
  	// flag if the session is suspended
  	BOOL _suspended;
@@ -2736,6 +2817,10 @@ index 131fdc1..9a91a7d 100644
 +	BOOL _connectionCancelled;
 +	BOOL _finished;
 +	NSString *_connectionFailureMessage;
++	DWORD _stopRDPError;
++	UINT32 _stopErrorInfo;
++	OrbisRDPStopReason _stopReason;
++	BOOL _hasRDPStop;
  
  	// flag that specifies whether the RDP toolbar is visible
  	BOOL _toolbar_visible;
@@ -2743,10 +2828,13 @@ index 131fdc1..9a91a7d 100644
  
 +@property(nonatomic, retain) id<OrbisConnectionTransport> connectionTransport;
 +@property(nonatomic, readonly) NSString *connectionFailureMessage;
++@property(nonatomic, readonly) BOOL connectionEndedIntentionally;
++@property(nonatomic, readonly) BOOL canAutomaticallyReconnect;
++@property(nonatomic, readonly) NSString *connectionEndMessage;
  @property(readonly) ConnectionParams *params;
  @property(readonly) ComputerBookmark *bookmark;
  @property(assign) id<RDPSessionDelegate> delegate;
-@@ -87,6 +109,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -87,6 +116,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  // disconnect session
  - (void)disconnect;
  
@@ -2756,7 +2844,7 @@ index 131fdc1..9a91a7d 100644
  // suspends the session
  - (void)suspend;
  
-@@ -98,6 +123,10 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -98,6 +130,10 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  
  // send input event to the server
  - (void)sendInputEvent:(NSDictionary *)event;
@@ -2768,7 +2856,7 @@ index 131fdc1..9a91a7d 100644
  // session needs a refresh of its view
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
-index 0fde5e3..cd1ec13 100644
+index 0fde5e3..a9a13a7 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
 @@ -12,7 +12,11 @@
@@ -2885,7 +2973,7 @@ index 0fde5e3..cd1ec13 100644
  	// Set Screen Size to automatic if width or height are still 0
  	rdpSettings *settings = _freerdp->context->settings;
  
-@@ -313,7 +376,7 @@ out_free:
+@@ -313,24 +376,38 @@ out_free:
  	// TODO: This is a hack to ensure connections to RDVH with 16bpp don't have an odd screen
  	// resolution width
  	//       Otherwise this could result in screen corruption ..
@@ -2894,7 +2982,15 @@ index 0fde5e3..cd1ec13 100644
  	{
  		const UINT32 w = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) & (~1);
  		(void)freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
-@@ -324,13 +387,22 @@ out_free:
+ 	}
+ 
++	// Preserve the requested initial size before server negotiation can change settings.
++	(void)ios_events_send_display_resize([self mfi],
++	    freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
++	    freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
++
+ 	[self performSelectorInBackground:@selector(runSession) withObject:nil];
+ }
  
  - (void)disconnect
  {
@@ -2918,7 +3014,7 @@ index 0fde5e3..cd1ec13 100644
  		return;
  	}
  }
-@@ -378,8 +450,36 @@ out_free:
+@@ -378,8 +455,36 @@ out_free:
  
  - (void)sendInputEvent:(NSDictionary *)eventDescriptor
  {
@@ -2957,7 +3053,7 @@ index 0fde5e3..cd1ec13 100644
  }
  
  #pragma mark -
-@@ -504,12 +604,40 @@ out_free:
+@@ -504,12 +609,40 @@ out_free:
  
  - (void)sessionDidConnect
  {
@@ -2998,17 +3094,48 @@ index 0fde5e3..cd1ec13 100644
  	[[NSNotificationCenter defaultCenter]
  	    postNotificationName:TSXSessionDidFailToConnectNotification
  	                  object:self];
-@@ -518,8 +646,25 @@ out_free:
+@@ -518,8 +651,56 @@ out_free:
  		[[self delegate] session:self didFailToConnect:reason];
  }
  
 +- (void)recordRDPStop:(OrbisRDPStopReason)reason waitError:(DWORD)error
 +{
++	_stopRDPError = freerdp_get_last_error(_freerdp->context);
++	_stopErrorInfo = freerdp_error_info(_freerdp);
++	_stopReason = reason;
++	_hasRDPStop = YES;
 +	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.rdp_stopped" values:@{
 +	    @"loop_exit" : @(reason), @"code" : @(error),
 +	    @"rdp_error" : @(freerdp_get_last_error(_freerdp->context)),
 +	    @"rdp_error_info" : @(freerdp_error_info(_freerdp)),
 +	    @"connection_state" : @([self mfi]->connection_state) }];
++}
++
++- (BOOL)connectionEndedIntentionally
++{
++	return _connectionCancelled || (_hasRDPStop && _stopReason == OrbisRDPStopCancelled);
++}
++
++- (BOOL)canAutomaticallyReconnect
++{
++	if (self.connectionEndedIntentionally || !_hasRDPStop) return NO;
++	// Allow only explicit transient codes. LOGOFF_BY_USER is ambiguous and stays manual.
++	if (_stopErrorInfo == ERRINFO_GRAPHICS_SUBSYSTEM_FAILED) return YES;
++	return _stopErrorInfo == 0 && _stopRDPError == FREERDP_ERROR_CONNECT_TRANSPORT_FAILED;
++}
++
++- (NSString *)connectionEndMessage
++{
++	if (_connectionFailureMessage) return _connectionFailureMessage;
++	if (_stopErrorInfo == ERRINFO_GRAPHICS_SUBSYSTEM_FAILED)
++		return @"The remote computer could not start its graphics session.";
++	if (_stopErrorInfo == ERRINFO_LOGOFF_BY_USER)
++		return @"The remote computer ended the session. This can happen after signing out or when its graphics session fails.";
++	if (_stopErrorInfo == ERRINFO_RPC_INITIATED_DISCONNECT_BY_USER)
++		return @"The remote computer closed the connection.";
++	if (_stopRDPError == FREERDP_ERROR_CONNECT_TRANSPORT_FAILED && _stopErrorInfo == 0)
++		return @"The connection to the remote computer was interrupted.";
++	return @"The remote session ended unexpectedly. You can retry or export diagnostics from Settings.";
 +}
 +
  - (void)sessionDidDisconnect

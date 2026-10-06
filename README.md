@@ -56,6 +56,8 @@ Other keys use FreeRDP's normal keyboard mapping.
 - Per-profile certificate prompts or automatic certificate acceptance
 - Passwords stored in Apple Keychain rather than in the profile
 - Native-resolution sessions and full-screen macOS windows
+- Coordinated iPad display requests and connection interruption alerts with Retry
+- One automatic retry for explicit graphics or transport failures, cancelled when leaving the app
 - Apple Silicon, Intel, and universal macOS builds
 
 The connection library is empty after installation. The `Studio Mac` profile in

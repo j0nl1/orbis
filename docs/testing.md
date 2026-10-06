@@ -81,6 +81,14 @@ transport errors, and the bundled changelog. Hardware-keyboard tests replace
 only the outgoing session input boundary, covering Command shortcuts,
 Option-Backspace, Option symbols, and Alt+Tab without a live remote desktop.
 
+Display-control tests cover both capability/viewport arrival orders, simultaneous
+callers, failed sends, pending sizes, and channel replacement. Session recovery
+tests retain native error snapshots and exercise the actual connection controller,
+Retry presentation, one-attempt limit, timer cancellation, missing credentials,
+and ambiguous remote logoff codes. These deterministic checks do not reproduce
+GNOME's intermittent PipeWire buffer failure; physical connection trials are
+needed to establish whether coordinated resize requests reduce that failure.
+
 Availability tests use local TCP fixtures to exercise fragmented RDP negotiation,
 non-RDP services on open ports, protocol rejection, direct and prepared transport
 destinations, timeouts, and cancellation. Library tests cover status after
