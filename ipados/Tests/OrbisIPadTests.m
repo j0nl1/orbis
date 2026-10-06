@@ -1362,7 +1362,7 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
 	OrbisController *library = [[[OrbisController alloc] init] autorelease];
 	[library loadViewIfNeeded];
-	[library setConnectionBusy:YES status:@"Connecting…"];
+	[library setConnectionBusy:YES status:@"Connecting"];
 	XCTAssertTrue(application.idleTimerDisabled);
 	[library viewWillDisappear:NO];
 	XCTAssertTrue(application.idleTimerDisabled);
@@ -1377,7 +1377,7 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
 	OrbisController *library = [[[OrbisController alloc] init] autorelease];
 	[library loadViewIfNeeded];
-	[library setConnectionBusy:YES status:@"Connecting…"];
+	[library setConnectionBusy:YES status:@"Connecting"];
 	XCTAssertTrue(application.idleTimerDisabled);
 	[[NSNotificationCenter defaultCenter] postNotificationName:TSXSessionDidFailToConnectNotification object:nil];
 	XCTAssertFalse(application.idleTimerDisabled);
@@ -1389,7 +1389,7 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	BOOL previous = application.idleTimerDisabled;
 	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
 	OrbisController *library = [[[OrbisController alloc] init] autorelease];
-	[library setConnectionBusy:YES status:@"Connecting…"];
+	[library setConnectionBusy:YES status:@"Connecting"];
 	[library applicationWillResignActive:nil];
 	XCTAssertFalse(application.idleTimerDisabled);
 	[library applicationDidBecomeActive:nil];
@@ -1405,7 +1405,7 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	BOOL previous = application.idleTimerDisabled;
 	[self addTeardownBlock:^{ application.idleTimerDisabled = previous; }];
 	OrbisController *library = [[OrbisController alloc] init];
-	[library setConnectionBusy:YES status:@"Connecting…"];
+	[library setConnectionBusy:YES status:@"Connecting"];
 	XCTAssertTrue(application.idleTimerDisabled);
 	[library release];
 	XCTAssertFalse(application.idleTimerDisabled);

@@ -762,7 +762,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	NSString *symbol = @"questionmark.circle";
 	UIColor *color = [UIColor secondaryLabelColor];
 	if (connecting)
-		status = _connectionStatus ?: @"Connecting…";
+		status = _connectionStatus ?: @"Connecting";
 	else if (health == OrbisProfileHealthChecking)
 		status = @"Checking…";
 	else if (health == OrbisProfileHealthAvailable)

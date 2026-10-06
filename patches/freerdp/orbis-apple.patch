@@ -1672,7 +1672,7 @@ index c5a018e..c2fb158 100644
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378c..8427364 100644
+index b6d378c..1114e06 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
 @@ -10,21 +10,25 @@
@@ -1888,7 +1888,7 @@ index b6d378c..8427364 100644
 +	[_connecting_indicator_view setColor:[UIColor whiteColor]];
 +
 +	UILabel *connectingLabel = [[[UILabel alloc] init] autorelease];
-+	[connectingLabel setText:NSLocalizedString(@"Connecting…", @"Connecting progress label")];
++	[connectingLabel setText:NSLocalizedString(@"Connecting", @"Connecting progress label")];
 +	[connectingLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleTitle2]];
 +	[connectingLabel setAdjustsFontForContentSizeCategory:YES];
 +	[connectingLabel setTextColor:[UIColor labelColor]];
