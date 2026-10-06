@@ -45,7 +45,7 @@
 - The macOS loading overlay is removed from its window after the first remote frame, including its retained view and status label.
 - macOS remote window drags can cross between Orbis display windows while keeping the original button press.
 - iPadOS connection indicators check RDP availability independently of session state, including after disconnecting.
-- iPadOS Command-Backspace sends Forward Delete without Control, including when Command is released before Backspace.
+- iPadOS Command-Backspace selects text to the start of the line and deletes it. Plain Backspace keeps backward character deletion; Shift-Backspace sends normal Forward Delete without remote Shift, including when modifiers are released early.
 - OpenH264 simulator builds use the simulator SDK and target consistently and remain compatible with the supported CMake version.
 - GitHub release lookup in the automatic release workflow.
 

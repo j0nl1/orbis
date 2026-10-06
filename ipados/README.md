@@ -26,7 +26,15 @@ app becomes inactive; an unavailable result does not disable Connect.
 
 About Orbis includes the bundled offline changelog. Hardware keyboards translate
 Command editing shortcuts, Option-Backspace, and Option symbols while preserving
-remote Alt+Tab.
+remote Alt+Tab. Plain Delete/Backspace removes the previous character.
+Command-Delete/Backspace sends Shift-Home followed by Backspace to delete to the
+start of the line in editors that support those keys. Shift-Delete/Backspace sends
+normal Forward Delete without remote Shift, allowing selected files to be moved
+to the trash where supported by the remote file manager. These two translated
+shortcuts trigger once per press, consume repeats/releases, and restore held
+physical Shift keys. Native Forward Delete remains unchanged. Terminal and other
+applications with different Home/selection bindings may interpret the text
+shortcut differently.
 
 Run `scripts/test-orbis-ipados.sh` on a Mac for app-hosted XCTest coverage in an
 available iPad simulator. Set `ORBIS_SIMULATOR_DESTINATION` to select a specific

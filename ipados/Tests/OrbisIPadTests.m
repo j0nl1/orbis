@@ -969,19 +969,67 @@ static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CL
 	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
-- (void)testCommandBackspaceSendsForwardDeleteWithoutControl
+- (void)testCommandBackspaceDeletesToLineStartWithoutForwardDeleteOrStrayRelease
 {
 	OrbisInputRecorder *recorder = [self recorder];
 	RDPSessionView *view = [self inputViewWithRecorder:recorder];
 	[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:UIKeyModifierCommand text:@"\b" up:NO view:view];
 	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftGUI flags:0 text:@"" up:YES view:view];
+	// A repeat after the modifier is released must not become plain Backspace.
+	[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:0 text:@"\b" up:NO view:view];
 	[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:0 text:@"\b" up:YES view:view];
-	XCTAssertEqual(recorder.events.count, 2u);
-	XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x53));
-	XCTAssertEqualObjects(recorder.events[0][@"flags"], @(KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED));
-	// A key-up after Command was released must not emit a Backspace release.
-	XCTAssertEqualObjects(recorder.events[1][@"scancode"], @(0x53));
+	XCTAssertEqual(recorder.events.count, 6u);
+	NSArray *scancodes = @[@(0x2A), @(0x47), @(0x47), @(0x2A), @(0x0E), @(0x0E)];
+	NSArray *flags = @[@(KBD_FLAGS_DOWN), @(KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED),
+	    @(KBD_FLAGS_RELEASE | KBD_FLAGS_EXTENDED), @(KBD_FLAGS_RELEASE), @(KBD_FLAGS_DOWN), @(KBD_FLAGS_RELEASE)];
+	for (NSUInteger index = 0; index < MIN(6u, recorder.events.count); index++)
+	{
+		XCTAssertEqualObjects(recorder.events[index][@"scancode"], scancodes[index]);
+		XCTAssertEqualObjects(recorder.events[index][@"flags"], flags[index]);
+	}
 	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testPlainBackspaceStillDeletesThePreviousCharacter
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	for (NSUInteger index = 0; index < 2; index++)
+		[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:0 text:@"\b" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:0 text:@"\b" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 3u);
+	for (NSDictionary *event in recorder.events) XCTAssertEqualObjects(event[@"scancode"], @(0x0E));
+	XCTAssertEqualObjects(recorder.events.lastObject[@"flags"], @(KBD_FLAGS_RELEASE));
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testShiftBackspaceSendsNormalDeleteAndRestoresEitherPhysicalShift
+{
+	for (NSNumber *usage in @[@(UIKeyboardHIDUsageKeyboardLeftShift), @(UIKeyboardHIDUsageKeyboardRightShift)])
+	{
+		OrbisInputRecorder *recorder = [self recorder];
+		RDPSessionView *view = [self inputViewWithRecorder:recorder];
+		[self sendUsage:usage.intValue flags:UIKeyModifierShift text:@"" up:NO view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:UIKeyModifierShift text:@"\b" up:NO view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:UIKeyModifierShift text:@"\b" up:NO view:view];
+		[self sendUsage:usage.intValue flags:0 text:@"" up:YES view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:0 text:@"\b" up:NO view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardDeleteOrBackspace flags:0 text:@"\b" up:YES view:view];
+		XCTAssertEqual(recorder.events.count, 6u);
+		if (recorder.events.count == 6)
+		{
+			NSNumber *shift = usage.intValue == UIKeyboardHIDUsageKeyboardLeftShift ? @(0x2A) : @(0x36);
+			XCTAssertEqualObjects(recorder.events[1][@"scancode"], shift);
+			XCTAssertEqualObjects(recorder.events[1][@"flags"], @(KBD_FLAGS_RELEASE));
+			XCTAssertEqualObjects(recorder.events[2][@"scancode"], @(0x53));
+			XCTAssertEqualObjects(recorder.events[2][@"flags"], @(KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED));
+			XCTAssertEqualObjects(recorder.events[3][@"flags"], @(KBD_FLAGS_RELEASE | KBD_FLAGS_EXTENDED));
+			XCTAssertEqualObjects(recorder.events[4][@"scancode"], shift);
+			XCTAssertEqualObjects(recorder.events[4][@"flags"], @(KBD_FLAGS_DOWN));
+			XCTAssertEqualObjects(recorder.events[5][@"flags"], @(KBD_FLAGS_RELEASE));
+		}
+		[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+	}
 }
 
 - (void)testShiftOptionTextRestoresTheSamePhysicalShiftKey

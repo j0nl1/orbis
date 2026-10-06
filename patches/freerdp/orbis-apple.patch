@@ -3143,7 +3143,7 @@ index 722bccc..41b32e1 100644
  - (void)setRemoteCursorPosition:(CGPoint)position;
  - (void)showRemoteCursor;
 diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView.m
-index c7e2f41..0690b01 100644
+index c7e2f41..126ea40 100644
 --- a/client/iOS/Views/RDPSessionView.m
 +++ b/client/iOS/Views/RDPSessionView.m
 @@ -9,6 +9,7 @@
@@ -3258,7 +3258,7 @@ index c7e2f41..0690b01 100644
  	[commandBuffer commit];
  
  	if (!_hasPendingDirtyRect)
-@@ -454,6 +501,88 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -454,6 +501,114 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	}
  }
  
@@ -3280,8 +3280,6 @@ index c7e2f41..0690b01 100644
 +		case UIKeyboardHIDUsageKeyboardX:
 +		case UIKeyboardHIDUsageKeyboardZ:
 +			return VKFromHIDUsage(usage);
-+		case UIKeyboardHIDUsageKeyboardDeleteOrBackspace:
-+			return VK_DELETE | KBDEXT;
 +		default:
 +			return 0;
 +	}
@@ -3326,6 +3324,34 @@ index c7e2f41..0690b01 100644
 +	if (restoreAlt) [keyboard sendVirtualKey:VK_LMENU up:NO];
 +}
 +
++- (void)sendDeleteShortcutToLineStart:(BOOL)lineStart
++{
++	RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
++	BOOL restoreAlt = _remoteOptionDown || keyboard.altPressed;
++	BOOL restoreControl = _commandControlDown || keyboard.ctrlPressed;
++	NSMutableArray *shifts = [NSMutableArray arrayWithArray:[_remoteShiftKeys allObjects]];
++	if (keyboard.shiftPressed && ![shifts containsObject:@(VK_LSHIFT)]) [shifts addObject:@(VK_LSHIFT)];
++	// Shift selects the local shortcut; it must not make remote Delete permanent.
++	if (restoreAlt) [keyboard sendVirtualKey:VK_LMENU up:YES];
++	if (restoreControl) [keyboard sendVirtualKey:VK_LCONTROL up:YES];
++	if (keyboard.winPressed) [keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:YES];
++	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:YES];
++	if (lineStart)
++	{
++		[keyboard sendVirtualKey:VK_LSHIFT up:NO];
++		[keyboard sendVirtualKey:(VK_HOME | KBDEXT) up:NO];
++		[keyboard sendVirtualKey:(VK_HOME | KBDEXT) up:YES];
++		[keyboard sendVirtualKey:VK_LSHIFT up:YES];
++	}
++	int deletion = lineStart ? VK_BACK : (VK_DELETE | KBDEXT);
++	[keyboard sendVirtualKey:deletion up:NO];
++	[keyboard sendVirtualKey:deletion up:YES];
++	for (NSNumber *shift in shifts) [keyboard sendVirtualKey:shift.intValue up:NO];
++	if (keyboard.winPressed) [keyboard sendVirtualKey:(VK_LWIN | KBDEXT) up:NO];
++	if (restoreControl) [keyboard sendVirtualKey:VK_LCONTROL up:NO];
++	if (restoreAlt) [keyboard sendVirtualKey:VK_LMENU up:NO];
++}
++
 +- (void)publishClipboardForPaste
 +{
 +	NSString *text = [UIPasteboard generalPasteboard].string;
@@ -3347,7 +3373,7 @@ index c7e2f41..0690b01 100644
  - (BOOL)canBecomeFirstResponder
  {
  	return _hardwareKeyboardActive;
-@@ -467,7 +596,167 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -467,7 +622,177 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		if (key == nil)
  			continue;
  
@@ -3374,6 +3400,18 @@ index c7e2f41..0690b01 100644
 +		if (!up && usage == UIKeyboardHIDUsageKeyboardV &&
 +		    (key.modifierFlags & UIKeyModifierControl) && !(key.modifierFlags & UIKeyModifierCommand))
 +			[self publishClipboardForPaste];
++		if (!up && usage == UIKeyboardHIDUsageKeyboardDeleteOrBackspace)
++		{
++			if ([_commandConsumedKeys containsObject:@(usage)]) continue;
++			BOOL command = (key.modifierFlags & UIKeyModifierCommand) != 0;
++			BOOL shift = (key.modifierFlags & UIKeyModifierShift) != 0;
++			if ((command || shift) && !(key.modifierFlags & (UIKeyModifierControl | UIKeyModifierAlternate)))
++			{
++				[self sendDeleteShortcutToLineStart:command];
++				[_commandConsumedKeys addObject:@(usage)];
++				continue;
++			}
++		}
 +		int commandVK = OrbisCommandShortcutVK(usage);
 +		NSNumber *commandKey = [NSNumber numberWithInt:commandVK];
 +		if (up && commandVK != 0 && [_commandMappedKeys containsObject:commandKey])
@@ -3382,9 +3420,7 @@ index c7e2f41..0690b01 100644
 +			[keyboard sendVirtualKey:commandVK up:YES];
 +			[_commandMappedKeys removeObject:commandKey];
 +			[_commandConsumedKeys removeObject:@(usage)];
-+			BOOL needsControl = NO;
-+			for (NSNumber *mapped in _commandMappedKeys)
-+				needsControl |= [mapped intValue] != (VK_DELETE | KBDEXT);
++			BOOL needsControl = _commandMappedKeys.count > 0;
 +			if (!needsControl && _commandControlDown)
 +			{
 +				[keyboard sendVirtualKey:VK_LCONTROL up:YES];
@@ -3408,7 +3444,7 @@ index c7e2f41..0690b01 100644
 +				if (usage == UIKeyboardHIDUsageKeyboardV && ![_commandMappedKeys containsObject:commandKey])
 +					[self publishClipboardForPaste];
 +				RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
-+				if (commandVK != (VK_DELETE | KBDEXT) && !_commandControlDown)
++				if (!_commandControlDown)
 +				{
 +					[keyboard sendVirtualKey:VK_LCONTROL up:NO];
 +					_commandControlDown = YES;
@@ -3516,7 +3552,7 @@ index c7e2f41..0690b01 100644
  		if (vk != 0)
  			[[RDPKeyboard getSharedRDPKeyboard] sendVirtualKey:vk up:up];
  	}
-@@ -481,6 +770,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -481,6 +806,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		[super pressesBegan:presses withEvent:event];
  }
  
@@ -3529,7 +3565,7 @@ index c7e2f41..0690b01 100644
  - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
  {
  	if (_hardwareKeyboardActive)
-@@ -491,6 +786,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -491,6 +822,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  
  - (void)dealloc
  {
@@ -3537,7 +3573,7 @@ index c7e2f41..0690b01 100644
  	[_displayLinkTarget clearView];
  	[_displayLink invalidate];
  	[_displayLink release];
-@@ -500,6 +796,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -500,6 +832,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	[_commandQueue release];
  	[_metalDevice release];
  	[_cursorImageView release];
