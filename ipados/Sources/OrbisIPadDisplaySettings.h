@@ -7,7 +7,8 @@
 @property(nonatomic) NSUInteger width;
 @property(nonatomic) NSUInteger height;
 @property(nonatomic, readonly) BOOL automaticResolution;
-@property(nonatomic) BOOL workspaceGesturesEnabled;
+@property(nonatomic) BOOL workspaceShortcutsEnabled;
+@property(nonatomic) BOOL screenEdgePaddingEnabled;
 
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults;
 - (BOOL)saveWithError:(NSError **)error;

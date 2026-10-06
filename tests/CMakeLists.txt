@@ -79,6 +79,15 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   set_tests_properties(integration.macos-keyboard-input PROPERTIES LABELS "integration;appkit;freerdp")
 endif()
 find_library(NETWORK_FRAMEWORK Network REQUIRED)
+find_library(METRICKIT_FRAMEWORK MetricKit REQUIRED)
+add_library(orbis_diagnostics STATIC ${PROJECT_SOURCE_DIR}/shared/Sources/Diagnostics/OrbisDiagnostics.m)
+target_include_directories(orbis_diagnostics PUBLIC ${PROJECT_SOURCE_DIR}/shared/Sources/Diagnostics)
+target_compile_options(orbis_diagnostics PRIVATE -fobjc-arc -fblocks -Wall -Wextra)
+target_link_libraries(orbis_diagnostics PUBLIC ${FOUNDATION_FRAMEWORK} ${METRICKIT_FRAMEWORK})
+xctest_add_bundle(OrbisDiagnosticsTests orbis_diagnostics ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisDiagnosticsTests.m)
+target_compile_options(OrbisDiagnosticsTests PRIVATE -fobjc-arc -fblocks)
+xctest_add_test(unit.diagnostics OrbisDiagnosticsTests)
+set_tests_properties(unit.diagnostics PROPERTIES LABELS "unit;xctest;shared")
 
 # The asynchronous transport uses ARC independently of the existing MRC adapters.
 add_library(orbis_tunnel STATIC
@@ -152,6 +161,7 @@ target_link_libraries(
   PUBLIC
     orbis_shared
     orbis_tunnel
+    orbis_diagnostics
     ${APPKIT_FRAMEWORK}
     "-framework ApplicationServices"
     "-framework CoreGraphics"

@@ -33,11 +33,14 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 {
 	if (!(self = [super init])) return nil;
 	_defaults = [defaults retain];
-	_workspaceGesturesEnabled = YES;
+	_workspaceShortcutsEnabled = YES;
+	_screenEdgePaddingEnabled = YES;
 	id saved = [defaults objectForKey:OrbisIPadDisplaySettingsKey];
 	if (![saved isKindOfClass:[NSDictionary class]]) return self;
-	if ([saved[@"workspaceGesturesEnabled"] isKindOfClass:[NSNumber class]])
-		_workspaceGesturesEnabled = [saved[@"workspaceGesturesEnabled"] boolValue];
+	if ([saved[@"workspaceShortcutsEnabled"] isKindOfClass:[NSNumber class]])
+		_workspaceShortcutsEnabled = [saved[@"workspaceShortcutsEnabled"] boolValue];
+	if ([saved[@"screenEdgePaddingEnabled"] isKindOfClass:[NSNumber class]])
+		_screenEdgePaddingEnabled = [saved[@"screenEdgePaddingEnabled"] boolValue];
 	id width = saved[@"width"], height = saved[@"height"];
 	if ([width isKindOfClass:[NSNumber class]] && [height isKindOfClass:[NSNumber class]] &&
 	    [width doubleValue] == [width unsignedIntegerValue] &&
@@ -66,7 +69,8 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 		return NO;
 	}
 	[_defaults setObject:@{ @"width" : @(_width), @"height" : @(_height),
-	    @"workspaceGesturesEnabled" : @(_workspaceGesturesEnabled) }
+	    @"workspaceShortcutsEnabled" : @(_workspaceShortcutsEnabled),
+	    @"screenEdgePaddingEnabled" : @(_screenEdgePaddingEnabled) }
 	    forKey:OrbisIPadDisplaySettingsKey];
 	return YES;
 }
@@ -76,7 +80,8 @@ static NSString *const OrbisIPadDisplaySettingsKey = @"OrbisIPadDisplaySettings.
 	[parameters setInt:(int)_width forKey:@"width"];
 	[parameters setInt:(int)_height forKey:@"height"];
 	[parameters setBool:self.automaticResolution forKey:@"match_window_resolution"];
-	[parameters setBool:_workspaceGesturesEnabled forKey:@"workspace_gestures"];
+	[parameters setBool:_workspaceShortcutsEnabled forKey:@"workspace_shortcuts"];
+	[parameters setBool:_screenEdgePaddingEnabled forKey:@"screen_edge_padding"];
 }
 
 - (void)dealloc { [_defaults release]; [super dealloc]; }

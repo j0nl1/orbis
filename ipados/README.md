@@ -53,18 +53,34 @@ connection fails, or the app becomes inactive. Returning to an ongoing session
 keeps the display awake again. Connection availability checks do not prevent
 screen lock.
 
-Trackpad workspace gestures are enabled by default for new connections and can be
-disabled in Settings. Swipe two fingers left or right without clicking to switch
-workspaces; hold Alt (Option) and swipe up to open Activities. Alt + Shift with a
-sideways swipe moves the active window to the neighboring workspace. The adapter
-sends GNOME's Super + Page Up/Down, Super, and Super + Shift + Page Up/Down shortcuts.
-GNOME's dynamic workspace behavior creates an additional empty workspace when a
-window moves into the final empty workspace; Orbis does not create workspaces
-through RDP. Customized shortcuts or other Linux desktops may behave differently.
+Hardware keyboard workspace shortcuts are enabled by default for new connections
+and can be disabled in Settings. Alt (Option) + Shift + Left/Right switches
+workspaces; Alt + Shift + Up toggles Activities. Alt + the physical key immediately
+left of 1 also toggles Activities. Each shortcut triggers once per key press;
+repeats and releases stay consumed even when Alt is released before the arrow.
+Alt + Shift + Down sends Escape to close Activities. Outside Activities, Escape
+is handled by the focused application. The adapter sends GNOME's Super + Page
+Up/Down and Super shortcuts, temporarily releasing and restoring held Alt and physical Shift keys. Customized GNOME
+shortcuts or other Linux desktops may behave differently.
 
-Each continuous swipe selects one direction and triggers at most one action.
-Ordinary vertical scrolling and discrete mouse wheels remain remote scrolling;
-disabling the option restores horizontal trackpad scrolling. Alt and physical
-Shift states are preserved around the generated shortcut. Three-finger trackpad
-system gestures remain handled by iPadOS. Tests cover synthetic gesture sequences
-and resulting RDP key events; physical trackpad behavior needs device verification.
+Trackpad swipes and discrete mouse wheels always scroll the remote desktop,
+including horizontal scrolling. Workspace swipe recognition and its preferences
+have been removed. Three-finger system gestures remain handled by iPadOS.
+Tests cover synthetic keyboard input, modifier restoration, and wheel events;
+physical keyboard behavior needs device verification.
+
+Settings → Diagnostics → Export Diagnostics shares the local JSON history, with
+recent session events, numeric error codes, and available MetricKit crash or hang
+reports. Disconnection records distinguish requested disconnects from unexpected
+ones and include native RDP error state before teardown. Scene state and memory
+warnings provide context. If the app disappears with an active session, the next
+launch records an interrupted session; this alone does not confirm a crash.
+Nothing is uploaded automatically. See the shared Diagnostics README for
+retention, excluded data, OS report delivery, and matching debugging symbols.
+
+Settings → Remote display → Black screen border controls an 8-point black margin
+around the remote desktop. It is enabled by default and applies to new connections.
+The margin helps reach remote screen edges away from iPadOS resizing corners.
+Automatic resolution follows the inset viewport; manually configured resolutions
+remain unchanged. The connection screen shows the computer name and a neutral
+native Cancel button.

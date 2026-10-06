@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: MIT */
 #import "OrbisIPadDisplaySettingsController.h"
 #import "OrbisIPadDisplaySettings.h"
+#import "OrbisDiagnostics.h"
 #include <math.h>
 
 @implementation OrbisIPadDisplaySettingsController
 {
 	OrbisIPadDisplaySettings *_settings;
 	UISwitch *_automaticSwitch;
+	UISwitch *_paddingSwitch;
 	UITextField *_widthField;
 	UITextField *_heightField;
 	UIButton *_presetButton;
@@ -66,17 +68,21 @@
 	_presetButton.frame = CGRectMake(0, 0, 160, 44);
 	[_presetButton setTitle:@"Choose resolution" forState:UIControlStateNormal];
 	_presetButton.showsMenuAsPrimaryAction = YES;
+	_paddingSwitch = [[UISwitch alloc] init];
+	_paddingSwitch.on = _settings.screenEdgePaddingEnabled;
+	_paddingSwitch.accessibilityIdentifier = @"display-screen-edge-padding";
 	_resolutionCells = [[NSArray alloc] initWithObjects:
 	    [self cellWithTitle:@"Automatically match window" control:_automaticSwitch],
 	    [self cellWithTitle:@"Suggested" control:_presetButton],
 	    [self cellWithTitle:@"Width" control:_widthField],
-	    [self cellWithTitle:@"Height" control:_heightField], nil];
+	    [self cellWithTitle:@"Height" control:_heightField],
+	    [self cellWithTitle:@"Black screen border" control:_paddingSwitch], nil];
 	[self updateResolutionPresets];
 	[self automaticChanged:nil];
 	_workspaceSwitch = [[UISwitch alloc] init];
-	_workspaceSwitch.on = _settings.workspaceGesturesEnabled;
-	_workspaceSwitch.accessibilityIdentifier = @"trackpad-workspace-gestures";
-	_workspaceCell = [[self cellWithTitle:@"Workspace gestures" control:_workspaceSwitch] retain];
+	_workspaceSwitch.on = _settings.workspaceShortcutsEnabled;
+	_workspaceSwitch.accessibilityIdentifier = @"keyboard-workspace-shortcuts";
+	_workspaceCell = [[self cellWithTitle:@"Workspace shortcuts" control:_workspaceSwitch] retain];
 }
 
 - (void)viewDidLayoutSubviews
@@ -123,25 +129,75 @@
 	    [UIColor tertiaryLabelColor] : [UIColor labelColor];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 3; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
 	(void)tableView; return section == 0 ? _resolutionCells.count : 1;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path
 {
-	(void)tableView; return path.section == 0 ? _resolutionCells[path.row] : _workspaceCell;
+	(void)tableView;
+	if (path.section == 0) return _resolutionCells[path.row];
+	if (path.section == 1) return _workspaceCell;
+	UITableViewCell *cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil] autorelease];
+	cell.textLabel.text = @"Export Diagnostics";
+	cell.imageView.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
+	cell.accessibilityIdentifier = @"export-diagnostics";
+	return cell;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-	(void)tableView; return section == 0 ? @"Remote resolution" : @"Trackpad";
+	(void)tableView; return section == 0 ? @"Remote display" : (section == 1 ? @"Keyboard" : @"Diagnostics");
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
 	(void)tableView;
+	if (section == 2)
+		return @"Export recent session events, error codes, and available crash or hang reports. Diagnostics stay on this device until you share them.";
 	if (section == 1)
-		return @"Swipe two fingers left or right to switch workspaces. Hold Alt (Option) and swipe up for Activities, or Alt + Shift and swipe sideways to move the active window. Uses GNOME keyboard shortcuts. Turn off to restore horizontal scrolling. Applies to new connections.";
-	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed.";
+		return @"For GNOME: Alt (Option) + Shift + Left/Right switches workspaces; Up toggles Activities; Down sends Escape to close Activities. Alt + the key left of 1 also toggles Activities. Trackpad swipes scroll. Applies to new connections.";
+	return @"Applies to new connections to any computer. Suggested resolutions match this iPad window’s proportions. Automatic follows rotation and resizing. A manual resolution stays fixed. The black border adds space around the remote screen to help reach its edges.";
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path
+{
+	[tableView deselectRowAtIndexPath:path animated:YES];
+	if (path.section != 2) return;
+	tableView.userInteractionEnabled = NO;
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+		@autoreleasepool
+		{
+			NSError *error = nil;
+			NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"OrbisExports"]];
+			NSURL *url = [[OrbisDiagnostics sharedDiagnostics] exportToDirectory:directory error:&error];
+			dispatch_async(dispatch_get_main_queue(), ^{
+				tableView.userInteractionEnabled = YES;
+				if (!self.view.window || self.presentedViewController)
+				{
+					if (url) [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+					return;
+				}
+				if (!url)
+				{
+					UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Could not export diagnostics"
+					    message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
+					[alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+					[self presentViewController:alert animated:YES completion:nil];
+					return;
+				}
+				UIActivityViewController *share = [[[UIActivityViewController alloc]
+				    initWithActivityItems:@[url] applicationActivities:nil] autorelease];
+				UIView *anchor = [tableView cellForRowAtIndexPath:path] ?: tableView;
+				share.popoverPresentationController.sourceView = anchor;
+				share.popoverPresentationController.sourceRect = anchor.bounds;
+				share.completionWithItemsHandler = ^(UIActivityType type, BOOL completed, NSArray *items, NSError *shareError) {
+					(void)type; (void)completed; (void)items; (void)shareError;
+					[[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+				};
+				[self presentViewController:share animated:YES completion:nil];
+			});
+		}
+	});
 }
 
 - (NSUInteger)dimensionFromField:(UITextField *)field
@@ -159,7 +215,8 @@
 	[self.view endEditing:YES];
 	_settings.width = _automaticSwitch.on ? 0 : [self dimensionFromField:_widthField];
 	_settings.height = _automaticSwitch.on ? 0 : [self dimensionFromField:_heightField];
-	_settings.workspaceGesturesEnabled = _workspaceSwitch.on;
+	_settings.workspaceShortcutsEnabled = _workspaceSwitch.on;
+	_settings.screenEdgePaddingEnabled = _paddingSwitch.on;
 	NSError *error = nil;
 	if ([_settings saveWithError:&error])
 		return [self dismissViewControllerAnimated:YES completion:nil];
@@ -178,6 +235,7 @@
 {
 	[_presetButton release]; [_resolutionCells release];
 	[_workspaceSwitch release]; [_workspaceCell release];
+	[_paddingSwitch release];
 	[_settings release]; [_automaticSwitch release]; [_widthField release]; [_heightField release];
 	[super dealloc];
 }

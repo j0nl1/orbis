@@ -111,3 +111,8 @@ fullscreen focus episode. Leaving fullscreen or switching away and returning
 rearms the option. If macOS disables its event filter, capture stops automatically;
 input resumes locally without silently recapturing. Windowed sessions
 and sessions with the option off retain their existing Mac shortcut behavior.
+
+Orbis → Export Diagnostics saves a local JSON history of session events, numeric
+error codes, display changes, and available MetricKit crash or hang reports.
+Nothing is uploaded automatically. See the shared Diagnostics README for storage,
+excluded data, OS report delivery, and matching debugging symbols.

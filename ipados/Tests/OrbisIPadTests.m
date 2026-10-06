@@ -6,13 +6,15 @@
 #import "OrbisProfileEditorController.h"
 #import "OrbisAboutController.h"
 #import "OrbisIPadDisplaySettings.h"
-#import "OrbisIPadWorkspaceGesture.h"
+#import "OrbisIPadWorkspaceShortcuts.h"
 #import "OrbisIPadDisplaySettingsController.h"
 #import "RDPSessionViewController.h"
 #import "OrbisConnectionTransport.h"
 #import "OrbisConnectionHealthCheck.h"
 #import "OrbisDirectTransport.h"
 #import "RDPSession.h"
+#import "OrbisDiagnostics.h"
+#import "ios_freerdp.h"
 #import "RDPSessionView.h"
 #import "RDPKeyboard.h"
 #import "Bookmark.h"
@@ -40,6 +42,7 @@
 - (void)cancelPressed:(id)sender;
 @end
 @interface RDPSessionViewController (OrbisDisplayTesting)
+- (CGRect)remoteViewportFrame;
 - (void)sendViewportResize;
 - (IBAction)matchIPadResolution:(id)sender;
 - (void)handleScroll:(UIPanGestureRecognizer *)gesture;
@@ -128,9 +131,10 @@
 @property(nonatomic) UIKeyboardHIDUsage keyCode;
 @property(nonatomic) UIKeyModifierFlags modifierFlags;
 @property(nonatomic, copy) NSString *characters;
+@property(nonatomic, copy) NSString *charactersIgnoringModifiers;
 @end
 @implementation OrbisTestKey
-- (void)dealloc { [_characters release]; [super dealloc]; }
+- (void)dealloc { [_characters release]; [_charactersIgnoringModifiers release]; [super dealloc]; }
 @end
 @interface OrbisTestPress : NSObject
 @property(nonatomic, retain) OrbisTestKey *key;
@@ -172,6 +176,11 @@
 	dispatch_async(dispatch_get_main_queue(), ^{ ready(self.destination, error); });
 }
 - (void)dealloc { [_session release]; [_ready release]; [_destination release]; [super dealloc]; }
+@end
+
+@interface RDPSession (OrbisDiagnosticsTesting)
+- (mfInfo *)mfi;
+- (void)sessionDidDisconnect;
 @end
 
 @interface OrbisTestRDPSession : RDPSession
@@ -221,6 +230,7 @@
 {
 	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:[self displayDefaults]] autorelease];
 	XCTAssertTrue(settings.automaticResolution);
+	XCTAssertTrue(settings.screenEdgePaddingEnabled);
 }
 
 - (void)testGlobalDisplaySettingsReachNewSessionsWithOneDesktop
@@ -328,7 +338,7 @@
 	    height:(NSUInteger)round(768 * window.screen.nativeScale)];
 	NSString *expected = [NSString stringWithFormat:@"%@ × %@", sizes[0][0], sizes[0][1]];
 	XCTAssertEqualObjects([button.menu.children.firstObject title], expected);
-	XCTAssertEqual([editor numberOfSectionsInTableView:editor.tableView], 2);
+	XCTAssertEqual([editor numberOfSectionsInTableView:editor.tableView], 3);
 	[[editor valueForKey:@"automaticSwitch"] setOn:NO];
 	[[editor valueForKey:@"widthField"] setText:@"1112"];
 	[[editor valueForKey:@"heightField"] setText:@"834"];
@@ -365,11 +375,13 @@
 	[[editor valueForKey:@"automaticSwitch"] setOn:NO];
 	[[editor valueForKey:@"widthField"] setText:@"2560"];
 	[[editor valueForKey:@"heightField"] setText:@"1440"];
+	[[editor valueForKey:@"paddingSwitch"] setOn:NO];
 	[editor cancelPressed:nil];
 	XCTAssertNil([defaults objectForKey:@"OrbisIPadDisplaySettings.v1"]);
 	[editor savePressed:nil];
 	OrbisIPadDisplaySettings *loaded = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
 	XCTAssertEqual(loaded.width, 2560u); XCTAssertEqual(loaded.height, 1440u);
+	XCTAssertFalse(loaded.screenEdgePaddingEnabled);
 }
 
 - (void)testManualResolutionSurvivesViewportChangesUntilExplicitMatch
@@ -387,6 +399,29 @@
 	[controller sendViewportResize];
 	XCTAssertEqual(session.resizeRequests, 1u);
 	XCTAssertTrue(CGSizeEqualToSize(session.requestedSize, CGSizeMake(2732, 2048)));
+}
+
+- (void)testScreenBorderSettingPersistsAndReachesTheRemoteViewport
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	for (NSNumber *enabled in @[@NO, @YES])
+	{
+		OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc]
+		    initWithDefaults:defaults] autorelease];
+		[editor loadViewIfNeeded];
+		[[editor valueForKey:@"paddingSwitch"] setOn:enabled.boolValue];
+		[editor savePressed:nil];
+		OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+		XCTAssertEqual(settings.screenEdgePaddingEnabled, enabled.boolValue);
+		OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+		[settings applyToConnectionParameters:session.params];
+		XCTAssertEqual([session.params boolForKey:@"screen_edge_padding"], enabled.boolValue);
+		RDPSessionViewController *remote = [[[RDPSessionViewController alloc]
+		    initWithNibName:nil bundle:nil session:session] autorelease];
+		remote.view = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 1024, 768)] autorelease];
+		CGRect expected = enabled.boolValue ? CGRectMake(8, 8, 1008, 752) : CGRectMake(0, 0, 1024, 768);
+		XCTAssertTrue(CGRectEqualToRect([remote remoteViewportFrame], expected));
+	}
 }
 
 - (void)testDirectProfileKeepsItsDefaultTransport
@@ -474,7 +509,7 @@
               up:(BOOL)up view:(RDPSessionView *)view
 {
 	OrbisTestKey *key = [[[OrbisTestKey alloc] init] autorelease];
-	key.keyCode = usage; key.modifierFlags = flags; key.characters = text;
+	key.keyCode = usage; key.modifierFlags = flags; key.characters = text; key.charactersIgnoringModifiers = text;
 	OrbisTestPress *press = [[[OrbisTestPress alloc] init] autorelease];
 	press.key = key;
 	[view handlePresses:[NSSet setWithObject:press] up:up];
@@ -493,10 +528,12 @@
 {
 	OrbisInputRecorder *recorder = [[[OrbisInputRecorder alloc] init] autorelease];
 	recorder.events = [NSMutableArray array];
+	recorder.params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
+	[recorder.params setBool:YES forKey:@"workspace_shortcuts"];
 	return recorder;
 }
 
-- (void)testWorkspaceGestureSettingsPersistAndReachNewConnections
+- (void)testWorkspaceShortcutSettingsPersistAndReachNewConnections
 {
 	NSUserDefaults *defaults = [self displayDefaults];
 	OrbisIPadDisplaySettingsController *editor = [[[OrbisIPadDisplaySettingsController alloc]
@@ -506,80 +543,88 @@
 	[[editor valueForKey:@"workspaceSwitch"] setOn:NO];
 	[editor cancelPressed:nil];
 	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	XCTAssertTrue(settings.workspaceGesturesEnabled);
+	XCTAssertTrue(settings.workspaceShortcutsEnabled);
 	[editor savePressed:nil];
 	settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
-	XCTAssertFalse(settings.workspaceGesturesEnabled);
+	XCTAssertFalse(settings.workspaceShortcutsEnabled);
 	ConnectionParams *params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
 	[settings applyToConnectionParameters:params];
-	XCTAssertFalse([params boolForKey:@"workspace_gestures"]);
+	XCTAssertFalse([params boolForKey:@"workspace_shortcuts"]);
 }
 
-- (void)testSidewaysTrackpadSwipeNeedsNoAltAndFiresOnce
+- (void)testAltShiftArrowsSwitchWorkspacesAndOpenOrCloseActivitiesOncePerPress
 {
-	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-12, 1)
-	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-70, 4)
-	    state:UIGestureRecognizerStateChanged modifiers:0 enabled:YES], OrbisIPadWorkspacePrevious);
-	for (NSNumber *state in @[ @(UIGestureRecognizerStateChanged), @(UIGestureRecognizerStateEnded) ])
-		XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-160, 4)
-		    state:state.integerValue modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(70, 0)
-	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspaceNext);
-}
-
-- (void)testActivitiesNeedsAltWhileVerticalScrollingKeepsItsDirection
-{
-	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(1, -80)
-	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspaceScroll);
-	// Once scrolling starts, diagonal movement must not switch a workspace.
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(120, -20)
-	    state:UIGestureRecognizerStateChanged modifiers:UIKeyModifierAlternate enabled:YES], OrbisIPadWorkspaceScroll);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(0, -80)
-	    state:UIGestureRecognizerStateBegan modifiers:UIKeyModifierAlternate enabled:YES], OrbisIPadWorkspaceActivities);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(0, 80)
-	    state:UIGestureRecognizerStateBegan modifiers:UIKeyModifierAlternate enabled:YES], OrbisIPadWorkspaceScroll);
-}
-
-- (void)testMovingWindowsNeedsAltShiftAndCancelledSwipesSendNothing
-{
-	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
 	UIKeyModifierFlags flags = UIKeyModifierAlternate | UIKeyModifierShift;
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-80, 0)
-	    state:UIGestureRecognizerStateBegan modifiers:flags enabled:YES], OrbisIPadWorkspaceMovePrevious);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(80, 0)
-	    state:UIGestureRecognizerStateBegan modifiers:flags enabled:YES], OrbisIPadWorkspaceMoveNext);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-15, 0)
-	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(-100, 0)
-	    state:UIGestureRecognizerStateCancelled modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(20, 0)
-	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(20, 0)
-	    state:UIGestureRecognizerStateEnded modifiers:0 enabled:YES], OrbisIPadWorkspacePending);
+	for (NSNumber *usage in @[ @(UIKeyboardHIDUsageKeyboardLeftArrow),
+	    @(UIKeyboardHIDUsageKeyboardRightArrow), @(UIKeyboardHIDUsageKeyboardUpArrow),
+	    @(UIKeyboardHIDUsageKeyboardDownArrow) ])
+	{
+		[recorder.events removeAllObjects];
+		[self sendUsage:usage.integerValue flags:flags text:@"" up:NO view:view];
+		NSUInteger count = recorder.events.count;
+		[self sendUsage:usage.integerValue flags:flags text:@"" up:NO view:view];
+		// Repeats and releases must remain consumed after releasing the modifiers first.
+		[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:0 text:@"" up:YES view:view];
+		[self sendUsage:usage.integerValue flags:0 text:@"" up:NO view:view];
+		[self sendUsage:usage.integerValue flags:0 text:@"" up:YES view:view];
+		BOOL activities = usage.integerValue == UIKeyboardHIDUsageKeyboardUpArrow;
+		BOOL closeActivities = usage.integerValue == UIKeyboardHIDUsageKeyboardDownArrow;
+		XCTAssertEqual(count, (activities || closeActivities) ? 2u : 4u);
+		XCTAssertEqual(recorder.events.count, count);
+		XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(closeActivities ? 0x01 : 0x5B));
+		if (!activities && !closeActivities)
+			XCTAssertEqualObjects(recorder.events[1][@"scancode"],
+			    @(usage.integerValue == UIKeyboardHIDUsageKeyboardLeftArrow ? 0x49 : 0x51));
+		[self sendUsage:usage.integerValue flags:flags text:@"" up:NO view:view];
+		[self sendUsage:usage.integerValue flags:0 text:@"" up:YES view:view];
+		XCTAssertEqual(recorder.events.count, count * 2);
+	}
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
-- (void)testDisabledGesturesAndOtherKeyboardModifiersLeaveScrollingAlone
+- (void)testWorkspaceArrowRequiresAltShiftAndCanBeDisabled
 {
-	OrbisIPadWorkspaceGesture *gesture = [[[OrbisIPadWorkspaceGesture alloc] init] autorelease];
-	XCTAssertEqual([gesture updateWithTranslation:CGPointMake(100, 0)
-	    state:UIGestureRecognizerStateBegan modifiers:0 enabled:NO], OrbisIPadWorkspaceScroll);
-	for (NSNumber *flags in @[ @(UIKeyModifierControl), @(UIKeyModifierCommand), @(UIKeyModifierShift) ])
-		XCTAssertEqual([gesture updateWithTranslation:CGPointMake(100, 0)
-		    state:UIGestureRecognizerStateBegan modifiers:flags.unsignedIntegerValue enabled:YES], OrbisIPadWorkspaceScroll);
+	UIKeyModifierFlags both = UIKeyModifierAlternate | UIKeyModifierShift;
+	for (NSNumber *flags in @[ @0, @(UIKeyModifierAlternate), @(UIKeyModifierShift),
+	    @(both | UIKeyModifierControl), @(both | UIKeyModifierCommand), @(both) ])
+	{
+		OrbisInputRecorder *recorder = [self recorder];
+		if (flags.unsignedIntegerValue == both) [recorder.params setBool:NO forKey:@"workspace_shortcuts"];
+		RDPSessionView *view = [self inputViewWithRecorder:recorder];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardLeftArrow flags:flags.unsignedIntegerValue text:@"" up:NO view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardLeftArrow flags:0 text:@"" up:YES view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:0 text:@"" up:YES view:view];
+		for (NSDictionary *event in recorder.events)
+		{
+			XCTAssertNotEqualObjects(event[@"scancode"], @(0x5B));
+			XCTAssertNotEqualObjects(event[@"scancode"], @(0x49));
+		}
+		[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+	}
+}
+
+- (void)testWorkspaceShortcutMigratesLegacyGesturePreferencesWithoutRestoringGestures
+{
+	NSUserDefaults *defaults = [self displayDefaults];
+	[defaults setObject:@{ @"width" : @1920, @"height" : @1080, @"workspaceGesturesEnabled" : @NO }
+	    forKey:@"OrbisIPadDisplaySettings.v1"];
+	OrbisIPadDisplaySettings *settings = [[[OrbisIPadDisplaySettings alloc] initWithDefaults:defaults] autorelease];
+	XCTAssertTrue(settings.workspaceShortcutsEnabled);
+	XCTAssertEqual(settings.width, 1920u);
+	XCTAssertTrue([settings saveWithError:nil]);
+	XCTAssertNil([defaults dictionaryForKey:@"OrbisIPadDisplaySettings.v1"][@"workspaceGesturesEnabled"]);
 }
 
 - (void)testWorkspaceShortcutsSendBalancedExtendedSuperAndPageKeys
 {
 	OrbisInputRecorder *recorder = [self recorder];
 	RDPSessionView *view = [self inputViewWithRecorder:recorder];
-	for (NSNumber *action in @[ @(OrbisIPadWorkspacePrevious), @(OrbisIPadWorkspaceNext),
-	    @(OrbisIPadWorkspaceMovePrevious), @(OrbisIPadWorkspaceMoveNext), @(OrbisIPadWorkspaceActivities) ])
+	for (NSNumber *action in @[ @(OrbisIPadWorkspacePrevious), @(OrbisIPadWorkspaceNext), @(OrbisIPadWorkspaceActivities), @(OrbisIPadWorkspaceCloseActivities) ])
 	{
 		[recorder.events removeAllObjects];
-		[view performWorkspaceGesture:action.integerValue];
+		[view performWorkspaceAction:action.integerValue];
 		NSMutableSet *pressed = [NSMutableSet set];
 		for (NSDictionary *event in recorder.events)
 		{
@@ -588,82 +633,115 @@
 			else [pressed addObject:code];
 		}
 		XCTAssertEqual(pressed.count, 0u);
-		BOOL move = action.integerValue == OrbisIPadWorkspaceMovePrevious || action.integerValue == OrbisIPadWorkspaceMoveNext;
-		NSDictionary *superDown = recorder.events[move ? 1 : 0];
-		XCTAssertEqualObjects(superDown[@"scancode"], @(0x5B));
-		XCTAssertEqualObjects(superDown[@"flags"], @(KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED));
-		if (action.integerValue != OrbisIPadWorkspaceActivities)
+		BOOL closeActivities = action.integerValue == OrbisIPadWorkspaceCloseActivities;
+		NSDictionary *firstDown = recorder.events[0];
+		XCTAssertEqualObjects(firstDown[@"scancode"], @(closeActivities ? 0x01 : 0x5B));
+		XCTAssertEqualObjects(firstDown[@"flags"], @(closeActivities ? KBD_FLAGS_DOWN : (KBD_FLAGS_DOWN | KBD_FLAGS_EXTENDED)));
+		if (action.integerValue != OrbisIPadWorkspaceActivities && !closeActivities)
 		{
-			BOOL previous = action.integerValue == OrbisIPadWorkspacePrevious || action.integerValue == OrbisIPadWorkspaceMovePrevious;
-			XCTAssertEqualObjects(recorder.events[move ? 2 : 1][@"scancode"], @(previous ? 0x49 : 0x51));
+			BOOL previous = action.integerValue == OrbisIPadWorkspacePrevious;
+			XCTAssertEqualObjects(recorder.events[1][@"scancode"], @(previous ? 0x49 : 0x51));
 		}
-		XCTAssertEqual(recorder.events.count, action.integerValue == OrbisIPadWorkspaceActivities ? 2u : (move ? 6u : 4u));
+		XCTAssertEqual(recorder.events.count, (action.integerValue == OrbisIPadWorkspaceActivities || closeActivities) ? 2u : 4u);
 	}
 	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
 - (void)testWorkspaceShortcutRestoresHeldAltAndTheSamePhysicalShift
 {
-	OrbisInputRecorder *recorder = [self recorder];
-	RDPSessionView *view = [self inputViewWithRecorder:recorder];
-	[self sendUsage:UIKeyboardHIDUsageKeyboardRightShift flags:UIKeyModifierShift text:@"" up:NO view:view];
-	[self sendUsage:UIKeyboardHIDUsageKeyboardTab flags:UIKeyModifierAlternate | UIKeyModifierShift text:@"\t" up:NO view:view];
-	[self sendUsage:UIKeyboardHIDUsageKeyboardTab flags:0 text:@"\t" up:YES view:view];
-	[recorder.events removeAllObjects];
-	[view performWorkspaceGesture:OrbisIPadWorkspaceMoveNext];
-	XCTAssertEqual(recorder.events.count, 10u);
-	XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x38));
-	XCTAssertEqualObjects(recorder.events[0][@"flags"], @(KBD_FLAGS_RELEASE));
-	XCTAssertEqualObjects(recorder.events[1][@"scancode"], @(0x36));
-	XCTAssertEqualObjects(recorder.events[8][@"scancode"], @(0x36));
-	XCTAssertEqualObjects(recorder.events[9][@"scancode"], @(0x38));
-	[self sendUsage:UIKeyboardHIDUsageKeyboardRightShift flags:0 text:@"" up:YES view:view];
-	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:0 text:@"" up:YES view:view];
-	XCTAssertEqualObjects(recorder.events[10][@"flags"], @(KBD_FLAGS_RELEASE));
-	XCTAssertEqualObjects(recorder.events[11][@"flags"], @(KBD_FLAGS_RELEASE));
-	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+	for (NSNumber *arrow in @[@(UIKeyboardHIDUsageKeyboardRightArrow), @(UIKeyboardHIDUsageKeyboardDownArrow)])
+	{
+		OrbisInputRecorder *recorder = [self recorder];
+		RDPSessionView *view = [self inputViewWithRecorder:recorder];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardRightShift flags:UIKeyModifierShift text:@"" up:NO view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardTab flags:UIKeyModifierAlternate | UIKeyModifierShift text:@"\t" up:NO view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardTab flags:0 text:@"\t" up:YES view:view];
+		[recorder.events removeAllObjects];
+		[self sendUsage:arrow.integerValue
+		    flags:UIKeyModifierAlternate | UIKeyModifierShift text:@"" up:NO view:view];
+		[self sendUsage:arrow.integerValue flags:0 text:@"" up:YES view:view];
+		NSUInteger restoreStart = arrow.integerValue == UIKeyboardHIDUsageKeyboardDownArrow ? 4u : 6u;
+		XCTAssertEqual(recorder.events.count, restoreStart + 2);
+		XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x38));
+		XCTAssertEqualObjects(recorder.events[0][@"flags"], @(KBD_FLAGS_RELEASE));
+		XCTAssertEqualObjects(recorder.events[1][@"scancode"], @(0x36));
+		XCTAssertEqualObjects(recorder.events[restoreStart][@"scancode"], @(0x36));
+		XCTAssertEqualObjects(recorder.events[restoreStart + 1][@"scancode"], @(0x38));
+		[self sendUsage:UIKeyboardHIDUsageKeyboardRightShift flags:0 text:@"" up:YES view:view];
+		[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:0 text:@"" up:YES view:view];
+		XCTAssertEqualObjects(recorder.events[restoreStart + 2][@"flags"], @(KBD_FLAGS_RELEASE));
+		XCTAssertEqualObjects(recorder.events[restoreStart + 3][@"flags"], @(KBD_FLAGS_RELEASE));
+		[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+	}
 }
 
-- (void)testSessionRoutesTrackpadGesturesButKeepsMouseWheelAndDisabledScroll
+- (void)testTrackpadAndMouseWheelAlwaysScrollIncludingAltShiftSwipes
 {
 	OrbisInputRecorder *recorder = [self recorder];
-	recorder.params = [[[ConnectionParams alloc] initWithBaseDefaultParameters] autorelease];
-	[recorder.params setBool:YES forKey:@"workspace_gestures"];
 	RDPSessionView *view = [self inputViewWithRecorder:recorder];
 	RDPSessionViewController *controller = [[[RDPSessionViewController alloc]
 	    initWithNibName:nil bundle:nil session:(RDPSession *)recorder] autorelease];
 	[controller setValue:view forKey:@"session_view"];
 	[controller setValue:@YES forKey:@"session_connected"];
 	OrbisTestScroll *scroll = [[[OrbisTestScroll alloc] init] autorelease];
-	scroll.allowedScrollTypesMask = UIScrollTypeMaskContinuous;
 	scroll.testState = UIGestureRecognizerStateBegan;
-	scroll.testTranslation = CGPointMake(80, 0);
-	[controller handleScroll:scroll];
-	XCTAssertEqual(recorder.events.count, 4u);
-	XCTAssertEqualObjects(recorder.events.firstObject[@"type"], @"keyboard");
-	[recorder.events removeAllObjects];
-	scroll.testState = UIGestureRecognizerStateChanged;
-	scroll.testTranslation = CGPointMake(160, 0);
-	[controller handleScroll:scroll];
-	XCTAssertEqual(recorder.events.count, 0u);
-	scroll.allowedScrollTypesMask = UIScrollTypeMaskDiscrete;
-	scroll.testTranslation = CGPointMake(0, 20);
-	[controller handleScroll:scroll];
-	XCTAssertEqual(recorder.events.count, 1u);
-	XCTAssertEqualObjects(recorder.events.firstObject[@"type"], @"mouse");
-	[recorder.events removeAllObjects];
-	[recorder.params setBool:NO forKey:@"workspace_gestures"];
-	scroll.allowedScrollTypesMask = UIScrollTypeMaskContinuous;
-	scroll.testState = UIGestureRecognizerStateBegan;
-	scroll.testTranslation = CGPointMake(80, 0);
-	[controller handleScroll:scroll];
-	XCTAssertEqual(recorder.events.count, 1u);
-	XCTAssertTrue([recorder.events.firstObject[@"flags"] unsignedIntegerValue] & PTR_FLAGS_HWHEEL);
+	for (NSNumber *mask in @[ @(UIScrollTypeMaskContinuous), @(UIScrollTypeMaskDiscrete) ])
+		for (NSNumber *flags in @[ @0, @(UIKeyModifierAlternate), @(UIKeyModifierAlternate | UIKeyModifierShift) ])
+			for (NSValue *translation in @[ [NSValue valueWithCGPoint:CGPointMake(80, 0)],
+			    [NSValue valueWithCGPoint:CGPointMake(0, -80)] ])
+			{
+				[recorder.events removeAllObjects];
+				scroll.allowedScrollTypesMask = mask.unsignedIntegerValue;
+				scroll.testModifiers = flags.unsignedIntegerValue;
+				scroll.testTranslation = translation.CGPointValue;
+				[controller handleScroll:scroll];
+				XCTAssertEqual(recorder.events.count, 1u);
+				XCTAssertEqualObjects(recorder.events.firstObject[@"type"], @"mouse");
+				NSUInteger wheel = translation.CGPointValue.x ? PTR_FLAGS_HWHEEL : PTR_FLAGS_WHEEL;
+				XCTAssertTrue([recorder.events.firstObject[@"flags"] unsignedIntegerValue] & wheel);
+			}
 	[recorder.events removeAllObjects];
 	[controller setValue:@NO forKey:@"session_connected"];
 	scroll.testTranslation = CGPointMake(80, 0);
 	[controller handleScroll:scroll];
 	XCTAssertEqual(recorder.events.count, 0u);
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testOptionKeyLeftOfOneTogglesActivitiesOnceWithoutTypingOrLeavingAltPressed
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:UIKeyModifierAlternate text:@"" up:NO view:view];
+	for (NSUInteger repeat = 0; repeat < 3; repeat++)
+		[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:UIKeyModifierAlternate text:@"º" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardLeftAlt flags:0 text:@"" up:YES view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:0 text:@"º" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 2u);
+	XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x5B));
+	XCTAssertEqualObjects(recorder.events[1][@"scancode"], @(0x5B));
+	XCTAssertEqualObjects(recorder.events[1][@"flags"], @(KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE));
+	// A later press is a new action, even if the earlier key release came after Alt.
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:UIKeyModifierAlternate text:@"º" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:0 text:@"º" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 4u);
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testActivitiesShortcutAcceptsSpanishISOSectionKeyAndPreservesTheAngleBracketKey
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardNonUSBackslash flags:UIKeyModifierAlternate text:@"º" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardNonUSBackslash flags:0 text:@"º" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 2u);
+	XCTAssertEqualObjects(recorder.events[0][@"scancode"], @(0x5B));
+	[recorder.events removeAllObjects];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:UIKeyModifierAlternate text:@"<" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardGraveAccentAndTilde flags:0 text:@"<" up:YES view:view];
+	XCTAssertEqual(recorder.events.count, 2u);
+	XCTAssertEqualObjects(recorder.events[0][@"subtype"], @"unicode");
+	XCTAssertEqualObjects(recorder.events[0][@"unicode_char"], @('<'));
 	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
 }
 
@@ -762,6 +840,60 @@
 	OrbisTestRDPSession *session = [[[OrbisTestRDPSession alloc] initWithBookmark:bookmark] autorelease];
 	session.connectionTransport = transport;
 	return session;
+}
+
+- (NSArray *)diagnosticEventsNamed:(NSString *)name
+{
+	NSURL *directory = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+	    URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+	NSError *error = nil;
+	NSURL *url = [[OrbisDiagnostics sharedDiagnostics] exportToDirectory:directory error:&error];
+	XCTAssertNotNil(url); XCTAssertNil(error);
+	NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:url] options:0 error:nil];
+	NSMutableArray *events = [NSMutableArray array];
+	for (NSDictionary *event in snapshot[@"events"])
+		if ([event[@"event"] isEqual:name]) [events addObject:event];
+	[NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+	return events;
+}
+
+- (void)testNativeDisconnectDiagnosticsCaptureErrorStateBeforeTeardown
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	info->connection_state = TSXConnectionConnected;
+	freerdp_set_error_info(info->_context->rdp, 0x0000000B);
+	freerdp_set_last_error(info->_context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
+	[session recordRDPStop:OrbisRDPStopReceiveFailed waitError:7];
+	NSDictionary *values = [[self diagnosticEventsNamed:@"session.rdp_stopped"] lastObject][@"values"];
+	XCTAssertEqualObjects(values[@"loop_exit"], @(OrbisRDPStopReceiveFailed));
+	XCTAssertEqualObjects(values[@"code"], @7);
+	XCTAssertEqualObjects(values[@"rdp_error"], @(FREERDP_ERROR_CONNECT_TRANSPORT_FAILED));
+	XCTAssertEqualObjects(values[@"rdp_error_info"], @0x0000000B);
+	XCTAssertEqualObjects(values[@"connection_state"], @(TSXConnectionConnected));
+	info->connection_state = TSXConnectionDisconnected;
+}
+
+- (void)testUnexpectedAndIntentionalDisconnectionsAreDistinguishedAndDeduplicated
+{
+	OrbisTestTransport *transport = [[[OrbisTestTransport alloc] init] autorelease];
+	OrbisTestRDPSession *session = [self sessionWithTransport:transport];
+	[session connect];
+	transport.session.connectionError = [NSError errorWithDomain:NSPOSIXErrorDomain code:54
+	    userInfo:@{ NSLocalizedDescriptionKey : @"private transport details" }];
+	[session sessionDidDisconnect];
+	NSArray *events = [self diagnosticEventsNamed:@"session.disconnected"];
+	XCTAssertEqualObjects(events.lastObject[@"values"][@"intentional"], @NO);
+	XCTAssertTrue(transport.session.closed);
+	XCTAssertEqualObjects([[self diagnosticEventsNamed:@"transport.disconnected"] lastObject][@"values"][@"code"], @54);
+	[session sessionDidDisconnect];
+	XCTAssertEqual([self diagnosticEventsNamed:@"session.disconnected"].count, events.count);
+
+	OrbisTestRDPSession *cancelled = [self sessionWithTransport:transport];
+	[cancelled connect];
+	[cancelled disconnect];
+	events = [self diagnosticEventsNamed:@"session.disconnected"];
+	XCTAssertEqualObjects(events.lastObject[@"values"][@"intentional"], @YES);
 }
 
 - (void)testRDPWaitsForTransportReadiness

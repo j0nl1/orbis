@@ -2,6 +2,8 @@
 
 Only code with the same contract and behaviour on iPadOS and macOS belongs here.
 
+- `Diagnostics` records local session/error history and available MetricKit crash
+  or hang reports, with a bounded JSON export and no automatic uploads.
 - `Profiles` defines connection profiles, selection, automatic connection, and
   persistence.
 - `Security` stores RDP passwords and hostname-bound gateway credentials in
