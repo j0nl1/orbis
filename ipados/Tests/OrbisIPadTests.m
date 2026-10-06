@@ -15,6 +15,8 @@
 #import "RDPSession.h"
 #import "OrbisDiagnostics.h"
 #import "ios_freerdp.h"
+#import "ios_cliprdr.h"
+#import "ios_freerdp_events.h"
 #import "RDPSessionView.h"
 #import "RDPKeyboard.h"
 #import "Bookmark.h"
@@ -46,6 +48,10 @@
 - (void)sendViewportResize;
 - (IBAction)matchIPadResolution:(id)sender;
 - (void)handleScroll:(UIPanGestureRecognizer *)gesture;
+- (void)sessionDidEnterBackground:(NSNotification *)notification;
+- (void)sessionWillEnterForeground:(NSNotification *)notification;
+- (void)endSessionBackgroundTask;
+- (void)sessionBackgroundTimeExpired;
 @end
 @interface OrbisTestViewportController : RDPSessionViewController
 @end
@@ -193,6 +199,36 @@
 - (void)requestDesktopSize:(CGSize)size { self.resizeRequests++; self.requestedSize = size; }
 @end
 
+static UINT OrbisCaptureClipboardList(CliprdrClientContext *cliprdr, const CLIPRDR_FORMAT_LIST *list)
+{
+	NSMutableDictionary *record = (NSMutableDictionary *)cliprdr->handle;
+	record[@"lists"] = @([record[@"lists"] unsignedIntegerValue] + 1);
+	record[@"formats"] = @(list->numFormats);
+	return CHANNEL_RC_OK;
+}
+static UINT OrbisCaptureClipboardResponse(CliprdrClientContext *cliprdr, const CLIPRDR_FORMAT_DATA_RESPONSE *response)
+{
+	NSMutableDictionary *record = (NSMutableDictionary *)cliprdr->handle;
+	record[@"flags"] = @(response->common.msgFlags);
+	record[@"payload"] = [NSData dataWithBytes:response->requestedFormatData length:response->common.dataLen];
+	return CHANNEL_RC_OK;
+}
+
+static UINT OrbisCaptureClipboardAcknowledgment(CliprdrClientContext *cliprdr, const CLIPRDR_FORMAT_LIST_RESPONSE *response)
+{
+	NSMutableDictionary *record = (NSMutableDictionary *)cliprdr->handle;
+	[record[@"sequence"] addObject:@"ack"];
+	record[@"ackFlags"] = @(response->common.msgFlags);
+	return CHANNEL_RC_OK;
+}
+static UINT OrbisCaptureClipboardRequest(CliprdrClientContext *cliprdr, const CLIPRDR_FORMAT_DATA_REQUEST *request)
+{
+	NSMutableDictionary *record = (NSMutableDictionary *)cliprdr->handle;
+	[record[@"sequence"] addObject:@"request"];
+	record[@"requested"] = @(request->requestedFormatId);
+	return CHANNEL_RC_OK;
+}
+
 @interface OrbisIPadTests : XCTestCase <OrbisProfileEditorDelegate>
 @property(nonatomic, retain) OrbisProfile *savedProfile;
 @property(nonatomic, retain) NSDictionary *savedToken;
@@ -224,6 +260,142 @@
 	NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
 	[self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
 	return defaults;
+}
+
+- (void)testRemoteClipboardTextReachesTheIPadPasteboard
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	mfContext *context = mfi->context;
+	CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionaryWithObject:[NSMutableArray array] forKey:@"sequence"];
+	cliprdr.handle = record;
+	cliprdr.ClientFormatListResponse = OrbisCaptureClipboardAcknowledgment;
+	cliprdr.ClientFormatDataRequest = OrbisCaptureClipboardRequest;
+	XCTAssertTrue(ios_cliprdr_init(context, &cliprdr));
+	mfi->connection_state = TSXConnectionConnected;
+	CLIPRDR_FORMAT format = { .formatId = CF_UNICODETEXT };
+	CLIPRDR_FORMAT_LIST list = { .numFormats = 1, .formats = &format };
+	XCTAssertEqual(cliprdr.ServerFormatList(&cliprdr, &list), CHANNEL_RC_OK);
+	XCTAssertEqualObjects(record[@"sequence"], (@[@"ack", @"request"]));
+	XCTAssertEqualObjects(record[@"requested"], @(CF_UNICODETEXT));
+	XCTAssertEqualObjects(record[@"ackFlags"], @(CB_RESPONSE_OK));
+	NSString *expected = @"Clipboard café 🐺\nSecond line";
+	NSMutableData *payload = [NSMutableData dataWithData:[expected dataUsingEncoding:NSUTF16LittleEndianStringEncoding]];
+	uint16_t terminator = 0;
+	[payload appendBytes:&terminator length:sizeof(terminator)];
+	CLIPRDR_FORMAT_DATA_RESPONSE response = { 0 };
+	response.common.msgFlags = CB_RESPONSE_OK;
+	response.common.dataLen = (UINT32)payload.length;
+	response.requestedFormatData = payload.bytes;
+	[UIPasteboard generalPasteboard].string = @"Local previous value";
+	CLIPRDR_FORMAT_DATA_RESPONSE unavailable = { 0 };
+	unavailable.common.msgFlags = CB_RESPONSE_FAIL;
+	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &unavailable), CHANNEL_RC_OK);
+	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
+	XCTestExpectation *delivered = [self expectationWithDescription:@"Remote clipboard published on main queue"];
+	dispatch_async(dispatch_get_main_queue(), ^{
+		XCTAssertEqualObjects([UIPasteboard generalPasteboard].string, expected);
+		[delivered fulfill];
+	});
+	[self waitForExpectations:@[delivered] timeout:2];
+	response.common.dataLen = sizeof(terminator);
+	response.requestedFormatData = (const BYTE *)&terminator;
+	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
+	XCTestExpectation *cleared = [self expectationWithDescription:@"Empty remote text replaces previous clipboard contents"];
+	dispatch_async(dispatch_get_main_queue(), ^{
+		XCTAssertEqualObjects([UIPasteboard generalPasteboard].string, @"");
+		[cleared fulfill];
+	});
+	[self waitForExpectations:@[cleared] timeout:2];
+	mfi->connection_state = TSXConnectionDisconnected;
+	free(context->serverFormats); context->serverFormats = NULL; context->numServerFormats = 0;
+	XCTAssertTrue(ios_cliprdr_uninit(context, &cliprdr));
+}
+
+- (void)testCommandPastePublishesTheIPadClipboardBeforeRemoteKeys
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionView *view = [self inputViewWithRecorder:recorder];
+	NSString *expected = @"Clipboard café 🐺\nSecond line";
+	[UIPasteboard generalPasteboard].string = expected;
+	[self sendUsage:UIKeyboardHIDUsageKeyboardV flags:UIKeyModifierCommand text:@"v" up:NO view:view];
+	[self sendUsage:UIKeyboardHIDUsageKeyboardV flags:0 text:@"v" up:YES view:view];
+	XCTAssertEqualObjects(recorder.events.firstObject[@"type"], @"clipboard");
+	XCTAssertEqualObjects(recorder.events.firstObject[@"text"], expected);
+	XCTAssertEqualObjects(recorder.events.lastObject[@"flags"], @(KBD_FLAGS_RELEASE));
+	[[RDPKeyboard getSharedRDPKeyboard] initWithSession:nil delegate:nil];
+}
+
+- (void)testQueuedClipboardTransfersLongUnicodeTextAndEmptyText
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionary];
+	cliprdr.handle = record;
+	cliprdr.ClientFormatList = OrbisCaptureClipboardList;
+	cliprdr.ClientFormatDataResponse = OrbisCaptureClipboardResponse;
+	XCTAssertTrue(ios_cliprdr_init(mfi->context, &cliprdr));
+	mfi->connection_state = TSXConnectionConnected;
+	XCTAssertTrue(freerdp_settings_get_bool([session getSessionParams], FreeRDP_RedirectClipboard));
+	NSMutableString *longText = [NSMutableString string];
+	for (NSUInteger index = 0; index < 5000; index++) [longText appendString:@"Clipboard café 🐺\n"];
+	for (NSString *text in @[longText, @""])
+	{
+		XCTestExpectation *drained = [self expectationWithDescription:@"Clipboard chunks consumed by RDP loop"];
+		dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+			@autoreleasepool
+			{
+				NSUInteger before = [record[@"lists"] unsignedIntegerValue];
+				NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+				while ([record[@"lists"] unsignedIntegerValue] == before && deadline.timeIntervalSinceNow > 0)
+				{
+					(void)WaitForSingleObject(mfi->handle, 20);
+					XCTAssertTrue(ios_events_check_handle(mfi));
+				}
+				XCTAssertGreaterThan([record[@"lists"] unsignedIntegerValue], before);
+				CLIPRDR_FORMAT_DATA_REQUEST request = { .requestedFormatId = CF_UNICODETEXT };
+				XCTAssertEqual(cliprdr.ServerFormatDataRequest(&cliprdr, &request), CHANNEL_RC_OK);
+				[drained fulfill];
+			}
+		});
+		[session sendInputEvent:@{ @"type" : @"clipboard", @"text" : text }];
+		[self waitForExpectations:@[drained] timeout:4];
+		NSData *payload = record[@"payload"];
+		XCTAssertEqualObjects(record[@"flags"], @(CB_RESPONSE_OK));
+		XCTAssertGreaterThanOrEqual(payload.length, 2u);
+		if (payload.length >= 2)
+		{
+			NSString *received = [[[NSString alloc] initWithBytes:payload.bytes length:payload.length - 2
+			    encoding:NSUTF16LittleEndianStringEncoding] autorelease];
+			XCTAssertEqualObjects([received stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"], text);
+		}
+	}
+	XCTAssertEqualObjects(record[@"lists"], @2);
+	mfi->connection_state = TSXConnectionDisconnected;
+	XCTAssertTrue(ios_cliprdr_uninit(mfi->context, &cliprdr));
+}
+
+- (void)testBackgroundSessionPausesDisplayWithoutDisconnectingAndResumes
+{
+	OrbisInputRecorder *recorder = [self recorder];
+	RDPSessionViewController *controller = [[[RDPSessionViewController alloc]
+	    initWithNibName:nil bundle:nil session:(RDPSession *)recorder] autorelease];
+	controller.view = [[[UIView alloc] init] autorelease];
+	[controller setValue:@YES forKey:@"session_connected"];
+	NSNotification *background = [NSNotification notificationWithName:UIApplicationDidEnterBackgroundNotification object:nil];
+	[controller sessionDidEnterBackground:background];
+	[controller sessionDidEnterBackground:background];
+	XCTAssertEqual(recorder.events.count, 1u);
+	XCTAssertEqualObjects(recorder.events[0], (@{ @"type" : @"display-visibility", @"visible" : @NO }));
+	[controller sessionBackgroundTimeExpired];
+	XCTAssertTrue([[controller valueForKey:@"session_connected"] boolValue]);
+	[controller sessionWillEnterForeground:[NSNotification notificationWithName:UIApplicationWillEnterForegroundNotification object:nil]];
+	XCTAssertEqualObjects(recorder.events.lastObject, (@{ @"type" : @"display-visibility", @"visible" : @YES }));
+	XCTAssertEqual(recorder.events.count, 2u);
+	XCTAssertEqualObjects([controller valueForKey:@"session_background_task"], @(UIBackgroundTaskInvalid));
+	[controller setValue:@NO forKey:@"session_connected"];
 }
 
 - (void)testDisplayDefaultsKeepAutomaticResolution

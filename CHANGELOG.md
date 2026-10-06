@@ -20,6 +20,7 @@
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- iPad remote sessions suppress display updates in the background, request limited extra execution time, and restore display updates on return without an app-initiated disconnect.
 - A global iPad Black screen border setting adds a small margin for reaching remote screen edges away from iPadOS window resizing corners. It is enabled by default; automatic resolution follows the inset viewport.
 - A clearer iPad connection screen shows the computer name and a neutral native Cancel button.
 - Local macOS updates can reuse a configured signing identity to preserve Keychain authorization across builds.
@@ -37,6 +38,7 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- iPad text clipboard redirection connects remote copies to the system pasteboard and publishes local text before Command-V, Control-V, or the session Paste command.
 - macOS Command shortcuts no longer send an extra remote Super tap when their modifier state arrives after the shortcut.
 - Remote keys used with Command are released when Command is released or focus cleanup runs, including when key-up events are missing or delayed.
 - Windowed macOS remote sessions use a separate native title bar so window controls do not overlap the remote desktop.

@@ -1339,10 +1339,10 @@ index dc13cd8fa..26a075ef5 100644
  
  	MainTabBarController *_tabBarController;
 diff --git a/client/iOS/AppDelegate.m b/client/iOS/AppDelegate.m
-index 1f4f473..bf2aade 100644
+index 1f4f473..cc28352 100644
 --- a/client/iOS/AppDelegate.m
 +++ b/client/iOS/AppDelegate.m
-@@ -15,14 +15,61 @@
+@@ -15,14 +15,64 @@
  #import "AppSettingsController.h"
  #import "MainTabBarController.h"
  #import "Utils.h"
@@ -1355,6 +1355,7 @@ index 1f4f473..bf2aade 100644
 +- (void)toggleExtKeyboard:(id)sender;
 +- (void)matchIPadResolution:(id)sender;
 +- (void)disconnectSession:(id)sender;
++- (void)pasteToRemote:(id)sender;
 +@end
  
  @implementation AppDelegate
@@ -1380,6 +1381,8 @@ index 1f4f473..bf2aade 100644
 +	                         image:[UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right"]
 +	                        action:@selector(matchIPadResolution:)
 +	                  propertyList:nil];
++	UICommand *paste = [UICommand commandWithTitle:@"Paste" image:[UIImage systemImageNamed:@"doc.on.clipboard"]
++	    action:@selector(pasteToRemote:) propertyList:nil];
 +	UICommand *disconnect = [UICommand commandWithTitle:@"Disconnect"
 +	                                              image:[UIImage systemImageNamed:@"xmark.circle"]
 +	                                             action:@selector(disconnectSession:)
@@ -1391,7 +1394,7 @@ index 1f4f473..bf2aade 100644
 +	                                         identifier:OrbisSessionMenuIdentifier
 +	                                            options:UIMenuOptionsDisplayInline
 +	                                           children:@[
-+		                                           keyboard, specialKeys, matchResolution,
++		                                           keyboard, specialKeys, paste, matchResolution,
 +		                                           disconnect
 +	                                           ]];
 +	[builder insertSiblingMenu:sessionCommands afterMenuForIdentifier:UIMenuPreferences];
@@ -1404,7 +1407,7 @@ index 1f4f473..bf2aade 100644
  	// Set default values for most NSUserDefaults
  	[[NSUserDefaults standardUserDefaults]
  	    registerDefaults:[NSDictionary dictionaryWithContentsOfFile:[[NSBundle mainBundle]
-@@ -50,6 +97,7 @@
+@@ -50,6 +100,7 @@
  
  - (void)applicationDidEnterBackground:(UIApplication *)application
  {
@@ -1412,7 +1415,7 @@ index 1f4f473..bf2aade 100644
  	/*
  	 Use this method to release shared resources, save user data, invalidate timers, and store
  	 enough application state information to restore your application to its current state in case
-@@ -69,14 +117,22 @@
+@@ -69,14 +120,22 @@
  
  - (void)applicationDidBecomeActive:(UIApplication *)application
  {
@@ -1645,7 +1648,7 @@ index b1cc404..0ca5a74 100644
 +  add_subdirectory(${ORBIS_IPADOS_APP_DIR}/Tests ${CMAKE_CURRENT_BINARY_DIR}/orbis-tests)
 +endif()
 diff --git a/client/iOS/Controllers/RDPSessionViewController.h b/client/iOS/Controllers/RDPSessionViewController.h
-index c5a018e..417ceab 100644
+index c5a018e..c2fb158 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.h
 +++ b/client/iOS/Controllers/RDPSessionViewController.h
 @@ -18,7 +18,7 @@
@@ -1657,26 +1660,29 @@ index c5a018e..417ceab 100644
  {
  	// scrollview that hosts the rdp session view
  	IBOutlet UIScrollView *_session_scrollview;
-@@ -54,6 +54,8 @@
+@@ -54,6 +54,10 @@
  	BOOL _advanced_keyboard_visible;
  	BOOL _requesting_advanced_keyboard;
  	CGSize _last_session_viewport_size;
 +	CGSize _last_requested_remote_size;
 +	BOOL _session_connected;
++	BOOL _session_in_background;
++	UIBackgroundTaskIdentifier _session_background_task;
  
  	CGPoint _prev_long_press_position;
  	CGPoint _cursor_view_position;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378c..9faff35 100644
+index b6d378c..8427364 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
-@@ -10,21 +10,23 @@
+@@ -10,21 +10,25 @@
  
  #import <QuartzCore/QuartzCore.h>
  #import <GameController/GameController.h>
 -#import <objc/runtime.h>
  #import "RDPSessionViewController.h"
 -#import "RDPSessionToolbar.h"
++#import "OrbisDiagnostics.h"
  #import "RDPKeyboard.h"
  #import "Utils.h"
  #import "Toast+UIView.h"
@@ -1690,6 +1696,7 @@ index b6d378c..9faff35 100644
  @interface RDPSessionViewController (Private)
  - (void)showSessionToolbar:(BOOL)show;
 +- (void)hideConnectingView;
++- (void)endSessionBackgroundTask;
 +- (void)queueViewportResize;
 +- (void)sendViewportResize;
 +- (CGRect)remoteViewportFrame;
@@ -1697,16 +1704,18 @@ index b6d378c..9faff35 100644
  - (UIToolbar *)keyboardToolbar;
  - (void)initGestureRecognizers;
  - (void)suspendSession;
-@@ -60,6 +62,8 @@
+@@ -60,7 +64,10 @@
  		_advanced_keyboard_visible = NO;
  		_requesting_advanced_keyboard = NO;
  		_last_session_viewport_size = CGSizeZero;
 +		_last_requested_remote_size = CGSizeZero;
 +		_session_connected = NO;
  
++		_session_background_task = UIBackgroundTaskInvalid;
  		_session_toolbar_visible = NO;
  
-@@ -85,10 +89,6 @@
+ 		_cursor_view_position = CGPointZero;
+@@ -85,10 +92,6 @@
  	// load default view and set background color and resizing mask
  	[super loadView];
  
@@ -1717,7 +1726,7 @@ index b6d378c..9faff35 100644
  	// init keyboard handling vars
  	_keyboard_visible = NO;
  
-@@ -99,9 +99,9 @@
+@@ -99,9 +102,9 @@
  	// init gesture recognizers
  	[self initGestureRecognizers];
  
@@ -1730,7 +1739,7 @@ index b6d378c..9faff35 100644
  }
  
  // Implement viewDidLoad to do additional setup after loading the view, typically from a nib.
-@@ -117,18 +117,26 @@
+@@ -117,18 +120,32 @@
  	[_session_scrollview setAlwaysBounceHorizontal:NO];
  	[_session_scrollview setAlwaysBounceVertical:NO];
  	[_session_scrollview setBounces:NO];
@@ -1739,6 +1748,12 @@ index b6d378c..9faff35 100644
 +	[_session_view setBackgroundColor:[UIColor blackColor]];
 +	[_session_view setPresentationDelegate:self];
 +	[[self view] setBackgroundColor:[UIColor blackColor]];
++	NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
++	[center addObserver:self selector:@selector(sessionDidEnterBackground:) name:UISceneDidEnterBackgroundNotification object:nil];
++	[center addObserver:self selector:@selector(sessionWillEnterForeground:) name:UISceneWillEnterForegroundNotification object:nil];
++	[center addObserver:self selector:@selector(sessionDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
++	[center addObserver:self selector:@selector(sessionWillEnterForeground:) name:UIApplicationWillEnterForegroundNotification object:nil];
++
  }
  
  - (void)viewDidLayoutSubviews
@@ -1758,7 +1773,7 @@ index b6d378c..9faff35 100644
  	else
  		[self centerSessionViewInViewport];
  }
-@@ -177,6 +185,8 @@
+@@ -177,6 +194,8 @@
  	[self setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:YES animated:animated];
@@ -1767,7 +1782,7 @@ index b6d378c..9faff35 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:YES animated:animated];
  	else
-@@ -197,10 +207,11 @@
+@@ -197,10 +216,11 @@
  	if (!_session_initilized)
  	{
  		if ([_session isSuspended])
@@ -1783,7 +1798,7 @@ index b6d378c..9faff35 100644
  		else
  			[_session connect];
  
-@@ -219,6 +230,7 @@
+@@ -219,6 +239,7 @@
  
  	[[self navigationController] setNeedsStatusBarAppearanceUpdate];
  	[[self navigationController] setNavigationBarHidden:NO animated:animated];
@@ -1791,8 +1806,11 @@ index b6d378c..9faff35 100644
  	if (@available(iOS 18.0, *))
  		[[self tabBarController] setTabBarHidden:NO animated:animated];
  	else
-@@ -236,12 +248,17 @@
+@@ -234,14 +255,20 @@
+ 
+ - (void)dealloc
  {
++	[self endSessionBackgroundTask];
  	// remove any observers
  	[[NSNotificationCenter defaultCenter] removeObserver:self];
 +	[NSObject cancelPreviousPerformRequestsWithTarget:self
@@ -1809,7 +1827,7 @@ index b6d378c..9faff35 100644
  	[_session release];
  	[super dealloc];
  }
-@@ -361,36 +378,120 @@
+@@ -361,36 +388,120 @@
  
  - (void)session:(RDPSession *)session didFailToConnect:(int)reason
  {
@@ -1950,7 +1968,7 @@ index b6d378c..9faff35 100644
  	// register keyboard notification handlers
  	[[NSNotificationCenter defaultCenter] addObserver:self
  	                                         selector:@selector(keyboardWillShow:)
-@@ -419,11 +520,7 @@
+@@ -419,11 +530,7 @@
  	                                             name:GCKeyboardDidDisconnectNotification
  	                                           object:nil];
  	[self hardwareKeyboardChanged:nil];
@@ -1963,7 +1981,7 @@ index b6d378c..9faff35 100644
  
  	// check if session settings changed ...
  	// The 2nd width check is to ignore changes in resolution settings due to the RDVH display bug
-@@ -451,10 +548,17 @@
+@@ -451,10 +558,19 @@
  
  - (void)sessionWillDisconnect:(RDPSession *)session
  {
@@ -1975,13 +1993,15 @@ index b6d378c..9faff35 100644
  
  - (void)sessionDidDisconnect:(RDPSession *)session
  {
++	[self endSessionBackgroundTask];
++	_session_in_background = NO;
 +	(void)session;
 +	_session_connected = NO;
 +	[self hideConnectingView];
  	// return to bookmark list
  	[[self navigationController] popViewControllerAnimated:YES];
  }
-@@ -492,13 +596,28 @@
+@@ -492,13 +608,28 @@
  	if (!_has_cursor_view_position)
  		(void)[self currentCursorViewPosition];
  
@@ -2013,7 +2033,7 @@ index b6d378c..9faff35 100644
  }
  
  - (void)session:(RDPSession *)session didSetRemoteCursor:(RDPCursor *)cursor
-@@ -553,26 +672,69 @@
+@@ -553,26 +684,69 @@
  
  - (void)session:(RDPSession *)session verifyCertificateWithParams:(NSMutableDictionary *)params
  {
@@ -2097,7 +2117,7 @@ index b6d378c..9faff35 100644
  
  	CGFloat maxDimension = MAX(size.width, size.height);
  	if (maxDimension > 4096.0f)
-@@ -584,9 +746,42 @@
+@@ -584,9 +758,42 @@
  
  	size.width = MAX(64.0f, size.width);
  	size.height = MAX(64.0f, size.height);
@@ -2140,10 +2160,58 @@ index b6d378c..9faff35 100644
  #pragma mark - Keyboard Toolbar Handlers
  
  - (void)showAdvancedKeyboardAnimated
-@@ -702,6 +897,15 @@
+@@ -702,6 +909,63 @@
  	}
  }
  
++- (IBAction)pasteToRemote:(id)sender
++{
++	[_session_view paste:sender];
++}
++
++- (BOOL)notificationBelongsToSession:(NSNotification *)notification
++{
++	if ([notification.object isKindOfClass:[UIScene class]])
++		return notification.object == self.view.window.windowScene;
++	return YES;
++}
++
++- (void)sessionDidEnterBackground:(NSNotification *)notification
++{
++	if (![self notificationBelongsToSession:notification] || _session_in_background || !_session_connected) return;
++	_session_in_background = YES;
++	[_session sendInputEvent:@{ @"type" : @"display-visibility", @"visible" : @NO }];
++	_session_background_task = [[UIApplication sharedApplication] beginBackgroundTaskWithName:@"Orbis remote session"
++	    expirationHandler:^{
++		[self sessionBackgroundTimeExpired];
++	}];
++	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.background" values:nil];
++}
++
++- (void)sessionWillEnterForeground:(NSNotification *)notification
++{
++	if (![self notificationBelongsToSession:notification] || !_session_in_background) return;
++	_session_in_background = NO;
++	[self endSessionBackgroundTask];
++	if (_session_connected)
++		[_session sendInputEvent:@{ @"type" : @"display-visibility", @"visible" : @YES }];
++	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.foreground" values:nil];
++}
++
++- (void)sessionBackgroundTimeExpired
++{
++	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.background_time_expired" values:nil];
++	[self endSessionBackgroundTask];
++}
++
++- (void)endSessionBackgroundTask
++{
++	if (_session_background_task == UIBackgroundTaskInvalid) return;
++	UIBackgroundTaskIdentifier task = _session_background_task;
++	_session_background_task = UIBackgroundTaskInvalid;
++	[[UIApplication sharedApplication] endBackgroundTask:task];
++}
++
 +- (IBAction)matchIPadResolution:(id)sender
 +{
 +	(void)sender;
@@ -2156,7 +2224,7 @@ index b6d378c..9faff35 100644
  - (IBAction)disconnectSession:(id)sender
  {
  	[_session disconnect];
-@@ -902,20 +1106,30 @@
+@@ -902,20 +1166,30 @@
  
  - (void)handleScroll:(UIPanGestureRecognizer *)gesture
  {
@@ -2195,7 +2263,7 @@ index b6d378c..9faff35 100644
  }
  
  - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
-@@ -998,35 +1212,9 @@
+@@ -998,35 +1272,9 @@
  
  - (void)showSessionToolbar:(BOOL)show
  {
@@ -2234,7 +2302,7 @@ index b6d378c..9faff35 100644
  }
  
  - (UIToolbar *)keyboardToolbar
-@@ -1143,7 +1331,11 @@
+@@ -1143,7 +1391,11 @@
  	UIPanGestureRecognizer *scrollRecognizer =
  	    [[[UIPanGestureRecognizer alloc] initWithTarget:self
  	                                             action:@selector(handleScroll:)] autorelease];
@@ -2247,7 +2315,7 @@ index b6d378c..9faff35 100644
  	[scrollRecognizer setDelegate:self];
  
  	// double long press gesture recognizer
-@@ -1163,6 +1355,8 @@
+@@ -1163,6 +1415,8 @@
  
  	// Reserve one finger for the mouse; two fingers still pan/zoom the viewport.
  	[[_session_scrollview panGestureRecognizer] setMinimumNumberOfTouches:2];
@@ -2256,7 +2324,7 @@ index b6d378c..9faff35 100644
  
  	// add gestures to scroll view
  	[_session_scrollview addGestureRecognizer:singleTapRecognizer];
-@@ -1171,6 +1365,7 @@
+@@ -1171,6 +1425,7 @@
  	[_session_scrollview addGestureRecognizer:hoverRecognizer];
  	[_session_scrollview addGestureRecognizer:secondaryTapRecognizer];
  	[_session_scrollview addGestureRecognizer:scrollRecognizer];
@@ -2265,10 +2333,17 @@ index b6d378c..9faff35 100644
  	[_session_scrollview addGestureRecognizer:single3FingersTapRecognizer];
  
 diff --git a/client/iOS/FreeRDP/ios_freerdp.h b/client/iOS/FreeRDP/ios_freerdp.h
-index 1d454f610..3f143fc9f 100644
+index 1d454f6..e1cf6a7 100644
 --- a/client/iOS/FreeRDP/ios_freerdp.h
 +++ b/client/iOS/FreeRDP/ios_freerdp.h
-@@ -16,6 +16,7 @@
+@@ -10,12 +10,14 @@
+  */
+ 
+ #import <CoreGraphics/CoreGraphics.h>
++#import <Foundation/Foundation.h>
+ 
+ #import <freerdp/freerdp.h>
+ #import <freerdp/channels/channels.h>
  #import "TSXTypes.h"
  #import <winpr/clipboard.h>
  #import <freerdp/client/cliprdr.h>
@@ -2276,7 +2351,13 @@ index 1d454f610..3f143fc9f 100644
  
  @class RDPSession, RDPSessionView;
  
-@@ -38,6 +39,7 @@ typedef struct mf_context
+@@ -33,11 +35,13 @@ typedef struct mf_context
+ 
+ 	BOOL clipboardSync;
+ 	wClipboard *clipboard;
++	NSMutableData *clipboardInput;
+ 	UINT32 numServerFormats;
+ 	UINT32 requestedFormatId;
  	HANDLE clipboardRequestEvent;
  	CLIPRDR_FORMAT *serverFormats;
  	CliprdrClientContext *cliprdr;
@@ -2285,7 +2366,7 @@ index 1d454f610..3f143fc9f 100644
  	WINPR_ATTR_NODISCARD pServerCutText ServerCutText;
  } mfContext;
 diff --git a/client/iOS/FreeRDP/ios_freerdp.m b/client/iOS/FreeRDP/ios_freerdp.m
-index 75b790b..1a9a1c7 100644
+index 75b790b..f5f0257 100644
 --- a/client/iOS/FreeRDP/ios_freerdp.m
 +++ b/client/iOS/FreeRDP/ios_freerdp.m
 @@ -19,6 +19,8 @@
@@ -2410,19 +2491,38 @@ index 75b790b..1a9a1c7 100644
  	CGContextRelease(mfi->bitmap_context);
  	mfi->bitmap_context = nullptr;
  	mfi->connection_state = TSXConnectionDisconnected;
+@@ -505,7 +546,15 @@ void ios_send_clipboard_data(void *context, const void *data, UINT32 size)
+ {
+ 	mfContext *afc = (mfContext *)context;
+ 	ClipboardLock(afc->clipboard);
+-	UINT32 formatId = ClipboardRegisterFormat(afc->clipboard, "UTF8_STRING");
++	UINT32 formatId = ClipboardRegisterFormat(afc->clipboard, "text/plain");
++	const WCHAR emptyText = 0;
++	if (size == 1 && data && ((const BYTE *)data)[0] == 0)
++	{
++		// Store the Unicode terminator directly; empty UTF-8 has no synthesized characters.
++		formatId = CF_UNICODETEXT;
++		data = &emptyText;
++		size = sizeof(emptyText);
++	}
+ 	if (size)
+ 	{
+ 		if (!ClipboardSetData(afc->clipboard, formatId, data, size))
 diff --git a/client/iOS/FreeRDP/ios_freerdp_events.h b/client/iOS/FreeRDP/ios_freerdp_events.h
-index a3c76a073..8e2675f38 100644
+index a3c76a0..244f6af 100644
 --- a/client/iOS/FreeRDP/ios_freerdp_events.h
 +++ b/client/iOS/FreeRDP/ios_freerdp_events.h
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,8 @@
  
  // For UI: use to send events
  BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description);
++BOOL ios_events_send_clipboard(mfInfo *mfi, NSString *text);
 +UINT ios_events_send_display_resize(mfInfo *mfi, UINT32 width, UINT32 height);
  
  // For connection runloop: use to poll for queued input events
  HANDLE ios_events_get_handle(mfInfo *mfi);
 diff --git a/client/iOS/FreeRDP/ios_freerdp_events.m b/client/iOS/FreeRDP/ios_freerdp_events.m
+index 3abbbd1..fd3bfc6 100644
 --- a/client/iOS/FreeRDP/ios_freerdp_events.m
 +++ b/client/iOS/FreeRDP/ios_freerdp_events.m
 @@ -10,7 +10,11 @@
@@ -2437,12 +2537,10 @@ diff --git a/client/iOS/FreeRDP/ios_freerdp_events.m b/client/iOS/FreeRDP/ios_fr
  
  #pragma mark -
  #pragma mark Sending compacted input events (from main thread)
-@@ -44,6 +48,48 @@
- 	}
- 
+@@ -46,6 +50,67 @@ BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description)
  	return TRUE;
-+}
-+
+ }
+ 
 +UINT ios_events_send_display_resize(mfInfo *mfi, UINT32 width, UINT32 height)
 +{
 +	WINPR_ASSERT(mfi);
@@ -2483,10 +2581,31 @@ diff --git a/client/iOS/FreeRDP/ios_freerdp_events.m b/client/iOS/FreeRDP/ios_fr
 +	else
 +		NSLog(@"Orbis requested remote display %ux%u", width, height);
 +	return rc;
- }
- 
++}
++
++// Keep each clipboard message below the event pipe's encoded size limit.
++BOOL ios_events_send_clipboard(mfInfo *mfi, NSString *text)
++{
++	NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
++	if (!data || data.length > 8 * 1024 * 1024) return FALSE;
++	NSUInteger offset = 0;
++	do
++	{
++		NSUInteger length = MIN(4096u, data.length - offset);
++		BOOL final = offset + length == data.length;
++		NSDictionary *event = @{ @"type" : @"clipboard-chunk", @"data" : [data subdataWithRange:NSMakeRange(offset, length)],
++		    @"first" : @(offset == 0), @"final" : @(final) };
++		if (!ios_events_send(mfi, event)) return FALSE;
++		offset += length;
++		if (final) break;
++	} while (offset < data.length);
++	return TRUE;
++}
++
  #pragma mark -
-@@ -89,6 +135,12 @@
+ #pragma mark Processing compacted input events (from connection thread runloop)
+ 
+@@ -89,6 +154,46 @@ static BOOL ios_events_handle_event(mfInfo *mfi, NSDictionary *event_description
  			NSLog(@"%s: doesn't know how to send keyboard input with subtype %@", __func__,
  			      [event_description objectForKey:@"subtype"]);
  	}
@@ -2495,6 +2614,40 @@ diff --git a/client/iOS/FreeRDP/ios_freerdp_events.m b/client/iOS/FreeRDP/ios_fr
 +		const UINT32 width = [[event_description objectForKey:@"width"] unsignedIntValue];
 +		const UINT32 height = [[event_description objectForKey:@"height"] unsignedIntValue];
 +		(void)ios_events_send_display_resize(mfi, width, height);
++	}
++	else if ([event_type isEqualToString:@"display-visibility"])
++	{
++		BOOL visible = [event_description[@"visible"] boolValue];
++		RECTANGLE_16 area = { .left = 0, .top = 0,
++		    .right = (UINT16)(freerdp_settings_get_uint32(instance->context->settings, FreeRDP_DesktopWidth) - 1),
++		    .bottom = (UINT16)(freerdp_settings_get_uint32(instance->context->settings, FreeRDP_DesktopHeight) - 1) };
++		if (instance->context->update && instance->context->update->SuppressOutput)
++			(void)instance->context->update->SuppressOutput(instance->context, visible ? 1 : 0, visible ? &area : NULL);
++	}
++	else if ([event_type isEqualToString:@"clipboard-chunk"])
++	{
++		mfContext *context = mfi->context;
++		NSData *chunk = event_description[@"data"];
++		if (!context || !context->clipboard || !context->cliprdr || ![chunk isKindOfClass:[NSData class]]) return TRUE;
++		if ([event_description[@"first"] boolValue])
++		{
++			[context->clipboardInput release];
++			context->clipboardInput = [[NSMutableData alloc] init];
++		}
++		if (!context->clipboardInput) return TRUE;
++		if (context->clipboardInput.length + chunk.length > 8 * 1024 * 1024)
++		{
++			[context->clipboardInput release]; context->clipboardInput = nil;
++			return TRUE;
++		}
++		[context->clipboardInput appendData:chunk];
++		if ([event_description[@"final"] boolValue])
++		{
++			const char terminator = 0;
++			[context->clipboardInput appendBytes:&terminator length:1];
++			ios_send_clipboard_data(context, context->clipboardInput.bytes, (UINT32)context->clipboardInput.length);
++			[context->clipboardInput release]; context->clipboardInput = nil;
++		}
 +	}
  	else if ([event_type isEqualToString:@"disconnect"])
  		should_continue = FALSE;
@@ -2542,7 +2695,7 @@ index accafd2e5..154c376a6 100644
  
  DWORD ios_ui_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
 diff --git a/client/iOS/Models/RDPSession.h b/client/iOS/Models/RDPSession.h
-index 131fdc1..3aeff6b 100644
+index 131fdc1..9a91a7d 100644
 --- a/client/iOS/Models/RDPSession.h
 +++ b/client/iOS/Models/RDPSession.h
 @@ -12,6 +12,8 @@
@@ -2603,18 +2756,19 @@ index 131fdc1..3aeff6b 100644
  // suspends the session
  - (void)suspend;
  
-@@ -99,6 +124,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -98,6 +123,10 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+ 
  // send input event to the server
  - (void)sendInputEvent:(NSDictionary *)event;
- 
++- (void)receiveClipboardText:(NSString *)text;
++
 +// request a new single-monitor desktop size through the display-control channel
 +- (void)requestDesktopSize:(CGSize)size;
-+
+ 
  // session needs a refresh of its view
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
- 
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
-index 0fde5e3..eba19ef 100644
+index 0fde5e3..cd1ec13 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
 @@ -12,7 +12,11 @@
@@ -2657,7 +2811,7 @@ index 0fde5e3..eba19ef 100644
  	// Screen Size is set on connect (we need a valid delegate in case the user choose an automatic
  	// screen size)
  
-@@ -260,6 +271,19 @@ static void freeArguments(int argc, char **argv)
+@@ -260,6 +271,21 @@ static void freeArguments(int argc, char **argv)
  	if (0 != status)
  		goto out_free;
  
@@ -2670,6 +2824,8 @@ index 0fde5e3..eba19ef 100644
 +	if (!freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE) ||
 +	    !freerdp_settings_set_bool(settings, FreeRDP_DynamicResolutionUpdate, TRUE))
 +		goto out_free;
++	if (!freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, TRUE))
++		goto out_free;
 +	const char *displayChannel[] = { DISP_CHANNEL_NAME };
 +	if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
 +		goto out_free;
@@ -2677,7 +2833,7 @@ index 0fde5e3..eba19ef 100644
  	freeArguments(argc, argv);
  	[self mfi]->session = self;
  	return self;
-@@ -276,7 +300,11 @@ out_free:
+@@ -276,7 +302,11 @@ out_free:
  	[_name release];
  	[_params release];
  	[_ui_request_completed release];
@@ -2689,7 +2845,7 @@ index 0fde5e3..eba19ef 100644
  	[super dealloc];
  }
  
-@@ -290,6 +318,39 @@ out_free:
+@@ -290,6 +320,39 @@ out_free:
  
  - (void)connect
  {
@@ -2729,7 +2885,7 @@ index 0fde5e3..eba19ef 100644
  	// Set Screen Size to automatic if width or height are still 0
  	rdpSettings *settings = _freerdp->context->settings;
  
-@@ -313,7 +374,7 @@ out_free:
+@@ -313,7 +376,7 @@ out_free:
  	// TODO: This is a hack to ensure connections to RDVH with 16bpp don't have an odd screen
  	// resolution width
  	//       Otherwise this could result in screen corruption ..
@@ -2738,7 +2894,7 @@ index 0fde5e3..eba19ef 100644
  	{
  		const UINT32 w = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) & (~1);
  		(void)freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
-@@ -324,13 +385,22 @@ out_free:
+@@ -324,13 +387,22 @@ out_free:
  
  - (void)disconnect
  {
@@ -2762,10 +2918,30 @@ index 0fde5e3..eba19ef 100644
  		return;
  	}
  }
-@@ -382,6 +452,20 @@ out_free:
- 		ios_events_send([self mfi], eventDescriptor);
- }
+@@ -378,8 +450,36 @@ out_free:
  
+ - (void)sendInputEvent:(NSDictionary *)eventDescriptor
+ {
+-	if ([self mfi]->connection_state == TSXConnectionConnected)
+-		ios_events_send([self mfi], eventDescriptor);
++	if ([self mfi]->connection_state != TSXConnectionConnected) return;
++	if ([eventDescriptor[@"type"] isEqualToString:@"clipboard"])
++	{
++		if ([eventDescriptor[@"text"] isKindOfClass:[NSString class]])
++			(void)ios_events_send_clipboard([self mfi], eventDescriptor[@"text"]);
++		return;
++	}
++	ios_events_send([self mfi], eventDescriptor);
++}
++
++- (void)receiveClipboardText:(NSString *)text
++{
++	NSAssert([NSThread isMainThread], @"Clipboard updates require the main thread");
++	if ([self mfi]->connection_state == TSXConnectionConnected &&
++	    [UIApplication sharedApplication].applicationState != UIApplicationStateBackground)
++		[UIPasteboard generalPasteboard].string = text;
++}
++
 +- (void)requestDesktopSize:(CGSize)size
 +{
 +	if ([self mfi]->connection_state != TSXConnectionConnected)
@@ -2778,12 +2954,10 @@ index 0fde5e3..eba19ef 100644
 +	                                 [NSNumber numberWithUnsignedInt:width], @"width",
 +	                                 [NSNumber numberWithUnsignedInt:height], @"height", nil];
 +	ios_events_send([self mfi], event);
-+}
-+
- #pragma mark -
- #pragma mark Server events (main thread)
+ }
  
-@@ -504,12 +588,40 @@ out_free:
+ #pragma mark -
+@@ -504,12 +604,40 @@ out_free:
  
  - (void)sessionDidConnect
  {
@@ -2824,7 +2998,7 @@ index 0fde5e3..eba19ef 100644
  	[[NSNotificationCenter defaultCenter]
  	    postNotificationName:TSXSessionDidFailToConnectNotification
  	                  object:self];
-@@ -518,8 +630,25 @@ out_free:
+@@ -518,8 +646,25 @@ out_free:
  		[[self delegate] session:self didFailToConnect:reason];
  }
  
@@ -2969,7 +3143,7 @@ index 722bccc..41b32e1 100644
  - (void)setRemoteCursorPosition:(CGPoint)position;
  - (void)showRemoteCursor;
 diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView.m
-index c7e2f41..c53371f 100644
+index c7e2f41..0690b01 100644
 --- a/client/iOS/Views/RDPSessionView.m
 +++ b/client/iOS/Views/RDPSessionView.m
 @@ -9,6 +9,7 @@
@@ -3084,7 +3258,7 @@ index c7e2f41..c53371f 100644
  	[commandBuffer commit];
  
  	if (!_hasPendingDirtyRect)
-@@ -454,6 +501,70 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -454,6 +501,88 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	}
  }
  
@@ -3152,10 +3326,28 @@ index c7e2f41..c53371f 100644
 +	if (restoreAlt) [keyboard sendVirtualKey:VK_LMENU up:NO];
 +}
 +
++- (void)publishClipboardForPaste
++{
++	NSString *text = [UIPasteboard generalPasteboard].string;
++	if (text) [_session sendInputEvent:@{ @"type" : @"clipboard", @"text" : text }];
++}
++
++- (void)paste:(id)sender
++{
++	(void)sender;
++	[self publishClipboardForPaste];
++	RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
++	BOOL controlHeld = _commandControlDown || keyboard.ctrlPressed;
++	if (!controlHeld) [keyboard sendVirtualKey:VK_LCONTROL up:NO];
++	[keyboard sendVirtualKey:'V' up:NO];
++	[keyboard sendVirtualKey:'V' up:YES];
++	if (!controlHeld) [keyboard sendVirtualKey:VK_LCONTROL up:YES];
++}
++
  - (BOOL)canBecomeFirstResponder
  {
  	return _hardwareKeyboardActive;
-@@ -467,7 +578,162 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -467,7 +596,167 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		if (key == nil)
  			continue;
  
@@ -3179,6 +3371,9 @@ index c7e2f41..c53371f 100644
 +			continue;
 +		}
 +
++		if (!up && usage == UIKeyboardHIDUsageKeyboardV &&
++		    (key.modifierFlags & UIKeyModifierControl) && !(key.modifierFlags & UIKeyModifierCommand))
++			[self publishClipboardForPaste];
 +		int commandVK = OrbisCommandShortcutVK(usage);
 +		NSNumber *commandKey = [NSNumber numberWithInt:commandVK];
 +		if (up && commandVK != 0 && [_commandMappedKeys containsObject:commandKey])
@@ -3210,6 +3405,8 @@ index c7e2f41..c53371f 100644
 +			[_commandConsumedKeys addObject:@(usage)];
 +			if (commandVK != 0)
 +			{
++				if (usage == UIKeyboardHIDUsageKeyboardV && ![_commandMappedKeys containsObject:commandKey])
++					[self publishClipboardForPaste];
 +				RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
 +				if (commandVK != (VK_DELETE | KBDEXT) && !_commandControlDown)
 +				{
@@ -3319,7 +3516,7 @@ index c7e2f41..c53371f 100644
  		if (vk != 0)
  			[[RDPKeyboard getSharedRDPKeyboard] sendVirtualKey:vk up:up];
  	}
-@@ -481,6 +747,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -481,6 +770,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		[super pressesBegan:presses withEvent:event];
  }
  
@@ -3332,7 +3529,7 @@ index c7e2f41..c53371f 100644
  - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
  {
  	if (_hardwareKeyboardActive)
-@@ -491,6 +763,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -491,6 +786,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  
  - (void)dealloc
  {
@@ -3340,7 +3537,7 @@ index c7e2f41..c53371f 100644
  	[_displayLinkTarget clearView];
  	[_displayLink invalidate];
  	[_displayLink release];
-@@ -500,6 +773,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -500,6 +796,10 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	[_commandQueue release];
  	[_metalDevice release];
  	[_cursorImageView release];
@@ -3577,3 +3774,148 @@ index dc2e883ee..000000000
 -	</array>
 -</dict>
 -</plist>
+diff --git a/client/iOS/FreeRDP/ios_cliprdr.m b/client/iOS/FreeRDP/ios_cliprdr.m
+index 6fec27f..f5f4ca4 100644
+--- a/client/iOS/FreeRDP/ios_cliprdr.m
++++ b/client/iOS/FreeRDP/ios_cliprdr.m
+@@ -30,6 +30,19 @@
+ #include <freerdp/client/cliprdr.h>
+ 
+ #include "ios_cliprdr.h"
++#import "RDPSession.h"
++
++static BOOL ios_cliprdr_publish_text(rdpContext *context, UINT8 *data, UINT32 size)
++{
++	mfContext *afc = (mfContext *)context;
++	if (!afc || !afc->mfi || !afc->mfi->session || size > 8 * 1024 * 1024)
++		return TRUE;
++	NSString *text = [[[NSString alloc] initWithBytes:data length:size encoding:NSUTF8StringEncoding] autorelease];
++	if (text)
++		[afc->mfi->session performSelectorOnMainThread:@selector(receiveClipboardText:)
++		    withObject:text waitUntilDone:NO];
++	return TRUE;
++}
+ 
+ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
+ {
+@@ -51,7 +64,7 @@ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
+ 
+ 	pFormatIds = nullptr;
+ 	numFormats = ClipboardGetFormatIds(afc->clipboard, &pFormatIds);
+-	formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
++	formats = (CLIPRDR_FORMAT *)calloc(MAX(numFormats, 1), sizeof(CLIPRDR_FORMAT));
+ 
+ 	if (!formats)
+ 		goto fail;
+@@ -83,6 +96,8 @@ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
+ 	rc = afc->cliprdr->ClientFormatList(afc->cliprdr, &formatList);
+ fail:
+ 	free(pFormatIds);
++	if (formats)
++		for (UINT32 index = 0; index < numFormats; index++) free(formats[index].formatName);
+ 	free(formats);
+ 	return rc;
+ }
+@@ -114,8 +129,8 @@ fail:
+ 
+ static UINT ios_cliprdr_send_client_capabilities(CliprdrClientContext *cliprdr)
+ {
+-	CLIPRDR_CAPABILITIES capabilities;
+-	CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet;
++	CLIPRDR_CAPABILITIES capabilities = WINPR_C_ARRAY_INIT;
++	CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet = WINPR_C_ARRAY_INIT;
+ 
+ 	if (!cliprdr || !cliprdr->ClientCapabilities)
+ 		return ERROR_INVALID_PARAMETER;
+@@ -224,6 +239,14 @@ static UINT ios_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
+ 		afc->numServerFormats = 0;
+ 	}
+ 
++	CLIPRDR_FORMAT_LIST_RESPONSE acknowledgment = WINPR_C_ARRAY_INIT;
++	acknowledgment.common.msgType = CB_FORMAT_LIST_RESPONSE;
++	acknowledgment.common.msgFlags = CB_RESPONSE_OK;
++	if (cliprdr->ClientFormatListResponse)
++	{
++		rc = cliprdr->ClientFormatListResponse(cliprdr, &acknowledgment);
++		if (rc != CHANNEL_RC_OK) return rc;
++	}
+ 	if (formatList->numFormats < 1)
+ 		return CHANNEL_RC_OK;
+ 
+@@ -392,7 +415,7 @@ ios_cliprdr_server_format_data_response(CliprdrClientContext *cliprdr,
+ 	if (!format)
+ 	{
+ 		(void)SetEvent(afc->clipboardRequestEvent);
+-		return ERROR_INTERNAL_ERROR;
++		return CHANNEL_RC_OK;
+ 	}
+ 
+ 	if (format->formatName)
+@@ -400,27 +423,28 @@ ios_cliprdr_server_format_data_response(CliprdrClientContext *cliprdr,
+ 	else
+ 		formatId = format->formatId;
+ 
++	// Clipboard ownership can change between the request and response.
++	if (formatDataResponse->common.msgFlags & CB_RESPONSE_FAIL)
++	{
++		(void)SetEvent(afc->clipboardRequestEvent);
++		return CHANNEL_RC_OK;
++	}
+ 	size = formatDataResponse->common.dataLen;
+-
++	if (size > 8 * 1024 * 1024 || (size && !formatDataResponse->requestedFormatData))
++	{
++		(void)SetEvent(afc->clipboardRequestEvent);
++		return CHANNEL_RC_OK;
++	}
+ 	ClipboardLock(afc->clipboard);
+-	if (!ClipboardSetData(afc->clipboard, formatId, formatDataResponse->requestedFormatData, size))
+-		return ERROR_INTERNAL_ERROR;
+-
++	BOOL stored = ClipboardSetData(afc->clipboard, formatId, formatDataResponse->requestedFormatData, size);
+ 	(void)SetEvent(afc->clipboardRequestEvent);
+-
+-	if ((formatId == CF_TEXT) || (formatId == CF_UNICODETEXT))
++	if (stored && ((formatId == CF_TEXT) || (formatId == CF_UNICODETEXT)))
+ 	{
+-		formatId = ClipboardRegisterFormat(afc->clipboard, "UTF8_STRING");
++		formatId = ClipboardRegisterFormat(afc->clipboard, "text/plain");
+ 		data = (BYTE *)ClipboardGetData(afc->clipboard, formatId, &size);
+-		size = (UINT32)strnlen((const char *)data, size);
+-		if (afc->ServerCutText != nullptr)
+-		{
+-			if (!afc->ServerCutText((rdpContext *)afc, (uint8_t *)data, size))
+-			{
+-				ClipboardUnlock(afc->clipboard);
+-				return ERROR_INTERNAL_ERROR;
+-			}
+-		}
++		if (data && afc->ServerCutText)
++			(void)afc->ServerCutText((rdpContext *)afc, data, (UINT32)strnlen((const char *)data, size));
++		free(data);
+ 	}
+ 	ClipboardUnlock(afc->clipboard);
+ 
+@@ -473,6 +497,7 @@ BOOL ios_cliprdr_init(mfContext *afc, CliprdrClientContext *cliprdr)
+ 		return FALSE;
+ 	}
+ 
++	afc->ServerCutText = ios_cliprdr_publish_text;
+ 	afc->cliprdr = cliprdr;
+ 	afc->clipboard = clipboard;
+ 	afc->clipboardRequestEvent = hevent;
+@@ -497,7 +522,14 @@ BOOL ios_cliprdr_uninit(mfContext *afc, CliprdrClientContext *cliprdr)
+ 
+ 	cliprdr->custom = nullptr;
+ 	afc->cliprdr = nullptr;
++	afc->ServerCutText = nullptr;
++	afc->clipboardSync = FALSE;
++	[afc->clipboardInput release]; afc->clipboardInput = nil;
++	for (UINT32 index = 0; index < afc->numServerFormats; index++) free(afc->serverFormats[index].formatName);
++	free(afc->serverFormats); afc->serverFormats = nullptr; afc->numServerFormats = 0;
+ 	ClipboardDestroy(afc->clipboard);
+ 	(void)CloseHandle(afc->clipboardRequestEvent);
++	afc->clipboard = nullptr;
++	afc->clipboardRequestEvent = nullptr;
+ 	return TRUE;
+ }

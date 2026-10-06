@@ -84,3 +84,18 @@ The margin helps reach remote screen edges away from iPadOS resizing corners.
 Automatic resolution follows the inset viewport; manually configured resolutions
 remain unchanged. The connection screen shows the computer name and a neutral
 native Cancel button.
+
+Text clipboard redirection works in both directions. Copying remotely updates the
+iPad system pasteboard while Orbis is in the foreground. Command-V, Control-V (including
+Control-Shift-V), or the session menu's Paste command publishes local text before
+sending the remote paste shortcut. Access follows iPadOS paste permissions; the
+app does not poll another app's clipboard. Transfers preserve Unicode and support
+up to 8 MiB of UTF-8 text. Images, rich text, and files are not redirected.
+Clipboard contents are excluded from local diagnostics.
+
+When its scene enters the background, an active remote session requests that the
+server pause display updates and asks iPadOS for limited additional execution
+time. Returning restores display updates on the same connection. Expiration of
+that time ends the background task without requesting a disconnect. iPadOS can
+still suspend or terminate Orbis, and a server or network timeout can end the
+connection; several minutes of background connectivity are not guaranteed.
