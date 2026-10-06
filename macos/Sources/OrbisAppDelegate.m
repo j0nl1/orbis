@@ -2,6 +2,7 @@
 
 #import "OrbisAppDelegate.h"
 #import "OrbisTransportFactory.h"
+#import "OrbisDiagnostics.h"
 
 #import "OrbisCredentialStore.h"
 #import "OrbisProfile.h"
@@ -38,6 +39,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
 	(void)notification;
+	[[OrbisDiagnostics sharedDiagnostics] start];
 #if ORBIS_ENABLE_UPDATES
 	_updaterController = [[SPUStandardUpdaterController alloc]
 	    initWithStartingUpdater:NO updaterDelegate:self userDriverDelegate:nil];
@@ -74,6 +76,38 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 #endif
 }
 
+- (void)exportDiagnostics:(id)sender
+{
+	(void)sender;
+	NSSavePanel *panel = [NSSavePanel savePanel];
+	panel.nameFieldStringValue = @"orbis-diagnostics.json";
+	[panel beginWithCompletionHandler:^(NSModalResponse response) {
+		if (response != NSModalResponseOK) return;
+		NSURL *destination = panel.URL;
+		dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+			@autoreleasepool
+			{
+				NSError *error = nil;
+				NSURL *temporary = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"OrbisExports"]];
+				NSURL *export = [[OrbisDiagnostics sharedDiagnostics] exportToDirectory:temporary error:&error];
+				NSData *data = export ? [NSData dataWithContentsOfURL:export options:0 error:&error] : nil;
+				BOOL saved = data && [data writeToURL:destination options:NSDataWritingAtomic error:&error];
+				if (export) [[NSFileManager defaultManager] removeItemAtURL:export error:nil];
+				if (!saved)
+				{
+					[[OrbisDiagnostics sharedDiagnostics] recordError:error event:@"diagnostics.export_failed"];
+					dispatch_async(dispatch_get_main_queue(), ^{
+						NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+						alert.messageText = @"Could not export diagnostics";
+						alert.informativeText = error.localizedDescription ?: @"Choose another destination and try again.";
+						[alert runModal];
+					});
+				}
+			}
+		});
+	}];
+}
+
 - (void)buildMainMenu
 {
 	NSMenu *mainMenu = [[[NSMenu alloc] initWithTitle:@""] autorelease];
@@ -84,6 +118,9 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	                                               action:@selector(showAbout:)
 	                                        keyEquivalent:@""];
 	[aboutItem setTarget:self];
+	NSMenuItem *exportItem = [applicationMenu addItemWithTitle:@"Export Diagnostics…"
+	    action:@selector(exportDiagnostics:) keyEquivalent:@""];
+	[exportItem setTarget:self];
 #if ORBIS_ENABLE_UPDATES
 	NSMenuItem *updatesItem = [applicationMenu addItemWithTitle:@"Check for Updates…"
 	                                                  action:@selector(checkForUpdates:)
@@ -261,6 +298,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSString *password = [OrbisCredentialStore passwordForProfile:profile error:&error];
 	if (error)
 	{
+		[[OrbisDiagnostics sharedDiagnostics] recordError:error event:@"credentials.read_failed"];
 		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
 		OrbisConfigureWarningAlert(alert);
 		[alert setMessageText:@"Password unavailable"];
@@ -272,6 +310,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	id<OrbisConnectionTransport> transport = [OrbisTransportFactory transportForProfile:profile error:&error];
 	if (!transport)
 	{
+		[[OrbisDiagnostics sharedDiagnostics] recordError:error event:@"transport.selection_failed"];
 		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
 		OrbisConfigureWarningAlert(alert);
 		[alert setMessageText:@"Connection unavailable"];
@@ -337,6 +376,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 - (void)applicationWillTerminate:(NSNotification *)notification
 {
 	(void)notification;
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"app.terminating" values:nil];
 	[_sessionController stop];
 }
 

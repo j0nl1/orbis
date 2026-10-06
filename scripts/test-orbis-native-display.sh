@@ -59,8 +59,8 @@ require_literal "$events_header" 'ios_events_send_display_resize' \
   "display resize queuing must have one shared entry point" || failures=$((failures + 1))
 require_literal "$events_source" 'UINT ios_events_send_display_resize' \
   "the shared display resize event must be implemented" || failures=$((failures + 1))
-require_literal "$freerdp_client" 'ios_events_send_display_resize(afc->mfi' \
-  "opening Display Control must resend the current monitor layout" || failures=$((failures + 1))
+require_literal "$freerdp_client" 'ios_events_display_control_ready(afc->mfi)' \
+  "Display Control capabilities must release the coordinated pending layout" || failures=$((failures + 1))
 
 if ((failures > 0)); then
   exit 1

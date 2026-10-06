@@ -3,7 +3,10 @@
 ## Unreleased
 
 ### Added
-- iPad trackpad workspace gestures: swipe sideways with two fingers to switch workspaces, Alt + swipe up to open Activities, and Alt + Shift + swipe sideways to move the active window. Settings can restore normal horizontal scrolling.
+- iPad diagnostics capture native RDP exit reasons, requested versus unexpected disconnects, scene lifecycle and memory warnings, and sessions interrupted before the next launch.
+- Alt (Option) + the physical key left of 1 toggles remote GNOME Activities on iPad hardware keyboards, without repeated toggles while holding the key.
+- Local macOS and iPad diagnostics with session events, numeric error codes, available crash and hang call stacks, and a JSON export. Reports remain on the device until exported.
+- iPad keyboard workspace shortcuts: Alt + Shift + Left/Right switches workspaces, Alt + Shift + Up toggles Activities, and Alt + Shift + Down closes Activities with Escape. Settings can disable the shortcuts. Trackpad swipes always scroll the remote desktop.
 - iPad remote sessions keep the display awake while connecting or connected in the foreground, restoring automatic screen lock after disconnecting, a failed connection, or leaving the app.
 - Global iPad display settings with automatic and custom resolutions, plus suggested resolutions matching the current iPad window’s proportions. Manual resolutions remain fixed across rotation and window resizing.
 - Optional macOS fullscreen input capture forwards physical keys, system shortcuts, mouse buttons, and input-generating macros to the active remote desktop. Control + Option + Command + Esc releases capture.
@@ -17,6 +20,9 @@
 - Standard macOS editing shortcuts in connection forms, including Command-V for Cloudflare Access tokens and passwords.
 
 ### Improved
+- iPad remote sessions suppress display updates in the background, request limited extra execution time, and restore display updates on return without an app-initiated disconnect.
+- A global iPad Black screen border setting adds a small margin for reaching remote screen edges away from iPadOS window resizing corners. It is enabled by default; automatic resolution follows the inset viewport.
+- A clearer iPad connection screen shows the computer name and a neutral native Cancel button.
 - Local macOS updates can reuse a configured signing identity to preserve Keychain authorization across builds.
 - Add Virtual Display is available in the macOS Session menu, without a session toolbar.
 - iPadOS connection forms group endpoint, Access token, account, and connection options, accept tunnel HTTPS URLs, and preserve saved credentials.
@@ -32,13 +38,14 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- iPad text clipboard redirection connects remote copies to the system pasteboard and publishes local text before Command-V, Control-V, or the session Paste command.
 - macOS Command shortcuts no longer send an extra remote Super tap when their modifier state arrives after the shortcut.
 - Remote keys used with Command are released when Command is released or focus cleanup runs, including when key-up events are missing or delayed.
 - Windowed macOS remote sessions use a separate native title bar so window controls do not overlap the remote desktop.
 - The macOS loading overlay is removed from its window after the first remote frame, including its retained view and status label.
 - macOS remote window drags can cross between Orbis display windows while keeping the original button press.
 - iPadOS connection indicators check RDP availability independently of session state, including after disconnecting.
-- iPadOS Command-Backspace sends Forward Delete without Control, including when Command is released before Backspace.
+- iPadOS Command-Backspace selects text to the start of the line and deletes it. Plain Backspace keeps backward character deletion; Shift-Backspace sends normal Forward Delete without remote Shift, including when modifiers are released early.
 - OpenH264 simulator builds use the simulator SDK and target consistently and remain compatible with the supported CMake version.
 - GitHub release lookup in the automatic release workflow.
 

@@ -41,8 +41,15 @@ find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(SECURITY_FRAMEWORK Security REQUIRED)
 find_library(NETWORK_FRAMEWORK Network REQUIRED)
+find_library(METRICKIT_FRAMEWORK MetricKit REQUIRED)
 
 set(ORBIS_MACOS_SOURCES
+    Sources/OrbisShortcutsController.h
+    Sources/OrbisShortcutsController.m
+    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisWorkspaceShortcuts.h
+    ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisWorkspaceShortcuts.m
+    ${ORBIS_SHARED_DIR}/Sources/Diagnostics/OrbisDiagnostics.h
+    ${ORBIS_SHARED_DIR}/Sources/Diagnostics/OrbisDiagnostics.m
     Sources/main.m
     Sources/OrbisAppDelegate.h
     Sources/OrbisAppDelegate.m
@@ -102,6 +109,7 @@ target_include_directories(
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Sources
     ${ORBIS_SHARED_DIR}/Sources/Profiles
+    ${ORBIS_SHARED_DIR}/Sources/Diagnostics
     ${ORBIS_SHARED_DIR}/Sources/Security
 	${ORBIS_SHARED_DIR}/Sources/About
     ${ORBIS_SHARED_DIR}/Sources/Transport
@@ -116,11 +124,18 @@ target_link_libraries(
     ${FOUNDATION_FRAMEWORK}
     ${SECURITY_FRAMEWORK}
     ${NETWORK_FRAMEWORK}
+    ${METRICKIT_FRAMEWORK}
     "-framework ApplicationServices"
 )
 
-target_compile_options(OrbisMac PRIVATE -fno-objc-arc)
+target_compile_options(OrbisMac PRIVATE -fno-objc-arc -g)
+add_custom_command(TARGET OrbisMac POST_BUILD
+  COMMAND /usr/bin/xcrun dsymutil "$<TARGET_FILE:OrbisMac>"
+    -o "${CMAKE_CURRENT_BINARY_DIR}/Orbis.app.dSYM"
+  COMMENT "Preserving Orbis debugging symbols for local diagnostic reports"
+  VERBATIM)
 set_source_files_properties(
+  ${ORBIS_SHARED_DIR}/Sources/Diagnostics/OrbisDiagnostics.m
   ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTunnelBridge.m
   ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisConnectionTransport.m
   ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisDirectTransport.m

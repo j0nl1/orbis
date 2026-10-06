@@ -3,6 +3,7 @@
 #import "OrbisProfile.h"
 #import "OrbisFormControls.h"
 #import "OrbisInputCapture.h"
+#import "OrbisShortcutsController.h"
 #import <ApplicationServices/ApplicationServices.h>
 #include <float.h>
 
@@ -286,7 +287,11 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
     NSButton *permission = [NSButton buttonWithTitle:@"Allow input capture…" target:self action:@selector(requestInputPermission:)];
     [permission setBezelStyle:NSBezelStyleRounded];
     [permission setToolTip:@"Allow Orbis to control input in macOS Privacy & Security settings. Required for full screen capture."];
-    [rows addObjectsFromArray:@[ inputTitle, _captureInput, inputHint, permission ]];
+    NSButton *shortcuts = [NSButton buttonWithTitle:@"Keyboard shortcuts…" target:self action:@selector(showShortcuts:)];
+    shortcuts.bezelStyle = NSBezelStyleRounded;
+    NSStackView *inputActions = [NSStackView stackViewWithViews:@[ permission, shortcuts ]];
+    inputActions.spacing = 12;
+    [rows addObjectsFromArray:@[ inputTitle, _captureInput, inputHint, inputActions ]];
     NSButton *cancel = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     NSButton *save = [NSButton buttonWithTitle:@"Save settings" target:self action:@selector(save:)];
     [cancel setKeyEquivalent:@"\033"]; [save setKeyEquivalent:@"\r"];
@@ -317,6 +322,13 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
         [buttons.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-24] ]];
     [self resolutionChanged:nil];
     return self;
+}
+- (void)showShortcuts:(id)sender
+{
+    (void)sender;
+    [_shortcutsController release];
+    _shortcutsController = [[OrbisShortcutsController alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    [self.window beginSheet:_shortcutsController.window completionHandler:nil];
 }
 - (void)beginSheetForWindow:(NSWindow *)window
 {
@@ -381,7 +393,7 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
 - (void)cancel:(id)sender { (void)sender; [self.window.sheetParent endSheet:self.window]; }
 - (void)dealloc
 {
-    [_settings release]; [_arrangementView release]; [_validationLabel release];
+    [_shortcutsController release]; [_settings release]; [_arrangementView release]; [_validationLabel release];
     [_captureInput release];
     for (NSUInteger i = 0; i < 2; i++) { [_modes[i] release]; [_widths[i] release]; [_heights[i] release]; }
     [super dealloc];

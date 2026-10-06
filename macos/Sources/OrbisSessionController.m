@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #import "OrbisSessionController.h"
+#import "OrbisDiagnostics.h"
 
 #import <freerdp/client.h>
 #import <freerdp/client/disp.h>
@@ -16,6 +17,7 @@
 #import "mfreerdp.h"
 #import "OrbisConnectionRetryPolicy.h"
 #import "OrbisProfile.h"
+#import "OrbisWorkspaceShortcuts.h"
 #import "OrbisDisplaySettings.h"
 #import "OrbisConnectionTransport.h"
 #import "OrbisRDPTransportRoute.h"
@@ -62,6 +64,81 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 
 @implementation OrbisRemoteView
 @synthesize sessionController;
+- (BOOL)sendWorkspaceShortcutForCode:(NSUInteger)code flags:(NSEventModifierFlags)flags physical:(BOOL)physical
+{
+	if (!is_connected || !instance || !instance->context) return NO;
+	if ([_workspaceConsumedKeys containsObject:@(code)]) return YES;
+	OrbisShortcutModifiers modifiers = ((flags & NSEventModifierFlagShift) ? OrbisShortcutShift : 0) |
+	    ((flags & NSEventModifierFlagControl) ? OrbisShortcutControl : 0) |
+	    ((flags & NSEventModifierFlagOption) ? OrbisShortcutOption : 0) |
+	    ((flags & NSEventModifierFlagCommand) ? OrbisShortcutCommand : 0);
+	OrbisWorkspaceShortcuts *shortcuts = [[[OrbisWorkspaceShortcuts alloc]
+	    initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"macos"] autorelease];
+	OrbisWorkspaceAction action = [shortcuts actionForKeyCode:code modifiers:modifiers];
+	if (action == OrbisWorkspaceNone) return NO;
+	if (!_workspaceConsumedKeys) _workspaceConsumedKeys = [[NSMutableSet alloc] init];
+	[_workspaceConsumedKeys addObject:@(code)];
+	if (!physical && mapsCommandShortcutsToControl && (flags & NSEventModifierFlagCommand)) {
+		[self setCommandKeyDown:YES]; commandTapConsumed = YES;
+	}
+	rdpInput *input = instance->context->input;
+	DWORD held[] = { RDP_SCANCODE_LSHIFT, RDP_SCANCODE_LCONTROL, RDP_SCANCODE_LMENU, RDP_SCANCODE_LWIN };
+	NSEventModifierFlags masks[] = { NSEventModifierFlagShift, NSEventModifierFlagControl,
+	    NSEventModifierFlagOption, NSEventModifierFlagCommand };
+	for (NSUInteger i = 0; i < 4; i++)
+		if (kbdModFlags & masks[i]) freerdp_input_send_keyboard_event(input,
+		    (held[i] & KBDEXT) | KBD_FLAGS_RELEASE, held[i] & 0xFF);
+	DWORD chord[2]; NSUInteger count = 0;
+	if (action >= OrbisWorkspaceScreenshotScreen) {
+		if (action == OrbisWorkspaceScreenshotScreen) chord[count++] = RDP_SCANCODE_LSHIFT;
+		if (action == OrbisWorkspaceScreenshotWindow) chord[count++] = RDP_SCANCODE_LMENU;
+		chord[count++] = RDP_SCANCODE_PRINTSCREEN;
+	} else if (action == OrbisWorkspaceCloseActivities) chord[count++] = RDP_SCANCODE_ESCAPE;
+	else {
+		chord[count++] = RDP_SCANCODE_LWIN;
+		if (action != OrbisWorkspaceActivities) chord[count++] =
+		    action == OrbisWorkspacePrevious ? RDP_SCANCODE_PRIOR : RDP_SCANCODE_NEXT;
+	}
+	for (NSUInteger i = 0; i < count; i++)
+		freerdp_input_send_keyboard_event(input, (chord[i] & KBDEXT) | KBD_FLAGS_DOWN, chord[i] & 0xFF);
+	for (NSUInteger i = count; i > 0; i--)
+		freerdp_input_send_keyboard_event(input, (chord[i - 1] & KBDEXT) | KBD_FLAGS_RELEASE, chord[i - 1] & 0xFF);
+	for (NSUInteger i = 0; i < 4; i++)
+		if (kbdModFlags & masks[i]) freerdp_input_send_keyboard_event(input,
+		    (held[i] & KBDEXT) | KBD_FLAGS_DOWN, held[i] & 0xFF);
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"workspace.action" values:@{ @"action": @(action) }];
+	return YES;
+}
+- (void)keyDown:(NSEvent *)event
+{
+	if ([self sendWorkspaceShortcutForCode:event.keyCode flags:event.modifierFlags physical:NO]) return;
+	[super keyDown:event];
+}
+- (void)keyUp:(NSEvent *)event
+{
+	if ([_workspaceConsumedKeys containsObject:@(event.keyCode)]) {
+		[_workspaceConsumedKeys removeObject:@(event.keyCode)];
+		[self flagsChanged:event];
+		if (event.keyCode < 128) locallyHandledKeyDown[event.keyCode] = YES;
+	}
+	[super keyUp:event];
+}
+- (void)sendCapturedEvent:(CGEventRef)event windowPoint:(NSPoint)point
+{
+	CGEventType type = CGEventGetType(event);
+	NSUInteger code = (NSUInteger)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+	if (type == kCGEventKeyDown && [self sendWorkspaceShortcutForCode:code flags:CGEventGetFlags(event) physical:YES]) return;
+	if (type == kCGEventKeyUp) [_workspaceConsumedKeys removeObject:@(code)];
+	[super sendCapturedEvent:event windowPoint:point];
+}
+- (void)releaseCapturedInput
+{
+	for (NSNumber *code in _workspaceConsumedKeys) if (code.unsignedIntegerValue < 128)
+		locallyHandledKeyDown[code.unsignedIntegerValue] = YES;
+	[_workspaceConsumedKeys removeAllObjects]; [super releaseCapturedInput];
+}
+- (void)dealloc { [_workspaceConsumedKeys release]; [super dealloc]; }
+
 - (NSPoint)remotePointForEvent:(NSEvent *)event
 {
 	return sessionController ? [sessionController remoteView:self remotePointForEvent:event]
@@ -158,6 +235,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (BOOL)start
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.connecting" values:nil];
 	if (_context || _connectionPending || _stopping)
 		return NO;
 
@@ -768,11 +846,15 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	    _displayMaxArea && area <= _displayMaxArea;
 	UINT status = valid ? channel->SendMonitorLayout(channel, layout.count, monitors) : CHANNEL_RC_BAD_CHANNEL;
 	[_displayLock unlock];
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:valid && status == CHANNEL_RC_OK ? @"display.requested" : @"display.request_failed"
+	    values:@{ @"code" : @(status), @"display_count" : @(layout.count),
+	        @"width" : @(layout.monitors[0].width), @"height" : @(layout.monitors[0].height) }];
 	return valid && status == CHANNEL_RC_OK;
 }
 
 - (void)showDisplayError:(NSString *)message
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"display.failed" values:nil];
 	NSAlert *alert = [[[NSAlert alloc] init] autorelease];
 	[alert setMessageText:@"Display configuration could not be applied"];
 	[alert setInformativeText:message];
@@ -900,11 +982,13 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)windowDidChangeScreen:(NSNotification *)notification
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"window.screen_changed" values:nil];
 	[self windowDidResize:notification];
 }
 
 - (void)windowDidEnterFullScreen:(NSNotification *)notification
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"window.fullscreen_entered" values:nil];
 	[self windowDidResize:notification];
 	if (_connectionPending && !_stopping)
 		[self beginConnection];
@@ -919,6 +1003,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"window.fullscreen_exited" values:nil];
 	[self windowDidResize:notification];
 	NSWindow *window = [notification object];
 	if (window == _closingSecondaryWindow)
@@ -982,6 +1067,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	}
 
 	_wasConnected = YES;
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.connected" values:nil];
 	_windowResolutionDirty |= 3;
 	[self scheduleWindowResolutions];
 	[self updateDisplayControls];
@@ -1021,6 +1107,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)finishWithMessage:(NSString *)message code:(NSInteger)code
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.failed" values:@{ @"code" : @(code) }];
 	[_finishError release];
 	_finishError = [[NSError alloc] initWithDomain:OrbisSessionErrorDomain
 	                                        code:code
@@ -1083,6 +1170,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 {
 	if (_stopping)
 		return;
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.stopping" values:nil];
 	_stopping = YES;
 	[_inputCapture stop];
 	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applyWindowResolutions) object:nil];

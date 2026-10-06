@@ -16,6 +16,7 @@
 #import "OrbisConnectionHealthCheck.h"
 #import "OrbisAboutController.h"
 #import "OrbisIPadDisplaySettings.h"
+#import "OrbisDiagnostics.h"
 #import "OrbisIPadDisplaySettingsController.h"
 #import "OrbisProfile.h"
 #import "OrbisProfileEditorController.h"
@@ -57,6 +58,10 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	NSMutableDictionary *_healthChecks;
 	NSTimer *_healthTimer;
 	BOOL _libraryVisible;
+	NSUInteger _automaticRetryCount;
+	BOOL _startingAutomaticRetry;
+	NSTimer *_recoveryTimer;
+	UIAlertController *_recoveryAlert;
 }
 
 - (void)addProfilePressed:(id)sender;
@@ -84,6 +89,11 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 - (void)updateIdleTimer;
 - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message;
 - (void)sessionDidEnd:(NSNotification *)notification;
+- (void)presentRecoveryForSession:(RDPSession *)session profileIdentifier:(NSString *)identifier;
+- (void)retryProfileWithIdentifier:(NSString *)identifier automatically:(BOOL)automatic;
+- (void)recoveryTimerFired:(NSTimer *)timer;
+- (void)cancelRecoveryTimer;
+- (void)clearRecoveryAlert;
 - (void)startHealthMonitoring;
 - (void)stopHealthMonitoring;
 - (void)refreshConnectionHealth;
@@ -311,6 +321,10 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 {
 	(void)notification;
 	[[UIApplication sharedApplication] setIdleTimerDisabled:NO];
+	if (_recoveryTimer)
+		_recoveryAlert.message = [_recoveryAlert.message stringByReplacingOccurrencesOfString:
+		    @"Orbis will try again once in two seconds." withString:@"Automatic retry paused. Tap Retry when you return."];
+	[self cancelRecoveryTimer];
 	[self stopHealthMonitoring];
 }
 
@@ -761,7 +775,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	NSString *symbol = @"questionmark.circle";
 	UIColor *color = [UIColor secondaryLabelColor];
 	if (connecting)
-		status = _connectionStatus ?: @"Connecting…";
+		status = _connectionStatus ?: @"Connecting";
 	else if (health == OrbisProfileHealthChecking)
 		status = @"Checking…";
 	else if (health == OrbisProfileHealthAvailable)
@@ -1101,6 +1115,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	NSString *password = [self savedPasswordForProfile:profile error:&error];
 	if (error)
 	{
+		[[OrbisDiagnostics sharedDiagnostics] recordError:error event:@"credentials.read_failed"];
 		[self showErrorWithTitle:@"Keychain Error" message:[error localizedDescription]];
 		return;
 	}
@@ -1168,6 +1183,8 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 
 - (void)startConnectionWithPassword:(NSString *)password
 {
+	[self cancelRecoveryTimer];
+	if (!_startingAutomaticRetry) _automaticRetryCount = 0;
 	OrbisProfile *profile = [_profileStore selectedProfile];
 	if (!profile)
 		return;
@@ -1214,6 +1231,10 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	    initWithNibName:@"RDPSessionView"
 	            bundle:nil
 	           session:session] autorelease];
+	NSString *identifier = [profile identifier];
+	controller.recoveryHandler = ^(RDPSession *endedSession) {
+		[self presentRecoveryForSession:endedSession profileIdentifier:identifier];
+	};
 	[controller setHidesBottomBarWhenPushed:YES];
 	[[self navigationController] pushViewController:controller animated:YES];
 }
@@ -1246,6 +1267,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 
 - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message
 {
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"ui.error_presented" values:nil];
 	[self setConnectionBusy:NO status:@"Ready to connect"];
 	UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
 	                                                               message:message
@@ -1257,6 +1279,95 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 	[self presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)cancelRecoveryTimer
+{
+	[_recoveryTimer invalidate];
+	[_recoveryTimer release];
+	_recoveryTimer = nil;
+}
+
+- (void)clearRecoveryAlert
+{
+	[self cancelRecoveryTimer];
+	[_recoveryAlert release];
+	_recoveryAlert = nil;
+}
+
+- (void)presentRecoveryForSession:(RDPSession *)session profileIdentifier:(NSString *)identifier
+{
+	if (session.connectionEndedIntentionally || session.connectionClosedByRemoteComputer ||
+	    _isStartingConnection || !identifier) return;
+	[self clearRecoveryAlert];
+	BOOL automatic = session.canAutomaticallyReconnect && _automaticRetryCount == 0;
+	NSString *message = session.connectionEndMessage;
+	if (automatic)
+		message = [message stringByAppendingString:@"\n\nOrbis will try again once in two seconds."];
+	_recoveryAlert = [[UIAlertController alertControllerWithTitle:@"Connection Interrupted"
+	    message:message preferredStyle:UIAlertControllerStyleAlert] retain];
+	[_recoveryAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel
+	    handler:^(UIAlertAction *action) { (void)action; [self clearRecoveryAlert]; }]];
+	[_recoveryAlert addAction:[UIAlertAction actionWithTitle:@"Retry" style:UIAlertActionStyleDefault
+	    handler:^(UIAlertAction *action) {
+		(void)action;
+		[self clearRecoveryAlert];
+		[self retryProfileWithIdentifier:identifier automatically:NO];
+	}]];
+	[self presentViewController:_recoveryAlert animated:YES completion:^{
+		if (!automatic || !_recoveryAlert ||
+		    UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+		_recoveryTimer = [[NSTimer timerWithTimeInterval:2.0 target:self selector:@selector(recoveryTimerFired:)
+		    userInfo:identifier repeats:NO] retain];
+		[[NSRunLoop mainRunLoop] addTimer:_recoveryTimer forMode:NSRunLoopCommonModes];
+	}];
+}
+
+- (void)recoveryTimerFired:(NSTimer *)timer
+{
+	if (timer != _recoveryTimer) return;
+	NSString *identifier = [[timer.userInfo copy] autorelease];
+	[self cancelRecoveryTimer];
+	if (!_libraryVisible || UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+	    self.presentedViewController != _recoveryAlert) return;
+	[self dismissViewControllerAnimated:YES completion:^{
+		[self clearRecoveryAlert];
+		[self retryProfileWithIdentifier:identifier automatically:YES];
+	}];
+}
+
+- (void)retryProfileWithIdentifier:(NSString *)identifier automatically:(BOOL)automatic
+{
+	if (_isStartingConnection || (automatic && (_automaticRetryCount >= 1 || !_libraryVisible ||
+	    UIApplication.sharedApplication.applicationState != UIApplicationStateActive))) return;
+	OrbisProfile *profile = nil;
+	for (OrbisProfile *candidate in [_profileStore profiles])
+		if ([candidate.identifier isEqual:identifier]) { profile = candidate; break; }
+	if (!profile) return; // A deleted profile must never reconnect to a different computer.
+	[_profileStore selectProfileWithIdentifier:identifier];
+	[_expandedProfileIdentifier release];
+	_expandedProfileIdentifier = [identifier copy];
+	[self refreshProfileUI];
+	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.retry"
+	    values:@{ @"automatic" : @(automatic) }];
+	if (!automatic) { [self startConnection]; return; }
+	_automaticRetryCount++;
+	// Automatic recovery never opens a password prompt or retries credential errors.
+	NSError *error = nil;
+	NSString *password = [self savedPasswordForProfile:profile error:&error];
+	if (error || !password.length)
+	{
+		UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Retry Required"
+		    message:@"Reconnect manually to enter your password." preferredStyle:UIAlertControllerStyleAlert];
+		[alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+		[alert addAction:[UIAlertAction actionWithTitle:@"Retry" style:UIAlertActionStyleDefault
+		    handler:^(UIAlertAction *action) { (void)action; [self retryProfileWithIdentifier:identifier automatically:NO]; }]];
+		[self presentViewController:alert animated:YES completion:nil];
+		return;
+	}
+	_startingAutomaticRetry = YES;
+	[self startConnectionWithPassword:password];
+	_startingAutomaticRetry = NO;
+}
+
 - (void)sessionDidEnd:(NSNotification *)notification
 {
 	(void)notification;
@@ -1266,6 +1377,7 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 
 - (void)dealloc
 {
+	[self clearRecoveryAlert];
 	if (_isStartingConnection)
 		[[UIApplication sharedApplication] setIdleTimerDisabled:NO];
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
