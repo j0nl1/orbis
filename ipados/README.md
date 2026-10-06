@@ -61,15 +61,14 @@ connection fails, or the app becomes inactive. Returning to an ongoing session
 keeps the display awake again. Connection availability checks do not prevent
 screen lock.
 
-Hardware keyboard workspace shortcuts are enabled by default for new connections
-and can be disabled in Settings. Alt (Option) + Shift + Left/Right switches
-workspaces; Alt + Shift + Up toggles Activities. Alt + the physical key immediately
-left of 1 also toggles Activities. Each shortcut triggers once per key press;
-repeats and releases stay consumed even when Alt is released before the arrow.
-Alt + Shift + Down sends Escape to close Activities. Outside Activities, Escape
-is handled by the focused application. The adapter sends GNOME's Super + Page
-Up/Down and Super shortcuts, temporarily releasing and restoring held Alt and physical Shift keys. Customized GNOME
-shortcuts or other Linux desktops may behave differently.
+Settings → Keyboard shortcuts configures Activities, previous/next workspace,
+remote screen capture, and remote window capture. All actions start unassigned.
+Record a combination and save, or clear it to restore ordinary key forwarding.
+Duplicate combinations are rejected. Custom shortcuts may override typing,
+editing, or system functions; iPadOS may reserve some combinations. Each action
+runs once per press, consuming repeats and late releases while restoring held
+modifiers. Screenshots stay on the remote computer. Customized GNOME bindings
+or other Linux desktops may behave differently.
 
 Trackpad swipes and discrete mouse wheels always scroll the remote desktop,
 including horizontal scrolling. Workspace swipe recognition and its preferences
@@ -107,3 +106,11 @@ time. Returning restores display updates on the same connection. Expiration of
 that time ends the background task without requesting a disconnect. iPadOS can
 still suspend or terminate Orbis, and a server or network timeout can end the
 connection; several minutes of background connectivity are not guaranteed.
+
+After an established session, the remote server's disconnect/logout signals return
+to the library without a Retry dialog. Explicit transport, graphics, wait, and
+connection-start failures retain recovery. FreeRDP may synthesize LOGOFF_BY_USER
+from a server disconnect message; this does not prove which server action caused
+the close. Orbis records a remote-close event and raw native codes without labeling
+it as a local Disconnect click. Server failures reported only through that generic
+logout signal also return quietly and remain available in diagnostics.

@@ -265,6 +265,7 @@
 @interface RDPSession (OrbisDiagnosticsTesting)
 - (mfInfo *)mfi;
 - (void)sessionDidDisconnect;
+- (void)sessionDidConnect;
 @end
 
 @interface OrbisTestRDPSession : RDPSession
@@ -481,6 +482,58 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	[session disconnect];
 	[library presentRecoveryForSession:session profileIdentifier:@"test"];
 	XCTAssertNil(library.shownAlert);
+}
+
+- (void)testRemoteUbuntuStopReturnsWithoutRetryAfterAnEstablishedSession
+{
+    for (NSNumber *code in @[@(ERRINFO_RPC_INITIATED_DISCONNECT),
+        @(ERRINFO_RPC_INITIATED_DISCONNECT_BY_USER), @(ERRINFO_LOGOFF_BY_USER)]) {
+        OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+        [session sessionDidConnect];
+        OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];
+        [library loadViewIfNeeded];
+        RDPSessionViewController *controller = [[[RDPSessionViewController alloc]
+            initWithNibName:nil bundle:nil session:session] autorelease];
+        __block NSUInteger recoveryCalls = 0;
+        controller.recoveryHandler = ^(RDPSession *ended) {
+            recoveryCalls++; [library presentRecoveryForSession:ended profileIdentifier:@"test"];
+        };
+        freerdp_set_error_info([session mfi]->_context->rdp, code.unsignedIntValue);
+        [session recordRDPStop:OrbisRDPStopReceiveFailed waitError:0];
+        [session sessionDidDisconnect];
+        XCTAssertEqual(recoveryCalls, 0u);
+        XCTAssertNil(library.shownAlert);
+        XCTAssertFalse(session.canAutomaticallyReconnect);
+        // A remote close must not be recorded as a local Disconnect click.
+        XCTAssertFalse(session.connectionEndedIntentionally);
+        [library presentRecoveryForSession:session profileIdentifier:@"test"];
+        XCTAssertNil(library.shownAlert);
+        [library clearRecoveryAlert];
+    }
+}
+
+- (void)testQuietRemoteClosureDoesNotHideConnectionOrExplicitFailureRecovery
+{
+    for (NSUInteger variant = 0; variant < 4; variant++) {
+        OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+        if (variant) [session sessionDidConnect];
+        OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];
+        [library loadViewIfNeeded];
+        RDPSessionViewController *controller = [[[RDPSessionViewController alloc]
+            initWithNibName:nil bundle:nil session:session] autorelease];
+        controller.recoveryHandler = ^(RDPSession *ended) {
+            [library presentRecoveryForSession:ended profileIdentifier:@"test"];
+        };
+        mfInfo *info = [session mfi];
+        freerdp_set_error_info(info->_context->rdp,
+            variant == 1 ? ERRINFO_GRAPHICS_SUBSYSTEM_FAILED : ERRINFO_LOGOFF_BY_USER);
+        if (variant == 2) freerdp_set_last_error(info->_context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
+        [session recordRDPStop:variant == 3 ? OrbisRDPStopWaitFailed : OrbisRDPStopReceiveFailed waitError:0];
+        [session sessionDidDisconnect];
+        XCTAssertNotNil(library.shownAlert);
+        XCTAssertEqualObjects(library.shownAlert.actions[1].title, @"Retry");
+        [library clearRecoveryAlert];
+    }
 }
 
 - (void)testAutomaticRecoveryIsBoundedAndBackgroundingCancelsItsTimer

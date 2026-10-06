@@ -1295,7 +1295,8 @@ typedef NS_ENUM(NSInteger, OrbisProfileHealth) {
 
 - (void)presentRecoveryForSession:(RDPSession *)session profileIdentifier:(NSString *)identifier
 {
-	if (session.connectionEndedIntentionally || _isStartingConnection || !identifier) return;
+	if (session.connectionEndedIntentionally || session.connectionClosedByRemoteComputer ||
+	    _isStartingConnection || !identifier) return;
 	[self clearRecoveryAlert];
 	BOOL automatic = session.canAutomaticallyReconnect && _automaticRetryCount == 0;
 	NSString *message = session.connectionEndMessage;

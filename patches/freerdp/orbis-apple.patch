@@ -1693,7 +1693,7 @@ index c5a018e..b1b5daa 100644
                 bundle:(NSBundle *)nibBundleOrNil
                session:(RDPSession *)session;
 diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
-index b6d378c..3d6e415 100644
+index b6d378c..860ae5c 100644
 --- a/client/iOS/Controllers/RDPSessionViewController.m
 +++ b/client/iOS/Controllers/RDPSessionViewController.m
 @@ -10,21 +10,25 @@
@@ -1871,7 +1871,7 @@ index b6d378c..3d6e415 100644
 +	[self hideConnectingView];
 +	UINavigationController *navigation = [self navigationController];
 +	[navigation popViewControllerAnimated:YES];
-+	if (session.connectionEndedIntentionally) return;
++	if (session.connectionEndedIntentionally || session.connectionClosedByRemoteComputer) return;
 +	void (^presentError)(void) = ^{
 +		if (_recoveryHandler) _recoveryHandler(session);
 +	};
@@ -2780,7 +2780,7 @@ index accafd2e5..154c376a6 100644
  
  DWORD ios_ui_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
 diff --git a/client/iOS/Models/RDPSession.h b/client/iOS/Models/RDPSession.h
-index 131fdc1..a84d72c 100644
+index 131fdc1..a957f71 100644
 --- a/client/iOS/Models/RDPSession.h
 +++ b/client/iOS/Models/RDPSession.h
 @@ -12,6 +12,8 @@
@@ -2809,7 +2809,7 @@ index 131fdc1..a84d72c 100644
  // rdp session
  @interface RDPSession : NSObject
  {
-@@ -64,11 +76,28 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -64,11 +76,30 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  
  	// flag if the session is suspended
  	BOOL _suspended;
@@ -2825,6 +2825,7 @@ index 131fdc1..a84d72c 100644
 +	UINT32 _stopErrorInfo;
 +	OrbisRDPStopReason _stopReason;
 +	BOOL _hasRDPStop;
++	BOOL _wasConnected;
  
  	// flag that specifies whether the RDP toolbar is visible
  	BOOL _toolbar_visible;
@@ -2833,12 +2834,13 @@ index 131fdc1..a84d72c 100644
 +@property(nonatomic, retain) id<OrbisConnectionTransport> connectionTransport;
 +@property(nonatomic, readonly) NSString *connectionFailureMessage;
 +@property(nonatomic, readonly) BOOL connectionEndedIntentionally;
++@property(nonatomic, readonly) BOOL connectionClosedByRemoteComputer;
 +@property(nonatomic, readonly) BOOL canAutomaticallyReconnect;
 +@property(nonatomic, readonly) NSString *connectionEndMessage;
  @property(readonly) ConnectionParams *params;
  @property(readonly) ComputerBookmark *bookmark;
  @property(assign) id<RDPSessionDelegate> delegate;
-@@ -87,6 +116,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -87,6 +118,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  // disconnect session
  - (void)disconnect;
  
@@ -2848,7 +2850,7 @@ index 131fdc1..a84d72c 100644
  // suspends the session
  - (void)suspend;
  
-@@ -98,6 +130,10 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -98,6 +132,10 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  
  // send input event to the server
  - (void)sendInputEvent:(NSDictionary *)event;
@@ -2860,7 +2862,7 @@ index 131fdc1..a84d72c 100644
  // session needs a refresh of its view
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
-index 0fde5e3..a9a13a7 100644
+index 0fde5e3..70dd3c4 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
 @@ -12,7 +12,11 @@
@@ -3057,10 +3059,11 @@ index 0fde5e3..a9a13a7 100644
  }
  
  #pragma mark -
-@@ -504,12 +609,40 @@ out_free:
+@@ -504,12 +609,41 @@ out_free:
  
  - (void)sessionDidConnect
  {
++	_wasConnected = YES;
 +	[[OrbisDiagnostics sharedDiagnostics] setActiveSessionState:2];
 +	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.connected" values:nil];
  	if ([[self delegate] respondsToSelector:@selector(sessionDidConnect:)])
@@ -3098,7 +3101,7 @@ index 0fde5e3..a9a13a7 100644
  	[[NSNotificationCenter defaultCenter]
  	    postNotificationName:TSXSessionDidFailToConnectNotification
  	                  object:self];
-@@ -518,8 +651,56 @@ out_free:
+@@ -518,8 +652,76 @@ out_free:
  		[[self delegate] session:self didFailToConnect:reason];
  }
  
@@ -3118,6 +3121,24 @@ index 0fde5e3..a9a13a7 100644
 +- (BOOL)connectionEndedIntentionally
 +{
 +	return _connectionCancelled || (_hasRDPStop && _stopReason == OrbisRDPStopCancelled);
++}
++
++- (BOOL)connectionClosedByRemoteComputer
++{
++    if (!_wasConnected || !_hasRDPStop || self.connectionEndedIntentionally ||
++        _connectionFailureMessage || [_transportSession connectionError]) return NO;
++    if (_stopReason != OrbisRDPStopRequested && _stopReason != OrbisRDPStopReceiveFailed) return NO;
++    // FreeRDP can synthesize LOGOFF_BY_USER from a server disconnect ultimatum.
++    // Treat it as a quiet remote close, retaining raw diagnostics rather than claiming local intent.
++    switch (_stopErrorInfo)
++    {
++        case ERRINFO_RPC_INITIATED_DISCONNECT:
++        case ERRINFO_RPC_INITIATED_DISCONNECT_BY_USER:
++        case ERRINFO_LOGOFF_BY_USER:
++            return _stopRDPError == MAKE_FREERDP_ERROR(ERRINFO, _stopErrorInfo);
++        default:
++            return NO;
++    }
 +}
 +
 +- (BOOL)canAutomaticallyReconnect
@@ -3145,6 +3166,8 @@ index 0fde5e3..a9a13a7 100644
  - (void)sessionDidDisconnect
  {
 +	if (_finished) return;
++	if (self.connectionClosedByRemoteComputer)
++		[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.remote_closed" values:nil];
 +	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.disconnected"
 +	    values:@{ @"intentional" : @(_connectionCancelled) }];
 +	[[OrbisDiagnostics sharedDiagnostics] recordError:[_transportSession connectionError]
