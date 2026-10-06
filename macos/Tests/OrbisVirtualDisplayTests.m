@@ -429,7 +429,6 @@ static void CheckConfiguredShortcuts(void)
         NSUInteger count = workspaceKeyboardEvents.count;
         [view keyDown:ShortcutEvent(NSEventTypeKeyDown, 20, NSEventModifierFlagCommand | NSEventModifierFlagShift)];
         [view keyUp:ShortcutEvent(NSEventTypeKeyUp, 20, 0)];
-        [view flagsChanged:ShortcutEvent(NSEventTypeFlagsChanged, 55, 0)];
         Require(workspaceKeyboardEvents.count == count, "Custom repeats and late key releases must not send stray events");
         Require(count == (action.integerValue == 5 || action.integerValue == 6 ? 2u : 4u),
             "Custom actions must send complete canonical GNOME chords");
@@ -452,6 +451,20 @@ static void CheckConfiguredShortcuts(void)
         Require(count >= 2, "Custom actions must also run during full screen physical capture");
         [model clearAction:action.integerValue]; [model save];
     }
+    OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    [model assignKeyCode:20 modifiers:9 label:@"Command Shift 3" toAction:OrbisWorkspaceScreenshotScreen error:nil]; [model save];
+    [workspaceKeyboardEvents removeAllObjects];
+    [view flagsChanged:ShortcutEvent(NSEventTypeFlagsChanged, 56, NSEventModifierFlagShift)];
+    [view keyDown:ShortcutEvent(NSEventTypeKeyDown, 20, NSEventModifierFlagCommand | NSEventModifierFlagShift)];
+    [view keyUp:ShortcutEvent(NSEventTypeKeyUp, 20, 0)];
+    Require([workspaceKeyboardEvents.lastObject[@"code"] intValue] == 0x2A &&
+        [workspaceKeyboardEvents.lastObject[@"flags"] intValue] == KBD_FLAGS_RELEASE,
+        "A custom macro key-up must clear held Shift even without a modifier-release event");
+    [workspaceKeyboardEvents removeAllObjects];
+    [view flagsChanged:ShortcutEvent(NSEventTypeFlagsChanged, 55, NSEventModifierFlagCommand)];
+    [view flagsChanged:ShortcutEvent(NSEventTypeFlagsChanged, 55, 0)];
+    Require(workspaceKeyboardEvents.count == 2 && [workspaceKeyboardEvents[0][@"code"] intValue] == 0x5B,
+        "A later standalone Command tap must work after a custom macro without modifier-release events");
     [view releaseCapturedInput]; [view release]; [workspaceKeyboardEvents release]; workspaceKeyboardEvents = nil;
     if (saved) [defaults setObject:saved forKey:key]; else [defaults removeObjectForKey:key]; [saved release];
 }

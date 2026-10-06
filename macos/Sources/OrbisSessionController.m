@@ -118,6 +118,7 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 {
 	if ([_workspaceConsumedKeys containsObject:@(event.keyCode)]) {
 		[_workspaceConsumedKeys removeObject:@(event.keyCode)];
+		[self flagsChanged:event];
 		if (event.keyCode < 128) locallyHandledKeyDown[event.keyCode] = YES;
 	}
 	[super keyUp:event];
