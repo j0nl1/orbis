@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Remote audio plays through the Mac’s current output device during macOS sessions when supported by the server.
+- Optional macOS microphone sharing starts off and can be enabled or disabled in Settings and Session → Microphone. Both controls share a saved preference and can stop or resume capture during a session, when supported by the server.
 - macOS shortcuts can record middle and side mouse buttons, alone or with keyboard modifiers, and execute remote actions in windowed sessions and fullscreen input capture.
 - macOS shortcuts also offer manual mouse button assignment, so existing Mac mouse actions do not need to be triggered while configuring a shortcut.
 - Fullscreen input capture preserves right Option as AltGr while it is held, even when later key events omit the device-side modifier flags.
@@ -42,6 +44,7 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- macOS clipboard storage is synchronized across local copies and remote responses, preventing memory corruption during large text transfers. Remote text is published on the main thread without echoing it back to the server.
 - Repeated macOS copy/paste preserves distinct rapid presses, and pointer movement while Command is held no longer introduces an unintended remote Super tap.
 - macOS shortcut recording intercepts reserved Mac keyboard combinations while the recording field is active and releases capture on key release, focus loss, menus, or editor closure.
 - macOS captured Option editing no longer taps remote Alt before sending word navigation or deletion, avoiding a menu focus change before the editing action.

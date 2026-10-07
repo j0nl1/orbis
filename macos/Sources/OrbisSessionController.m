@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 
 #import "OrbisSessionController.h"
+#import "OrbisAudioSettings.h"
+#import "OrbisMicrophoneControl.h"
 #import "OrbisDiagnostics.h"
 
 #import <freerdp/client.h>
@@ -10,6 +12,7 @@
 #import <freerdp/freerdp.h>
 
 #import <CoreGraphics/CoreGraphics.h>
+#import <AVFoundation/AVFoundation.h>
 
 #import "MRDPView.h"
 #import "OrbisRemoteView.h"
@@ -34,6 +37,13 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 
 @interface OrbisSessionController ()
 - (BOOL)beginConnection;
+- (BOOL)prepareMicrophoneAccess;
+- (void)audioSettingsChanged:(NSNotification *)notification;
+- (void)applyMicrophoneCapture;
+- (void)showMicrophoneAccessHelp;
+- (void)showMicrophoneCaptureError:(UINT)code;
+- (AVAuthorizationStatus)microphoneAuthorizationStatus;
+- (void)requestMicrophoneAccessWithCompletion:(void (^)(BOOL))completion;
 - (void)buildConnectingOverlay;
 - (void)completeStop;
 - (void)disposeConnectionContext;
@@ -317,6 +327,8 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	_password = [password copy];
 	_displayLock = [[NSLock alloc] init];
 	_pendingResolutionDisplayIndex = -1;
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(audioSettingsChanged:)
+        name:OrbisAudioSettingsDidChangeNotification object:NSUserDefaults.standardUserDefaults];
 	return self;
 }
 
@@ -554,10 +566,111 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	return nil;
 }
 
+- (AVAuthorizationStatus)microphoneAuthorizationStatus
+{
+	return [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+}
+
+- (void)requestMicrophoneAccessWithCompletion:(void (^)(BOOL))completion
+{
+	[AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:completion];
+}
+
+- (void)showMicrophoneAccessHelp
+{
+    NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+    alert.messageText = @"Microphone access is disabled";
+    alert.informativeText = @"Allow Orbis in System Settings → Privacy & Security → Microphone, then turn on Microphone again.";
+    [alert addButtonWithTitle:@"Open System Settings"];
+    [alert addButtonWithTitle:@"Not Now"];
+    void (^openSettings)(NSModalResponse) = ^(NSModalResponse response) {
+        if (response == NSAlertFirstButtonReturn)
+            [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:
+                @"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"]];
+    };
+    if (_window && !_window.attachedSheet)
+        [alert beginSheetModalForWindow:_window completionHandler:openSettings];
+    else
+        openSettings([alert runModal]);
+}
+
+- (void)showMicrophoneCaptureError:(UINT)code
+{
+    (void)code;
+    NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+    alert.messageText = @"Could not start the microphone";
+    alert.informativeText = @"Check the Mac's input device and microphone permission, then turn on Microphone again.";
+    if (_window && !_window.attachedSheet)
+        [alert beginSheetModalForWindow:_window completionHandler:nil];
+    else
+        [alert runModal];
+}
+
+- (void)applyMicrophoneCapture
+{
+    if (!_context || _stopping) return;
+    UINT result = orbis_audin_set_enabled((rdpContext *)_context, _microphoneEnabled);
+    if (result != CHANNEL_RC_OK && _microphoneEnabled)
+    {
+        _microphoneEnabled = NO;
+        OrbisSetMicrophoneEnabled(NSUserDefaults.standardUserDefaults, NO);
+        [self showMicrophoneCaptureError:result];
+    }
+}
+
+- (void)audioSettingsChanged:(NSNotification *)notification
+{
+    (void)notification;
+    if (_stopping || !_context) return;
+    if (![self prepareMicrophoneAccess]) _microphoneEnabled = NO;
+    [self applyMicrophoneCapture];
+}
+
+- (BOOL)prepareMicrophoneAccess
+{
+    if (!OrbisMicrophoneIsEnabled(NSUserDefaults.standardUserDefaults))
+    {
+        _microphoneEnabled = NO;
+        return YES;
+    }
+    if (_microphonePermissionPending) return NO;
+    AVAuthorizationStatus status = [self microphoneAuthorizationStatus];
+    if (status == AVAuthorizationStatusNotDetermined)
+    {
+        if (_microphonePermissionRequested) return YES;
+        _microphonePermissionRequested = YES;
+        _microphonePermissionPending = YES;
+        if (!_context) [self setConnectingStatus:@"Allow microphone access to use voice apps remotely."];
+        [self requestMicrophoneAccessWithCompletion:^(BOOL granted) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                _microphonePermissionPending = NO;
+                if (_stopping) return;
+                BOOL requested = OrbisMicrophoneIsEnabled(NSUserDefaults.standardUserDefaults);
+                _microphoneEnabled = granted && requested;
+                if (!granted && requested)
+                    OrbisSetMicrophoneEnabled(NSUserDefaults.standardUserDefaults, NO);
+                if (_context) [self applyMicrophoneCapture];
+                else [self beginConnection];
+                if (!granted && requested) [self showMicrophoneAccessHelp];
+            });
+        }];
+        return NO;
+    }
+    _microphoneEnabled = status == AVAuthorizationStatusAuthorized;
+    if (!_microphoneEnabled)
+    {
+        OrbisSetMicrophoneEnabled(NSUserDefaults.standardUserDefaults, NO);
+        [self showMicrophoneAccessHelp];
+    }
+    return YES;
+}
+
 - (BOOL)beginConnection
 {
 	if (_context || _stopping)
 		return NO;
+	if (![self prepareMicrophoneAccess])
+		return YES;
 	_connectionPending = NO;
 	if (!_transportPrepared)
 	{
@@ -615,7 +728,11 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	    @"orbis",
 	    [NSString stringWithFormat:@"/v:%@:%lu", [_profile host], (unsigned long)[_profile port]],
 	    [NSString stringWithFormat:@"/size:%lux%lu", (unsigned long)width, (unsigned long)height],
-	    @"/bpp:32", @"/smart-sizing", @"/disp", @"/clipboard", @"/network:auto", @"/gfx", @"+fonts", nil];
+	    @"/bpp:32", @"/smart-sizing", @"/disp", @"/clipboard", @"/sound:sys:mac",
+	    @"/network:auto", @"/gfx", @"+fonts", nil];
+    // Negotiate input capability even while muted, so it can be enabled live.
+    // The native adapter keeps the hardware closed until capture is enabled.
+    [arguments addObject:@"/microphone:sys:mac"];
 	if ([[_profile username] length] > 0)
 		[arguments addObject:[NSString stringWithFormat:@"/u:%@", [_profile username]]];
 	if ([_password length] > 0)
@@ -669,6 +786,12 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	               options:NSKeyValueObservingOptionNew
 	               context:NULL];
 
+    UINT microphoneStatus = orbis_audin_set_enabled(context, _microphoneEnabled);
+    if (microphoneStatus != CHANNEL_RC_OK)
+    {
+        [self finishWithMessage:@"Could not initialize microphone controls." code:microphoneStatus];
+        return NO;
+    }
 	int startStatus = freerdp_client_start(context);
 	if (startStatus != 0)
 	{
@@ -1220,6 +1343,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	PubSub_UnsubscribeErrorInfo(context->pubSub, OrbisErrorInfoHandler);
 	[self removeSecondaryWindow];
 	freerdp_client_stop(context);
+    orbis_audin_remove_context(context);
 	PubSub_UnsubscribeChannelConnected(context->pubSub, OrbisDisplayChannelConnected);
 	PubSub_UnsubscribeChannelDisconnected(context->pubSub, OrbisDisplayChannelDisconnected);
 	[_displayLock lock];

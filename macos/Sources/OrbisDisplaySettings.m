@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #import "OrbisDisplaySettings.h"
+#import "OrbisAudioSettings.h"
 #import "OrbisProfile.h"
 #import "OrbisFormControls.h"
 #import "OrbisInputCapture.h"
@@ -219,7 +220,7 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
 @implementation OrbisDisplaySettingsController
 - (instancetype)initWithSettings:(OrbisDisplaySettings *)settings
 {
-    NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 850)
+    NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, MIN(850, MAX(480, NSScreen.mainScreen.visibleFrame.size.height - 80)))
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO] autorelease];
     if (!(self = [super initWithWindow:window])) return nil;
     _settings = [settings copy];
@@ -301,6 +302,18 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
     NSStackView *inputActions = [NSStackView stackViewWithViews:@[ permission, shortcuts ]];
     inputActions.spacing = 12;
     [rows addObjectsFromArray:@[ inputTitle, _captureInput, keyboardRow, inputHint, inputActions ]];
+    NSTextField *audioTitle = [NSTextField labelWithString:@"Audio"];
+    audioTitle.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
+    _microphone = [[NSButton checkboxWithTitle:@"Use Mac microphone remotely" target:nil action:nil] retain];
+    _microphone.state = OrbisMicrophoneIsEnabled(NSUserDefaults.standardUserDefaults)
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    _microphone.accessibilityIdentifier = @"settings-microphone";
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(microphonePreferenceDidChange:)
+        name:OrbisAudioSettingsDidChangeNotification object:NSUserDefaults.standardUserDefaults];
+    NSTextField *audioHint = [NSTextField wrappingLabelWithString:
+        @"Share your voice with remote apps. Off by default. Changes apply to current and future sessions. You can also switch it from Session → Microphone."];
+    audioHint.textColor = NSColor.secondaryLabelColor;
+    [rows addObjectsFromArray:@[audioTitle, _microphone, audioHint]];
     NSButton *cancel = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     NSButton *save = [NSButton buttonWithTitle:@"Save settings" target:self action:@selector(save:)];
     [cancel setKeyEquivalent:@"\033"]; [save setKeyEquivalent:@"\r"];
@@ -318,19 +331,43 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
     NSStackView *stack = [NSStackView stackViewWithViews:rows];
     [stack setOrientation:NSUserInterfaceLayoutOrientationVertical];
     [stack setAlignment:NSLayoutAttributeLeading]; [stack setSpacing:16];
-    [stack setTranslatesAutoresizingMaskIntoConstraints:NO]; [content addSubview:stack];
+    NSScrollView *scroll = [[[NSScrollView alloc] initWithFrame:NSZeroRect] autorelease];
+    scroll.hasVerticalScroller = YES;
+    scroll.drawsBackground = NO;
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.accessibilityIdentifier = @"settings-scroll-view";
+    NSView *document = [[[NSView alloc] initWithFrame:NSZeroRect] autorelease];
+    document.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.documentView = document;
+    [content addSubview:scroll];
+    [stack setTranslatesAutoresizingMaskIntoConstraints:NO]; [document addSubview:stack];
     for (NSView *row in rows)
         if (row != permission) [[row widthAnchor] constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [NSLayoutConstraint activateConstraints:@[
-        [stack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:32],
-        [stack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-32],
-        [stack.topAnchor constraintEqualToAnchor:content.topAnchor constant:26],
+        [scroll.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [scroll.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:buttons.topAnchor constant:-16],
+        [document.widthAnchor constraintEqualToAnchor:scroll.contentView.widthAnchor],
+        [stack.leadingAnchor constraintEqualToAnchor:document.leadingAnchor constant:32],
+        [stack.trailingAnchor constraintEqualToAnchor:document.trailingAnchor constant:-32],
+        [stack.topAnchor constraintEqualToAnchor:document.topAnchor constant:26],
+        [stack.bottomAnchor constraintEqualToAnchor:document.bottomAnchor constant:-20],
         [_arrangementView.heightAnchor constraintEqualToConstant:210],
-        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:buttons.topAnchor constant:-16],
-        [buttons.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor],
+        [buttons.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-32],
         [buttons.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-24] ]];
     [self resolutionChanged:nil];
+    [content layoutSubtreeIfNeeded];
+    // NSView documents are unflipped; open at the first settings section.
+    [scroll.contentView scrollToPoint:NSMakePoint(0, MAX(0, document.frame.size.height - scroll.contentSize.height))];
+    [scroll reflectScrolledClipView:scroll.contentView];
     return self;
+}
+- (void)microphonePreferenceDidChange:(NSNotification *)notification
+{
+    (void)notification;
+    _microphone.state = OrbisMicrophoneIsEnabled(NSUserDefaults.standardUserDefaults)
+        ? NSControlStateValueOn : NSControlStateValueOff;
 }
 - (void)showShortcuts:(id)sender
 {
@@ -388,6 +425,7 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
         }
     [self resolutionChanged:nil];
     [_settings saveToDefaults:[NSUserDefaults standardUserDefaults]];
+    OrbisSetMicrophoneEnabled(NSUserDefaults.standardUserDefaults, _microphone.state == NSControlStateValueOn);
     BOOL enabled = _captureInput.state == NSControlStateValueOn;
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:OrbisFullscreenInputCaptureKey];
     [[NSUserDefaults standardUserDefaults] setBool:_capturedKeyboardLayout.indexOfSelectedItem == 1
@@ -404,8 +442,9 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
 - (void)cancel:(id)sender { (void)sender; [self.window.sheetParent endSheet:self.window]; }
 - (void)dealloc
 {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_shortcutsController release]; [_settings release]; [_arrangementView release]; [_validationLabel release];
-    [_captureInput release]; [_capturedKeyboardLayout release];
+    [_captureInput release]; [_capturedKeyboardLayout release]; [_microphone release];
     for (NSUInteger i = 0; i < 2; i++) { [_modes[i] release]; [_widths[i] release]; [_heights[i] release]; }
     [super dealloc];
 }

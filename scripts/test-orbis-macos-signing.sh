@@ -52,4 +52,10 @@ if ORBIS_MACOS_SIGNING_IDENTITY= ORBIS_MACOS_SIGNING_IDENTITY_FILE="$fixture_roo
 fi
 ORBIS_MACOS_SIGNING_IDENTITY=- ORBIS_MACOS_SIGNING_IDENTITY_FILE="$fixture_root/identity" "$sign_script" "$app_path"
 codesign --verify --deep --strict "$app_path"
-printf '%s\n' 'PASS: dependencies, persistent identity, and explicit ad-hoc override'
+codesign --display --entitlements :- "$app_path" > "$fixture_root/entitlements.plist" 2>/dev/null
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' \
+    "$fixture_root/entitlements.plist")" != true ]]; then
+  printf '%s\n' 'The signed app must retain its microphone audio input entitlement.' >&2
+  exit 1
+fi
+printf '%s\n' 'PASS: dependencies, persistent identity, explicit ad-hoc override, and microphone entitlement'

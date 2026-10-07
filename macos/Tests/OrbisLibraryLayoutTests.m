@@ -9,6 +9,7 @@
 #import "OrbisProfileEditorController.h"
 #import "OrbisAboutController.h"
 #import "OrbisDisplaySettings.h"
+#import "OrbisAudioSettings.h"
 #import "OrbisInputCapture.h"
 #import "OrbisShortcutsController.h"
 #import "OrbisWorkspaceShortcuts.h"
@@ -562,6 +563,53 @@ static void DrainSheetCompletion(void)
 	[recorder release];
 	[editor release];
 	[profile release];
+}
+
+- (void)testMicrophoneSettingDefaultsOffAndPersistsOnlyOnSave
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id original = [[defaults objectForKey:OrbisMicrophoneEnabledKey] retain];
+    id originalCapture = [[defaults objectForKey:OrbisFullscreenInputCaptureKey] retain];
+    [defaults setBool:NO forKey:OrbisFullscreenInputCaptureKey];
+    [defaults removeObjectForKey:OrbisMicrophoneEnabledKey];
+    OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] init] autorelease];
+    OrbisDisplaySettingsController *editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
+    NSButton *microphone = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-microphone");
+    XCTAssertNotNil(microphone);
+    XCTAssertEqual(microphone.state, NSControlStateValueOff);
+    microphone.state = NSControlStateValueOn;
+    NSButton *cancel = FindButtonWithTitle(editor.window.contentView, @"Cancel");
+    [cancel sendAction:cancel.action to:cancel.target];
+    XCTAssertFalse(OrbisMicrophoneIsEnabled(defaults), @"Cancel must not start sharing the microphone");
+    [editor release];
+
+    editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
+    microphone = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-microphone");
+    microphone.state = NSControlStateValueOn;
+    [editor save:nil];
+    XCTAssertTrue(OrbisMicrophoneIsEnabled(defaults));
+    [editor release];
+    editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
+    microphone = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-microphone");
+    XCTAssertEqual(microphone.state, NSControlStateValueOn, @"Reopening settings must show the saved preference");
+    OrbisSetMicrophoneEnabled(defaults, NO);
+    XCTAssertEqual(microphone.state, NSControlStateValueOff, @"Open settings must follow the quick menu preference");
+    OrbisSetMicrophoneEnabled(defaults, YES);
+    XCTAssertEqual(microphone.state, NSControlStateValueOn);
+    NSScrollView *scroll = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-scroll-view");
+    XCTAssertNotNil(scroll);
+    [editor.window.contentView layoutSubtreeIfNeeded];
+    XCTAssertGreaterThan(scroll.documentView.frame.size.height, scroll.contentSize.height,
+        @"Settings must scroll rather than clip controls on smaller screens");
+    microphone.state = NSControlStateValueOff;
+    [editor save:nil];
+    XCTAssertFalse(OrbisMicrophoneIsEnabled(defaults));
+    [editor release];
+    if (original) [defaults setObject:original forKey:OrbisMicrophoneEnabledKey];
+    else [defaults removeObjectForKey:OrbisMicrophoneEnabledKey];
+    if (originalCapture) [defaults setObject:originalCapture forKey:OrbisFullscreenInputCaptureKey];
+    else [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
+    [original release]; [originalCapture release];
 }
 
 - (void)testInputCaptureDefaultsOffAndCancelDoesNotEnableIt

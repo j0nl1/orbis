@@ -30,6 +30,8 @@
 	<string>Copyright © 2026 Orbis contributors.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Orbis connects to Remote Desktop computers on your local or private network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Orbis sends your microphone audio to the remote desktop for voice calls and other audio apps.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>

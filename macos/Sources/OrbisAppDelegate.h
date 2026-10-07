@@ -17,6 +17,7 @@
                                          >
 {
 	NSWindow *_window;
+    NSWindowController *_settingsController;
 	OrbisLibraryViewController *_libraryViewController;
 	OrbisSessionController *_sessionController;
 #if ORBIS_ENABLE_UPDATES

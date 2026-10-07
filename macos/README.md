@@ -20,6 +20,23 @@ section when preparing a release. The application displays that section as
 for change categories, and one-line bullet entries; the About view formats those
 elements for reading.
 
+Remote audio is redirected to the Mac's default audio output during a session.
+The RDP server must support audio output redirection. Playback uses the native
+macOS audio backend.
+
+Microphone sharing is off by default. Enable **Settings → Audio → Use Mac
+microphone remotely** and save, or use **Session → Microphone** in the menu bar.
+Both controls use the same saved preference. Changes apply to the current
+session immediately and to future connections. Turning sharing off stops
+capture; turning it back on does not require reconnecting.
+
+Orbis asks for microphone access when sharing is first enabled. Denying access
+leaves sharing off while the session and remote playback remain available.
+Access can be changed under **System Settings → Privacy & Security → Microphone**;
+then enable sharing again. The remote server must support RDP audio input and
+provide an input device for remote apps such as Discord. Choose that device in
+the remote desktop or app's audio settings.
+
 ## Virtual displays
 
 Each connection starts with one display. Open **Settings** beside **New connection**

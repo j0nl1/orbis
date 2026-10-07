@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: MIT */
+#import "OrbisAudioSettings.h"
+#import "OrbisDisplaySettings.h"
+
 
 #import "OrbisAppDelegate.h"
 #import "OrbisTransportFactory.h"
@@ -118,6 +121,9 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	                                               action:@selector(showAbout:)
 	                                        keyEquivalent:@""];
 	[aboutItem setTarget:self];
+    NSMenuItem *settingsItem = [applicationMenu addItemWithTitle:@"Settings…"
+        action:@selector(showSettings:) keyEquivalent:@","];
+    settingsItem.target = self;
 	NSMenuItem *exportItem = [applicationMenu addItemWithTitle:@"Export Diagnostics…"
 	    action:@selector(exportDiagnostics:) keyEquivalent:@""];
 	[exportItem setTarget:self];
@@ -168,6 +174,10 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	NSMenuItem *displayItem = [sessionMenu addItemWithTitle:@"Add Virtual Display"
 	    action:@selector(addVirtualDisplay:) keyEquivalent:@""];
 	[displayItem setTarget:self];
+    NSMenuItem *microphoneItem = [sessionMenu addItemWithTitle:@"Microphone"
+        action:@selector(toggleMicrophone:) keyEquivalent:@""];
+    microphoneItem.target = self;
+    microphoneItem.toolTip = @"Share or stop sharing the Mac microphone with remote apps.";
 	[sessionMenu addItem:[NSMenuItem separatorItem]];
 	NSMenuItem *disconnectItem =
 	    [sessionMenu addItemWithTitle:@"Disconnect"
@@ -247,6 +257,24 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
     [_sessionController setActiveDisplayMatchesWindow:![_sessionController activeDisplayMatchesWindow]];
 }
 
+- (void)toggleMicrophone:(id)sender
+{
+    (void)sender;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    OrbisSetMicrophoneEnabled(defaults, !OrbisMicrophoneIsEnabled(defaults));
+}
+
+- (void)showSettings:(id)sender
+{
+    (void)sender;
+    NSWindow *parent = NSApp.keyWindow ?: _window;
+    if (!parent || parent.attachedSheet) return;
+    [_settingsController release];
+    _settingsController = [[OrbisDisplaySettingsController alloc]
+        initWithSettings:[OrbisDisplaySettings loadMigratingProfile:nil]];
+    [(OrbisDisplaySettingsController *)_settingsController beginSheetForWindow:parent];
+}
+
 - (void)disconnectSession:(id)sender
 {
 	(void)sender;
@@ -263,6 +291,14 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem
 {
+    if ([menuItem action] == @selector(toggleMicrophone:))
+    {
+        menuItem.state = OrbisMicrophoneIsEnabled(NSUserDefaults.standardUserDefaults)
+            ? NSControlStateValueOn : NSControlStateValueOff;
+        return YES;
+    }
+    if ([menuItem action] == @selector(showSettings:))
+        return (NSApp.keyWindow ?: _window) != nil && !(NSApp.keyWindow ?: _window).attachedSheet;
     if ([menuItem action] == @selector(toggleAutomaticResolution:))
     {
         [menuItem setState:[_sessionController activeDisplayMatchesWindow] ? NSControlStateValueOn : NSControlStateValueOff];
@@ -428,6 +464,7 @@ static void OrbisConfigureWarningAlert(NSAlert *alert)
 	[_sessionController release];
 	[_libraryViewController release];
 	[_window release];
+	[_settingsController release];
 	[super dealloc];
 }
 

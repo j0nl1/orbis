@@ -36,7 +36,7 @@
     OrbisDisplayArrangementView *_arrangementView;
     NSPopUpButton *_modes[2];
     NSTextField *_widths[2], *_heights[2], *_validationLabel;
-    NSButton *_captureInput;
+    NSButton *_captureInput, *_microphone;
     NSPopUpButton *_capturedKeyboardLayout;
     NSWindowController *_shortcutsController;
 }
