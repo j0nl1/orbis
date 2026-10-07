@@ -1,23 +1,16 @@
 /* SPDX-License-Identifier: MIT */
 #import "OrbisInputCapture.h"
+#import "OrbisKeyboardCompatibility.h"
 #import "MRDPView.h"
 #import <ApplicationServices/ApplicationServices.h>
-
-static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
-                                     CGEventRef event, void *context)
-{
-    (void)proxy;
-    @autoreleasepool
-    {
-        return [(OrbisInputCapture *)context consumeEvent:event type:type] ? NULL : event;
-    }
-}
 
 @implementation OrbisInputCapture
 - (instancetype)initWithDelegate:(id<OrbisInputCaptureDelegate>)delegate
 {
     if (!(self = [super init])) return nil;
     _delegate = delegate;
+    _eventTap = [[OrbisInputEventTap alloc] init];
+    _textTranslator = [[OrbisKeyboardTextTranslator alloc] init];
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
     [center addObserver:self selector:@selector(settingsChanged:)
         name:OrbisInputCaptureSettingsDidChangeNotification object:nil];
@@ -37,6 +30,7 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
 }
 - (void)clearTargets
 {
+    [_textTranslator reset];
     [_target releaseCapturedInput];
     if (_pointerTarget != _target) [_pointerTarget releaseCapturedInput];
     [_target release]; _target = nil;
@@ -45,40 +39,15 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
 }
 - (void)removeTap
 {
-    if (_tap) CGEventTapEnable(_tap, false);
-    if (_source)
-    {
-        CFRunLoopRemoveSource(CFRunLoopGetMain(), _source, kCFRunLoopCommonModes);
-        CFRelease(_source); _source = NULL;
-    }
-    if (_tap) { CFMachPortInvalidate(_tap); CFRelease(_tap); _tap = NULL; }
-    _tapReady = NO;
+    [_eventTap stop]; _tapReady = NO;
 }
 - (void)stop
 {
     [self clearTargets]; [self removeTap];
     _suspended = _drainModifiers = _drainEscape = NO;
 }
-- (BOOL)installTap
-{
-    [self removeTap];
-    if (!AXIsProcessTrusted()) return NO;
-    CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) |
-        CGEventMaskBit(kCGEventFlagsChanged) | CGEventMaskBit(kCGEventLeftMouseDown) |
-        CGEventMaskBit(kCGEventLeftMouseUp) | CGEventMaskBit(kCGEventRightMouseDown) |
-        CGEventMaskBit(kCGEventRightMouseUp) | CGEventMaskBit(kCGEventOtherMouseDown) |
-        CGEventMaskBit(kCGEventOtherMouseUp) | CGEventMaskBit(kCGEventMouseMoved) |
-        CGEventMaskBit(kCGEventLeftMouseDragged) | CGEventMaskBit(kCGEventRightMouseDragged) |
-        CGEventMaskBit(kCGEventOtherMouseDragged) | CGEventMaskBit(kCGEventScrollWheel);
-    _tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap,
-        kCGEventTapOptionDefault, mask, OrbisCaptureCallback, self);
-    if (!_tap) return NO;
-    _source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, _tap, 0);
-    if (!_source) { [self removeTap]; return NO; }
-    CFRunLoopAddSource(CFRunLoopGetMain(), _source, kCFRunLoopCommonModes);
-    CGEventTapEnable(_tap, true);
-    return YES;
-}
+- (BOOL)keyboardCaptureAllowed { return [OrbisInputEventTap keyboardAccessAllowed]; }
+- (BOOL)installTap { return [_eventTap startWithSink:self]; }
 - (void)refresh
 {
     BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:OrbisFullscreenInputCaptureKey];
@@ -90,7 +59,12 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
         _drainModifiers = _drainEscape = NO;
         return;
     }
-    if (_menuTracking) { [self clearTargets]; [self removeTap]; return; }
+    if (_menuTracking || ![self keyboardCaptureAllowed])
+    {
+        // macOS can create a modifier-only tap when keyboard monitoring is denied.
+        // Never split one chord between captured modifiers and AppKit key events.
+        [self clearTargets]; [self removeTap]; return;
+    }
     if (_suspended) return;
     if (!_tapReady)
     {
@@ -106,6 +80,16 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
         [target releaseCapturedInput];
         _target = [target retain];
     }
+    _target.capturesLocalKeyboardLayout = [[NSUserDefaults standardUserDefaults]
+        boolForKey:OrbisCapturedMacKeyboardLayoutKey];
+}
+- (BOOL)sendLocalTextForEvent:(CGEventRef)event
+{
+    if (!_target.capturesLocalKeyboardLayout) { [_textTranslator reset]; return NO; }
+    NSString *text = [_textTranslator textForEvent:event];
+    if (!text) return NO;
+    [_target sendCapturedText:text forEvent:event];
+    return YES;
 }
 - (void)settingsChanged:(NSNotification *)note
 {
@@ -137,8 +121,7 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
     {
         // Release the remote state before returning local control. Do not silently recapture.
         [self clearTargets]; _suspended = YES;
-        if (_tap) CGEventTapEnable(_tap, false);
-        _tapReady = NO;
+        [self removeTap];
         return NO;
     }
     if (!event) return NO;
@@ -167,6 +150,7 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
     }
     if (type == kCGEventKeyDown || type == kCGEventKeyUp || type == kCGEventFlagsChanged)
     {
+        if (type == kCGEventKeyDown && [self sendLocalTextForEvent:event]) return YES;
         [_target sendCapturedEvent:event windowPoint:NSZeroPoint];
         return YES;
     }
@@ -178,7 +162,7 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
     BOOL down = type == kCGEventLeftMouseDown || type == kCGEventRightMouseDown || type == kCGEventOtherMouseDown;
     BOOL up = type == kCGEventLeftMouseUp || type == kCGEventRightMouseUp || type == kCGEventOtherMouseUp;
     NSInteger button = (NSInteger)CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
-    if ((down || up) && (button < 0 || button > 4)) return NO;
+    if ((down || up) && (button < 0 || button > 31 || ![_target canHandleCapturedMouseEvent:event])) return NO;
     if (down && !_pointerTarget && hit != _target)
     {
         // Preserve ordinary click-to-focus behavior even though the OS event is consumed.
@@ -201,6 +185,6 @@ static CGEventRef OrbisCaptureCallback(CGEventTapProxy proxy, CGEventType type,
 - (void)dealloc
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [self stop]; [super dealloc];
+    [self stop]; [_eventTap release]; [_textTranslator release]; [super dealloc];
 }
 @end

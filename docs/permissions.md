@@ -27,7 +27,13 @@ The current direct-distribution build is not App Sandbox enabled. A future Mac A
 <true/>
 ```
 
-The first enables the sandbox required by the Mac App Store. The second permits outgoing RDP connections from that sandbox. Orbis does not need Screen Recording or Accessibility because the remote desktop is decoded inside the app and keyboard input is handled only while its own window is active. It does not capture the local display or control other applications.
+The first enables the sandbox required by the Mac App Store. The second permits outgoing RDP connections from that sandbox. Orbis does not need Screen Recording because the remote desktop is decoded inside the app and it does not capture the local display.
+
+Ordinary windowed input does not require Accessibility or Input Monitoring. Optional fullscreen input capture requires both: Accessibility allows input control, and Input Monitoring permits keyboard press and release events. macOS may create a modifier-only filter without Input Monitoring; Orbis checks keyboard monitoring access before activating capture. The settings permission button requests both permissions and opens the relevant Privacy & Security category. Capture is off by default and runs only while a connected remote window is focused in fullscreen. Switching apps, opening menus or sheets, leaving fullscreen, or disconnecting releases capture. Control + Option + Command + Esc also releases it.
+
+macOS associates these grants with the application's code signature. After replacing an ad-hoc build or changing signing identities, an existing enabled entry can refer to the previous executable and deny access to the installed version. Remove that Orbis entry from the affected Privacy & Security category, add `/Applications/Orbis.app` again, grant access, and restart Orbis. Reusing a stable Apple signing identity across builds avoids changing the application's designated requirement; an older grant tied to an executable hash still needs to be renewed once.
+
+The shortcut editor can also use these permissions to intercept reserved Mac keyboard combinations while a recording field is active. Its **Allow Mac shortcut capture…** button requests access. Recording releases its filter after the assigned key is released, when focus changes, when a menu opens, or when the editor closes. This does not require enabling fullscreen session capture. Without the permissions, the editor can still record combinations delivered through ordinary AppKit input.
 
 The camera and microphone descriptions under `vendor/freerdp/client/Mac` belong
 to the upstream FreeRDP client. Orbis uses `macos/Info.plist.in`, which does not

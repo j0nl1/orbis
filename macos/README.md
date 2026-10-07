@@ -89,22 +89,85 @@ Keys forwarded while Command is held are released when Command is released or
 focus cleanup runs; a missing key-up does not keep the remote key pressed, and
 a delayed key-up does not release it twice.
 
+## Mouse shortcuts
+
+Open **Settings → Shortcuts…** to assign a middle or side mouse button to an
+Orbis action, with or without Shift, Control, Option, or Command. Click the
+recording field, keep the pointer over it, and press the mouse button. Primary
+and secondary clicks can also be recorded when combined with a modifier.
+The first ordinary click activates recording. Save applies the assignments;
+Cancel leaves the saved shortcuts unchanged.
+
+With Accessibility and Input Monitoring granted, the active recording field
+captures keyboard shortcuts before macOS handles them, including combinations
+reserved by the Mac. **Allow Mac shortcut capture…** requests the permissions.
+Recording consumes the assigned key press and release, then releases capture.
+Changing applications or windows, opening a menu, or closing the editor also
+releases it. Without those permissions, ordinary local recording remains available.
+
+If mouse software triggers a Mac action before the recording field receives the
+button, use **Mouse…** beside the action. Choose the button and modifiers, click
+**Assign**, then **Save**. This assigns the shortcut without physically pressing
+the mapped button. Buttons 4 and 5 are commonly the side buttons. Mouse software
+must still deliver a matching button event to Orbis during a remote session;
+manual assignment does not override a vendor's direct Mac actions.
+
+Mouse shortcuts work in windowed sessions and with fullscreen input capture.
+Each press executes the assigned action once and consumes its drag and release,
+so it does not also click the remote desktop. Matching uses the exact modifiers;
+unassigned combinations retain normal mouse behavior. A key code and mouse
+button with the same number are separate shortcuts. Additional mouse buttons
+beyond RDP's five-button range can execute assigned actions during capture.
+
 ## Fullscreen input capture
 
 Enable **Capture Mac input in full screen** in Settings to forward physical keys
 and pointer input to the active remote desktop before macOS handles shortcuts.
-This option is off by default and uses macOS input-control permission. Select
-**Allow input capture…** and approve Orbis in the system settings if prompted.
+This option is off by default and requires both Accessibility and Input
+Monitoring in macOS Privacy & Security. Select **Allow input capture…** to
+request access, enable Orbis in both categories, and reopen it if macOS asks.
+Without Input Monitoring, macOS can create a filter that receives modifiers and
+mouse events but no key presses. Orbis keeps capture inactive until keyboard
+monitoring is available, so ordinary AppKit input handles complete chords.
 Capture starts only with a connected, focused remote window in native fullscreen.
 It stops when switching apps, opening a menu or sheet, leaving fullscreen, or
 disconnecting, and releases held remote keys, modifiers, and mouse buttons.
 
-Command becomes remote Super/Windows and Option becomes Alt; physical keys use
-the remote keyboard layout. Macros that generate keyboard or mouse events follow
-this routing. Macros that directly run a Mac script, open a Mac app, or invoke a
+Windowed and captured input share one native editing translator. AppKit resolves
+Mac text keybindings into word, line, document, and selection actions; Orbis
+sends complete remote editing chords. Command-Delete selects to the beginning
+of the line and deletes; Command-arrows navigate line or document boundaries.
+Menu shortcuts such as Command-C/V retain their remote Control mapping in both
+typing modes, including Command-Shift-C/V for terminals. Right Option remains
+AltGr in remote-layout mode rather than invoking native Option editing.
+Left Option is deferred until a physical chord needs Alt, so native word editing
+does not tap Alt and activate a remote menu before sending its editing chord.
+Unknown captured Command chords use remote Super/Windows;
+a standalone Command tap sends Super. Custom shortcuts take priority over the
+standard editing mappings. Remote applications interpret these chords using
+their own keybindings; terminal editing conventions can differ from GUI editors.
+
+The input implementation separates the OS filter (`OrbisInputEventTap`), session
+focus and routing (`OrbisInputCapture`), and native text/editing translation
+(`OrbisKeyboardCompatibility`). The OS adapter verifies the effective event mask
+of the specific filter it creates, rather than treating a non-null filter as
+permission to capture every requested event. Editing plans use one atomic sender
+for both windowed and captured input; layout composition resets when focus changes.
+
+By default, physical keys use the remote
+keyboard layout: left Option is Alt and right Option is AltGr. On a Spanish
+Ubuntu desktop, right Option + 2 types `@`. ISO keyboards preserve the `<`/`>`
+key beside Shift, including third-party keyboards.
+
+Choose **Typing → Mac keyboard layout** in Settings to keep the Mac's characters
+while capturing fullscreen shortcuts. This mode translates printable keys,
+Option symbols, and dead-key accents using the active Mac layout; Command and
+Control shortcuts still reach the remote desktop. **Remote keyboard layout**
+restores physical typing with separate Alt and AltGr keys. Macros that generate
+keyboard or mouse events follow this routing. Macros that directly run a Mac script, open a Mac app, or invoke a
 registered system action do not become Linux commands. RDP supports the first
-five mouse buttons; additional buttons need a macro that generates supported
-keyboard or mouse events. Media keys and gestures are outside this capture mode.
+five mouse buttons; additional buttons can be assigned to Orbis actions in
+Shortcuts, or use a macro that generates supported keyboard or mouse events. Media keys and gestures are outside this capture mode.
 
 Press **Control + Option + Command + Esc** to release capture for the current
 fullscreen focus episode. Leaving fullscreen or switching away and returning

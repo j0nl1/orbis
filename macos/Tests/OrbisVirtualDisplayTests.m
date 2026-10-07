@@ -9,6 +9,7 @@
 #import "OrbisRemoteView.h"
 #import "OrbisAppDelegate.h"
 #import "OrbisWorkspaceShortcuts.h"
+#import "OrbisInputCapture.h"
 #import <objc/runtime.h>
 
 /* Give the SSH fixture a deterministic active window without replacing menu or session code. */
@@ -89,6 +90,26 @@ BOOL OrbisRecordWorkspaceKeyboardEvent(rdpInput *input, UINT16 flags, UINT8 code
     [self setIs_connected:1]; [self setMapsCommandShortcutsToControl:YES];
     return self;
 }
+@end
+
+@interface OrbisMouseCaptureWindow : NSWindow
+@end
+@implementation OrbisMouseCaptureWindow
+- (NSWindowStyleMask)styleMask { return [super styleMask] | NSWindowStyleMaskFullScreen; }
+@end
+@interface OrbisMouseCaptureDelegate : NSObject <OrbisInputCaptureDelegate>
+@property(nonatomic, assign) MRDPView *view;
+@end
+@implementation OrbisMouseCaptureDelegate
+@synthesize view;
+- (MRDPView *)inputCaptureKeyboardTarget { return view; }
+- (MRDPView *)inputCapturePointerTargetAtScreenPoint:(NSPoint)point { (void)point; return view; }
+@end
+@interface OrbisMouseCaptureFixture : OrbisInputCapture
+@end
+@implementation OrbisMouseCaptureFixture
+- (BOOL)installTap { return YES; }
+- (BOOL)keyboardCaptureAllowed { return YES; }
 @end
 
 static DISPLAY_CONTROL_MONITOR_LAYOUT sentMonitors[2];
@@ -440,6 +461,10 @@ static void CheckConfiguredShortcuts(void)
                 "Remote screenshots must select screen with Shift or window with Alt");
         }
         [workspaceKeyboardEvents removeAllObjects];
+        CGEventRef command = CGEventCreateKeyboardEvent(NULL, 55, true);
+        CGEventSetType(command, kCGEventFlagsChanged); CGEventSetFlags(command, kCGEventFlagMaskCommand);
+        [view sendCapturedEvent:command windowPoint:NSZeroPoint]; CFRelease(command);
+        Require(workspaceKeyboardEvents.count == 0, "Custom capture actions must start without a premature Super press");
         CGEventRef event = CGEventCreateKeyboardEvent(NULL, 20, true);
         CGEventSetFlags(event, kCGEventFlagMaskCommand | kCGEventFlagMaskShift);
         [view sendCapturedEvent:event windowPoint:NSZeroPoint];
@@ -465,8 +490,102 @@ static void CheckConfiguredShortcuts(void)
     [view flagsChanged:ShortcutEvent(NSEventTypeFlagsChanged, 55, 0)];
     Require(workspaceKeyboardEvents.count == 2 && [workspaceKeyboardEvents[0][@"code"] intValue] == 0x5B,
         "A later standalone Command tap must work after a custom macro without modifier-release events");
+    [view releaseCapturedInput];
+    model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    [model clearAction:OrbisWorkspaceScreenshotScreen];
+    [model assignKeyCode:19 modifiers:OrbisShortcutOption label:@"Option 2" toAction:OrbisWorkspaceActivities error:nil];
+    [model save];
+    [workspaceKeyboardEvents removeAllObjects];
+    CGEventRef textShortcut = CGEventCreateKeyboardEvent(NULL, 19, true);
+    CGEventSetFlags(textShortcut, kCGEventFlagMaskAlternate);
+    [view sendCapturedText:@"@" forEvent:textShortcut];
+    Require(workspaceKeyboardEvents.count == 2 && [workspaceKeyboardEvents[0][@"code"] intValue] == 0x5B,
+        "Configured shortcuts must take precedence over Mac-layout captured text");
+    CGEventSetType(textShortcut, kCGEventKeyUp); CGEventSetFlags(textShortcut, 0);
+    [view sendCapturedEvent:textShortcut windowPoint:NSZeroPoint];
+    Require(workspaceKeyboardEvents.count == 2, "A captured text shortcut must not leak its physical key release");
+    CFRelease(textShortcut);
     [view releaseCapturedInput]; [view release]; [workspaceKeyboardEvents release]; workspaceKeyboardEvents = nil;
     if (saved) [defaults setObject:saved forKey:key]; else [defaults removeObjectForKey:key]; [saved release];
+}
+
+static void CheckConfiguredMouseShortcuts(void)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSString *key = @"OrbisWorkspaceShortcuts.v1.macos";
+    id saved = [[defaults objectForKey:key] retain];
+    id captureSetting = [[defaults objectForKey:OrbisFullscreenInputCaptureKey] retain];
+    [defaults removeObjectForKey:key];
+    OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    [model assignMouseButton:3 modifiers:OrbisShortcutShift label:@"Shift Mouse Button 4" toAction:OrbisWorkspacePrevious error:nil];
+    [model assignMouseButton:6 modifiers:0 label:@"Mouse Button 7" toAction:OrbisWorkspaceActivities error:nil];
+    [model save];
+    workspaceKeyboardEvents = [[NSMutableArray alloc] init];
+    OrbisMouseCaptureWindow *window = [[OrbisMouseCaptureWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    OrbisShortcutFixtureView *view = [[OrbisShortcutFixtureView alloc] init];
+    [view setDisplayRegion:NSMakeRect(0, 0, 800, 600)]; [window.contentView addSubview:view];
+    CGEventRef click = CGEventCreateMouseEvent(NULL, kCGEventOtherMouseDown, CGPointMake(100, 100), (CGMouseButton)3);
+    CGEventSetFlags(click, kCGEventFlagMaskShift);
+    [pointerEvents removeAllObjects];
+    [view otherMouseDown:[NSEvent eventWithCGEvent:click]];
+    Require(workspaceKeyboardEvents.count == 4 && [workspaceKeyboardEvents[0][@"code"] intValue] == 0x5B &&
+        [workspaceKeyboardEvents[1][@"code"] intValue] == 0x49 && !pointerEvents.count,
+        "A windowed side-button shortcut must emit Super+PageUp without a remote click");
+    [view otherMouseDown:[NSEvent eventWithCGEvent:click]];
+    CGEventSetType(click, kCGEventOtherMouseDragged); [view otherMouseDragged:[NSEvent eventWithCGEvent:click]];
+    CGEventSetType(click, kCGEventOtherMouseUp); CGEventSetFlags(click, 0);
+    [view otherMouseUp:[NSEvent eventWithCGEvent:click]];
+    Require(workspaceKeyboardEvents.count == 4 && !pointerEvents.count,
+        "Mouse shortcuts must consume duplicate presses, dragging and release after modifiers change");
+    [workspaceKeyboardEvents removeAllObjects];
+    [view flagsChanged:ShortcutEvent(NSEventTypeFlagsChanged, 56, NSEventModifierFlagShift)];
+    CGEventSetType(click, kCGEventOtherMouseDown); CGEventSetFlags(click, kCGEventFlagMaskShift);
+    [view otherMouseDown:[NSEvent eventWithCGEvent:click]];
+    CGEventSetType(click, kCGEventOtherMouseUp); CGEventSetFlags(click, 0);
+    [view otherMouseUp:[NSEvent eventWithCGEvent:click]];
+    Require([workspaceKeyboardEvents.lastObject[@"code"] intValue] == 0x2A &&
+        [workspaceKeyboardEvents.lastObject[@"flags"] intValue] == KBD_FLAGS_RELEASE && !pointerEvents.count,
+        "A mouse shortcut release must clear held modifiers even if their own release event is missing");
+    [workspaceKeyboardEvents removeAllObjects];
+    CGEventSetType(click, kCGEventOtherMouseDown); [view otherMouseDown:[NSEvent eventWithCGEvent:click]];
+    CGEventSetType(click, kCGEventOtherMouseUp); [view otherMouseUp:[NSEvent eventWithCGEvent:click]];
+    Require(pointerEvents.count == 2 && !workspaceKeyboardEvents.count,
+        "An unassigned modifier combination must keep its normal remote side-button click");
+    OrbisMouseCaptureDelegate *delegate = [[OrbisMouseCaptureDelegate alloc] init]; delegate.view = view;
+    OrbisMouseCaptureFixture *capture = [[OrbisMouseCaptureFixture alloc] initWithDelegate:delegate];
+    [defaults setBool:YES forKey:OrbisFullscreenInputCaptureKey];
+    [pointerEvents removeAllObjects]; [workspaceKeyboardEvents removeAllObjects];
+    CGEventSetType(click, kCGEventOtherMouseDown); CGEventSetFlags(click, kCGEventFlagMaskShift);
+    Require([capture consumeEvent:click type:kCGEventOtherMouseDown] && capture.active,
+        "Enabled fullscreen capture must consume the configured mouse shortcut");
+    CGEventSetType(click, kCGEventOtherMouseUp); CGEventSetFlags(click, 0);
+    Require([capture consumeEvent:click type:kCGEventOtherMouseUp], "Fullscreen capture must consume its shortcut release");
+    Require(workspaceKeyboardEvents.count == 4 && !pointerEvents.count,
+        "The event tap must reach the same shortcut action without forwarding a duplicate pointer click");
+    [workspaceKeyboardEvents removeAllObjects];
+    CGEventSetType(click, kCGEventOtherMouseDown);
+    CGEventSetIntegerValueField(click, kCGMouseEventButtonNumber, 6);
+    Require([capture consumeEvent:click type:kCGEventOtherMouseDown] && workspaceKeyboardEvents.count == 2,
+        "Assigned buttons beyond RDP's five buttons must still execute fullscreen actions");
+    [capture stop];
+    CGEventSetType(click, kCGEventOtherMouseUp); [view otherMouseUp:[NSEvent eventWithCGEvent:click]];
+    Require(workspaceKeyboardEvents.count == 2 && !pointerEvents.count,
+        "Focus cleanup must suppress a late release of a consumed mouse shortcut");
+    CGEventSetType(click, kCGEventOtherMouseDown); CGEventSetIntegerValueField(click, kCGMouseEventButtonNumber, 7);
+    Require(![capture consumeEvent:click type:kCGEventOtherMouseDown],
+        "Unassigned buttons outside the RDP range must remain available to macOS");
+    CGEventSetIntegerValueField(click, kCGMouseEventButtonNumber, 4);
+    [capture consumeEvent:click type:kCGEventOtherMouseDown];
+    CGEventSetType(click, kCGEventOtherMouseUp); [capture consumeEvent:click type:kCGEventOtherMouseUp];
+    Require(pointerEvents.count == 2, "Unassigned supported buttons must still reach RDP during fullscreen capture");
+    [capture stop]; CFRelease(click); [capture release]; [delegate release];
+    [view removeFromSuperview]; [view release]; [window release];
+    [workspaceKeyboardEvents release]; workspaceKeyboardEvents = nil;
+    if (saved) [defaults setObject:saved forKey:key]; else [defaults removeObjectForKey:key]; [saved release];
+    if (captureSetting) [defaults setObject:captureSetting forKey:OrbisFullscreenInputCaptureKey];
+    else [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey]; [captureSetting release];
 }
 
 int main(void)
@@ -553,6 +672,7 @@ int main(void)
         CheckAutomaticWindowResolution(delegate, resolutionMenu);
         CheckConnectingOverlayRemoval();
         CheckConfiguredShortcuts();
+        CheckConfiguredMouseShortcuts();
         [delegate release]; [pointerEvents release];
         if (originalSettings) [[NSUserDefaults standardUserDefaults] setObject:originalSettings forKey:@"OrbisDisplaySettings.v1"];
         else [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OrbisDisplaySettings.v1"];

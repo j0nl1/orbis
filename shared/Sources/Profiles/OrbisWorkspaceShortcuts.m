@@ -35,12 +35,14 @@
         for (NSNumber *action in self.class.actions) {
             id binding = saved[action.stringValue];
             if (![binding isKindOfClass:[NSDictionary class]]) continue;
-            if (![binding[@"key"] isKindOfClass:[NSNumber class]] ||
+            NSString *input = binding[@"button"] ? @"button" : @"key";
+            if (binding[@"button"] && binding[@"key"]) continue;
+            if (![binding[input] isKindOfClass:[NSNumber class]] ||
                 ![binding[@"modifiers"] isKindOfClass:[NSNumber class]] ||
                 ![binding[@"label"] isKindOfClass:[NSString class]]) continue;
-            if ([binding[@"key"] doubleValue] != [binding[@"key"] unsignedIntegerValue] ||
+            if ([binding[input] doubleValue] != [binding[input] unsignedIntegerValue] ||
                 [binding[@"modifiers"] doubleValue] != [binding[@"modifiers"] unsignedIntegerValue]) continue;
-            [self assignKeyCode:[binding[@"key"] unsignedIntegerValue]
+            [self assignInput:input code:[binding[input] unsignedIntegerValue]
                 modifiers:[binding[@"modifiers"] unsignedIntegerValue]
                 label:binding[@"label"] toAction:action.integerValue error:nil];
         }
@@ -49,9 +51,17 @@
 - (NSDictionary *)bindings { return [[_bindings copy] autorelease]; }
 - (OrbisWorkspaceAction)actionForKeyCode:(NSUInteger)code modifiers:(OrbisShortcutModifiers)modifiers
 {
+    return [self actionForInput:@"key" code:code modifiers:modifiers];
+}
+- (OrbisWorkspaceAction)actionForMouseButton:(NSUInteger)button modifiers:(OrbisShortcutModifiers)modifiers
+{
+    return [self actionForInput:@"button" code:button modifiers:modifiers];
+}
+- (OrbisWorkspaceAction)actionForInput:(NSString *)input code:(NSUInteger)code modifiers:(OrbisShortcutModifiers)modifiers
+{
     for (NSNumber *action in self.class.actions) {
         NSDictionary *binding = _bindings[action.stringValue];
-        if (binding && [binding[@"key"] unsignedIntegerValue] == code &&
+        if (binding[input] && [binding[input] unsignedIntegerValue] == code &&
             [binding[@"modifiers"] unsignedIntegerValue] == modifiers) return action.integerValue;
     }
     return OrbisWorkspaceNone;
@@ -59,15 +69,26 @@
 - (BOOL)assignKeyCode:(NSUInteger)code modifiers:(OrbisShortcutModifiers)modifiers
                label:(NSString *)label toAction:(OrbisWorkspaceAction)action error:(NSError **)error
 {
-    if (![self.class.actions containsObject:@(action)] || code > 255 || modifiers > 15 || !label.length || label.length > 80)
+    return [self assignInput:@"key" code:code modifiers:modifiers label:label toAction:action error:error];
+}
+- (BOOL)assignMouseButton:(NSUInteger)button modifiers:(OrbisShortcutModifiers)modifiers
+                   label:(NSString *)label toAction:(OrbisWorkspaceAction)action error:(NSError **)error
+{
+    return [self assignInput:@"button" code:button modifiers:modifiers label:label toAction:action error:error];
+}
+- (BOOL)assignInput:(NSString *)input code:(NSUInteger)code modifiers:(OrbisShortcutModifiers)modifiers
+             label:(NSString *)label toAction:(OrbisWorkspaceAction)action error:(NSError **)error
+{
+    NSUInteger maximum = [input isEqualToString:@"button"] ? 31 : 255;
+    if (![self.class.actions containsObject:@(action)] || code > maximum || modifiers > 15 || !label.length || label.length > 80)
         return NO;
-    OrbisWorkspaceAction other = [self actionForKeyCode:code modifiers:modifiers];
+    OrbisWorkspaceAction other = [self actionForInput:input code:code modifiers:modifiers];
     if (other != OrbisWorkspaceNone && other != action) {
         if (error) *error = [NSError errorWithDomain:@"OrbisWorkspaceShortcuts" code:1 userInfo:@{
             NSLocalizedDescriptionKey: [NSString stringWithFormat:@"This combination is already assigned to %@.", [self.class titleForAction:other]] }];
         return NO;
     }
-    _bindings[[@(action) stringValue]] = @{ @"key": @(code), @"modifiers": @(modifiers), @"label": label };
+    _bindings[[@(action) stringValue]] = @{ input: @(code), @"modifiers": @(modifiers), @"label": label };
     return YES;
 }
 - (void)clearAction:(OrbisWorkspaceAction)action { [_bindings removeObjectForKey:[@(action) stringValue]]; }

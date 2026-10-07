@@ -24,9 +24,11 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   set(keyboard_runtime ${ORBIS_TEST_FREERDP_BUILD_DIR}/macos/Orbis.app/Contents/Frameworks)
   add_executable(orbis_keyboard_input_tests
     ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisKeyboardInputTests.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputEventTap.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputCapture.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputCaptureSettings.m
     ${keyboard_source}/client/Mac/MRDPView.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisKeyboardCompatibility.m
     ${keyboard_source}/client/Mac/Keyboard.m
     ${keyboard_source}/client/Mac/Clipboard.m
     ${keyboard_source}/client/Mac/mf_client.m
@@ -36,10 +38,15 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
     ${keyboard_source}/client/Mac ${keyboard_source}/include ${keyboard_source}/winpr/include
     ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
   target_compile_options(orbis_keyboard_input_tests PRIVATE -fno-objc-arc -fblocks)
-  # Replace only the outgoing network boundary; run the real AppKit event handlers.
+  # Replace OS permission/filter calls and outgoing network calls; run the real event adapters.
   target_compile_definitions(orbis_keyboard_input_tests PRIVATE
     freerdp_input_send_keyboard_event=OrbisRecordKeyboardEvent
-    freerdp_input_send_unicode_keyboard_event=OrbisRecordUnicodeKeyboardEvent)
+    freerdp_input_send_unicode_keyboard_event=OrbisRecordUnicodeKeyboardEvent
+    AXIsProcessTrusted=OrbisTestAccessibilityAllowed
+    CGPreflightListenEventAccess=OrbisTestKeyboardAllowed
+    CGEventTapCreate=OrbisTestCreateEventTap
+    CGEventTapEnable=OrbisTestEnableEventTap
+    CGGetEventTapList=OrbisTestEventTapList)
   set_property(SOURCE ${keyboard_source}/client/Mac/MRDPView.m APPEND PROPERTY
     COMPILE_DEFINITIONS mf_press_mouse_button=OrbisRecordMouseButton
       freerdp_client_send_button_event=OrbisRecordDisplayPointer
@@ -47,17 +54,19 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   target_link_libraries(orbis_keyboard_input_tests PRIVATE ${APPKIT_FRAMEWORK}
     "${keyboard_runtime}/libfreerdp3.3.dylib"
     "${keyboard_runtime}/libfreerdp-client3.3.dylib"
-    "${keyboard_runtime}/libwinpr3.3.dylib" "-framework IOKit" "-framework CoreGraphics" "-framework ApplicationServices")
+    "${keyboard_runtime}/libwinpr3.3.dylib" "-framework IOKit" "-framework CoreGraphics" "-framework ApplicationServices" "-framework Carbon")
   target_link_options(orbis_keyboard_input_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
   add_executable(orbis_virtual_display_tests
     ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisVirtualDisplayTests.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAppDelegate.m
     ${keyboard_source}/client/Mac/MRDPView.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisKeyboardCompatibility.m
     ${keyboard_source}/client/Mac/Keyboard.m
     ${keyboard_source}/client/Mac/Clipboard.m
     ${keyboard_source}/client/Mac/mf_client.m
     ${keyboard_source}/client/Mac/MRDPCursor.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionController.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputEventTap.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputCapture.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisConnectionRetryPolicy.c
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionEndPolicy.c
@@ -70,7 +79,7 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   target_compile_definitions(orbis_virtual_display_tests PRIVATE
     freerdp_input_send_keyboard_event=OrbisRecordWorkspaceKeyboardEvent)
   target_link_libraries(orbis_virtual_display_tests PRIVATE orbis_macos_ui ${APPKIT_FRAMEWORK}
-    "-framework IOKit" "-framework CoreGraphics"
+    "-framework IOKit" "-framework CoreGraphics" "-framework Carbon"
     "${keyboard_runtime}/libfreerdp3.3.dylib"
     "${keyboard_runtime}/libfreerdp-client3.3.dylib"
     "${keyboard_runtime}/libwinpr3.3.dylib")
@@ -149,6 +158,7 @@ add_library(
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisFormControls.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisDisplaySettings.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisShortcutsController.m
+  ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputEventTap.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputCaptureSettings.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAboutController.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisLibraryViewController.m

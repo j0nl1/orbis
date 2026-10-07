@@ -62,23 +62,33 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)displayCapabilitiesChanged;
 @end
 
+static OrbisShortcutModifiers OrbisModifiersForFlags(NSEventModifierFlags flags)
+{
+	return ((flags & NSEventModifierFlagShift) ? OrbisShortcutShift : 0) |
+	    ((flags & NSEventModifierFlagControl) ? OrbisShortcutControl : 0) |
+	    ((flags & NSEventModifierFlagOption) ? OrbisShortcutOption : 0) |
+	    ((flags & NSEventModifierFlagCommand) ? OrbisShortcutCommand : 0);
+}
+
 @implementation OrbisRemoteView
 @synthesize sessionController;
 - (BOOL)sendWorkspaceShortcutForCode:(NSUInteger)code flags:(NSEventModifierFlags)flags physical:(BOOL)physical
 {
 	if (!is_connected || !instance || !instance->context) return NO;
 	if ([_workspaceConsumedKeys containsObject:@(code)]) return YES;
-	OrbisShortcutModifiers modifiers = ((flags & NSEventModifierFlagShift) ? OrbisShortcutShift : 0) |
-	    ((flags & NSEventModifierFlagControl) ? OrbisShortcutControl : 0) |
-	    ((flags & NSEventModifierFlagOption) ? OrbisShortcutOption : 0) |
-	    ((flags & NSEventModifierFlagCommand) ? OrbisShortcutCommand : 0);
+	OrbisShortcutModifiers modifiers = OrbisModifiersForFlags(flags);
 	OrbisWorkspaceShortcuts *shortcuts = [[[OrbisWorkspaceShortcuts alloc]
 	    initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"macos"] autorelease];
 	OrbisWorkspaceAction action = [shortcuts actionForKeyCode:code modifiers:modifiers];
 	if (action == OrbisWorkspaceNone) return NO;
 	if (!_workspaceConsumedKeys) _workspaceConsumedKeys = [[NSMutableSet alloc] init];
 	[_workspaceConsumedKeys addObject:@(code)];
-	if (!physical && mapsCommandShortcutsToControl && (flags & NSEventModifierFlagCommand)) {
+	[self sendWorkspaceAction:action flags:flags physical:physical];
+	return YES;
+}
+- (void)sendWorkspaceAction:(OrbisWorkspaceAction)action flags:(NSEventModifierFlags)flags physical:(BOOL)physical
+{
+	if (mapsCommandShortcutsToControl && (flags & NSEventModifierFlagCommand)) {
 		[self setCommandKeyDown:YES]; commandTapConsumed = YES;
 	}
 	rdpInput *input = instance->context->input;
@@ -88,6 +98,8 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 	for (NSUInteger i = 0; i < 4; i++)
 		if (kbdModFlags & masks[i]) freerdp_input_send_keyboard_event(input,
 		    (held[i] & KBDEXT) | KBD_FLAGS_RELEASE, held[i] & 0xFF);
+	if (capturedRightOptionDown) freerdp_input_send_keyboard_event(input,
+	    KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE, RDP_SCANCODE_RMENU & 0xFF);
 	DWORD chord[2]; NSUInteger count = 0;
 	if (action >= OrbisWorkspaceScreenshotScreen) {
 		if (action == OrbisWorkspaceScreenshotScreen) chord[count++] = RDP_SCANCODE_LSHIFT;
@@ -106,8 +118,58 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 	for (NSUInteger i = 0; i < 4; i++)
 		if (kbdModFlags & masks[i]) freerdp_input_send_keyboard_event(input,
 		    (held[i] & KBDEXT) | KBD_FLAGS_DOWN, held[i] & 0xFF);
+	if (capturedRightOptionDown) freerdp_input_send_keyboard_event(input,
+	    KBD_FLAGS_EXTENDED | KBD_FLAGS_DOWN, RDP_SCANCODE_RMENU & 0xFF);
 	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"workspace.action" values:@{ @"action": @(action) }];
+}
+- (BOOL)sendWorkspaceMouseButton:(NSInteger)button type:(NSEventType)type flags:(NSEventModifierFlags)flags physical:(BOOL)physical
+{
+	if (!is_connected || !instance || !instance->context || button < 0 || button > 31) return NO;
+	BOOL down = type == NSEventTypeLeftMouseDown || type == NSEventTypeRightMouseDown || type == NSEventTypeOtherMouseDown;
+	BOOL up = type == NSEventTypeLeftMouseUp || type == NSEventTypeRightMouseUp || type == NSEventTypeOtherMouseUp;
+	BOOL drag = type == NSEventTypeLeftMouseDragged || type == NSEventTypeRightMouseDragged || type == NSEventTypeOtherMouseDragged;
+	if (!down && !up && !drag) return NO;
+	NSNumber *identity = @(button);
+	if (down) [_workspaceSuppressedButtonReleases removeObject:identity];
+	if ([_workspaceConsumedButtons containsObject:identity] || [_workspaceSuppressedButtonReleases containsObject:identity]) {
+		if (up) { [_workspaceConsumedButtons removeObject:identity]; [_workspaceSuppressedButtonReleases removeObject:identity]; }
+		return YES;
+	}
+	if (!down) return NO;
+	OrbisWorkspaceShortcuts *shortcuts = [[[OrbisWorkspaceShortcuts alloc]
+	    initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"macos"] autorelease];
+	OrbisWorkspaceAction action = [shortcuts actionForMouseButton:button modifiers:OrbisModifiersForFlags(flags)];
+	if (action == OrbisWorkspaceNone) return NO;
+	if (!_workspaceConsumedButtons) _workspaceConsumedButtons = [[NSMutableSet alloc] init];
+	[_workspaceConsumedButtons addObject:identity];
+	[self sendWorkspaceAction:action flags:flags physical:physical];
 	return YES;
+}
+- (BOOL)sendWorkspaceMouseEvent:(NSEvent *)event
+{
+	BOOL handled = [self sendWorkspaceMouseButton:event.buttonNumber type:event.type flags:event.modifierFlags physical:NO];
+	if (handled && (event.type == NSEventTypeLeftMouseUp || event.type == NSEventTypeRightMouseUp || event.type == NSEventTypeOtherMouseUp))
+		[self flagsChanged:event];
+	return handled;
+}
+- (void)mouseDown:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super mouseDown:event]; }
+- (void)mouseUp:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super mouseUp:event]; }
+- (void)mouseDragged:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super mouseDragged:event]; }
+- (void)rightMouseDown:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super rightMouseDown:event]; }
+- (void)rightMouseUp:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super rightMouseUp:event]; }
+- (void)rightMouseDragged:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super rightMouseDragged:event]; }
+- (void)otherMouseDown:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super otherMouseDown:event]; }
+- (void)otherMouseUp:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super otherMouseUp:event]; }
+- (void)otherMouseDragged:(NSEvent *)event { if (![self sendWorkspaceMouseEvent:event]) [super otherMouseDragged:event]; }
+- (BOOL)canHandleCapturedMouseEvent:(CGEventRef)event
+{
+	if ([super canHandleCapturedMouseEvent:event]) return YES;
+	NSInteger button = (NSInteger)CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+	if (button < 0 || button > 31) return NO;
+	if ([_workspaceConsumedButtons containsObject:@(button)] || [_workspaceSuppressedButtonReleases containsObject:@(button)]) return YES;
+	OrbisWorkspaceShortcuts *shortcuts = [[[OrbisWorkspaceShortcuts alloc]
+	    initWithDefaults:NSUserDefaults.standardUserDefaults platform:@"macos"] autorelease];
+	return [shortcuts actionForMouseButton:button modifiers:OrbisModifiersForFlags((NSEventModifierFlags)CGEventGetFlags(event))] != OrbisWorkspaceNone;
 }
 - (void)keyDown:(NSEvent *)event
 {
@@ -123,9 +185,29 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 	}
 	[super keyUp:event];
 }
+- (void)sendCapturedText:(NSString *)text forEvent:(CGEventRef)event
+{
+	NSUInteger code = (NSUInteger)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+	if ([self sendWorkspaceShortcutForCode:code flags:(NSEventModifierFlags)CGEventGetFlags(event) physical:YES]) return;
+	[super sendCapturedText:text forEvent:event];
+}
 - (void)sendCapturedEvent:(CGEventRef)event windowPoint:(NSPoint)point
 {
 	CGEventType type = CGEventGetType(event);
+	NSInteger button = (NSInteger)CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+	if ([self sendWorkspaceMouseButton:button type:(NSEventType)type
+	    flags:(NSEventModifierFlags)CGEventGetFlags(event) physical:YES]) {
+		if (type == kCGEventLeftMouseUp || type == kCGEventRightMouseUp || type == kCGEventOtherMouseUp) {
+			// A macro may omit modifier transitions; the mouse release still carries current flags.
+			CGEventRef modifiers = CGEventCreateCopy(event);
+			if (modifiers) {
+				CGEventSetType(modifiers, kCGEventFlagsChanged);
+				[super sendCapturedEvent:modifiers windowPoint:NSZeroPoint];
+				CFRelease(modifiers);
+			}
+		}
+		return;
+	}
 	NSUInteger code = (NSUInteger)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
 	if (type == kCGEventKeyDown && [self sendWorkspaceShortcutForCode:code flags:CGEventGetFlags(event) physical:YES]) return;
 	if (type == kCGEventKeyUp) [_workspaceConsumedKeys removeObject:@(code)];
@@ -135,9 +217,14 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 {
 	for (NSNumber *code in _workspaceConsumedKeys) if (code.unsignedIntegerValue < 128)
 		locallyHandledKeyDown[code.unsignedIntegerValue] = YES;
-	[_workspaceConsumedKeys removeAllObjects]; [super releaseCapturedInput];
+	[_workspaceConsumedKeys removeAllObjects];
+	if (_workspaceConsumedButtons.count) {
+		if (!_workspaceSuppressedButtonReleases) _workspaceSuppressedButtonReleases = [[NSMutableSet alloc] init];
+		[_workspaceSuppressedButtonReleases unionSet:_workspaceConsumedButtons];
+	}
+	[_workspaceConsumedButtons removeAllObjects]; [super releaseCapturedInput];
 }
-- (void)dealloc { [_workspaceConsumedKeys release]; [super dealloc]; }
+- (void)dealloc { [_workspaceConsumedKeys release]; [_workspaceConsumedButtons release]; [_workspaceSuppressedButtonReleases release]; [super dealloc]; }
 
 - (NSPoint)remotePointForEvent:(NSEvent *)event
 {

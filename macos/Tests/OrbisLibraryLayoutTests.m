@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 #import <XCTest/XCTest.h>
+#import <objc/runtime.h>
 
 #import "OrbisLibraryViewController.h"
 #import "OrbisProfile.h"
@@ -119,6 +120,15 @@ static void DrainSheetCompletion(void)
 @interface OrbisLibraryLayoutTests : XCTestCase
 @end
 
+@interface OrbisRecordingTestTap : OrbisInputEventTap
+@property(nonatomic, assign) id<OrbisInputEventSink> sink;
+@property(nonatomic) BOOL running;
+@end
+@implementation OrbisRecordingTestTap
+- (BOOL)startWithSink:(id<OrbisInputEventSink>)sink { self.sink = sink; self.running = YES; return YES; }
+- (void)stop { self.running = NO; }
+@end
+
 @implementation OrbisLibraryLayoutTests
 
 - (void)testShortcutRecorderPersistsOnlySavedDraftsAndRejectsCollisions
@@ -156,6 +166,182 @@ static void DrainSheetCompletion(void)
     saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
     XCTAssertEqual([saved actionForKeyCode:20 modifiers:9], OrbisWorkspaceScreenshotScreen);
     XCTAssertEqual([saved actionForKeyCode:21 modifiers:9], OrbisWorkspaceScreenshotWindow);
+}
+
+- (void)testMouseShortcutRecorderRequiresActivationAndSavesExactModifiers
+{
+    NSString *suite = [@"OrbisMacMouseShortcutTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+    [self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+    OrbisShortcutsController *editor = [[[OrbisShortcutsController alloc] initWithDefaults:defaults] autorelease];
+    NSButton *previous = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-shortcut-1");
+    NSButton *next = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-shortcut-2");
+    NSEvent *activate = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:NSZeroPoint
+        modifierFlags:0 timestamp:1 windowNumber:editor.window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
+    [previous mouseDown:activate];
+    XCTAssertEqual([[editor valueForKey:@"shortcuts"] bindings].count, 0u, @"The activating click must not become the binding");
+    CGEventRef click = CGEventCreateMouseEvent(NULL, kCGEventOtherMouseDown, CGPointZero, (CGMouseButton)3);
+    CGEventSetFlags(click, kCGEventFlagMaskControl | kCGEventFlagMaskShift);
+    [previous otherMouseDown:[NSEvent eventWithCGEvent:click]];
+    XCTAssertEqualObjects(previous.title, @"⌃⇧Mouse Button 4");
+    [editor.window makeFirstResponder:next]; [next otherMouseDown:[NSEvent eventWithCGEvent:click]];
+    XCTAssertTrue([[editor valueForKey:@"feedback"] stringValue].length > 0, @"Two actions cannot share a mouse combination");
+    [editor cancel:nil];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual(saved.bindings.count, 0u);
+    [editor save:nil];
+    saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForMouseButton:3 modifiers:OrbisShortcutControl | OrbisShortcutShift], OrbisWorkspacePrevious);
+    XCTAssertEqual([saved actionForMouseButton:3 modifiers:0], OrbisWorkspaceNone);
+    XCTAssertEqual([saved actionForKeyCode:3 modifiers:OrbisShortcutControl | OrbisShortcutShift], OrbisWorkspaceNone);
+    CFRelease(click);
+}
+
+- (void)testShortcutRecorderReceivesShiftArrowThroughWindowDispatch
+{
+    NSString *suite = [@"OrbisShiftArrowTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+    [self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+    OrbisShortcutsController *editor = [[[OrbisShortcutsController alloc] initWithDefaults:defaults] autorelease];
+    NSButton *previous = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-shortcut-1");
+    [editor.window makeFirstResponder:previous];
+    NSEvent *shift = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagShift timestamp:1 windowNumber:editor.window.windowNumber
+        context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:56];
+    [editor.window sendEvent:shift];
+    XCTAssertEqual(editor.window.firstResponder, previous);
+    XCTAssertEqual([[editor valueForKey:@"shortcuts"] bindings].count, 0u);
+    NSEvent *arrow = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagShift | NSEventModifierFlagNumericPad | NSEventModifierFlagFunction
+        timestamp:2 windowNumber:editor.window.windowNumber context:nil
+        characters:@"\uF702" charactersIgnoringModifiers:@"\uF702" isARepeat:NO keyCode:123];
+    [editor.window sendEvent:arrow];
+    XCTAssertEqualObjects(previous.title, @"⇧←");
+    [editor save:nil];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForKeyCode:123 modifiers:OrbisShortcutShift], OrbisWorkspacePrevious);
+}
+
+- (void)testReservedShortcutIsRecordedBeforeAppKitAndDrainsItsRelease
+{
+    NSString *suite = [@"OrbisReservedShortcutTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+    [self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+    OrbisShortcutsController *editor = [[[OrbisShortcutsController alloc] initWithDefaults:defaults] autorelease];
+    NSButton *previous = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-shortcut-1");
+    XCTAssertTrue([previous conformsToProtocol:@protocol(OrbisInputEventSink)],
+        @"Recording must have an OS input path for shortcuts consumed before AppKit dispatch");
+    if (![previous conformsToProtocol:@protocol(OrbisInputEventSink)]) return;
+    // Replace only the OS foreground query without changing AppKit's KVO subclass.
+    Method foreground = class_getInstanceMethod(NSClassFromString(@"OrbisShortcutField"),
+        NSSelectorFromString(@"recordingWindowActive"));
+    IMP original = method_getImplementation(foreground);
+    IMP active = imp_implementationWithBlock(^BOOL(id field) { (void)field; return YES; });
+    method_setImplementation(foreground, active);
+    [self addTeardownBlock:^{ method_setImplementation(foreground, original); imp_removeBlock(active); }];
+    OrbisRecordingTestTap *tap = [[[OrbisRecordingTestTap alloc] init] autorelease];
+    [previous setValue:tap forKey:@"eventTap"];
+    [editor.window makeFirstResponder:previous];
+    XCTAssertTrue(tap.running);
+    CGEventRef down = CGEventCreateKeyboardEvent(NULL, 123, true);
+    CGEventSetFlags(down, kCGEventFlagMaskShift);
+    CGEventRef up = CGEventCreateCopy(down); CGEventSetType(up, kCGEventKeyUp);
+    CGEventRef repeat = CGEventCreateCopy(down);
+    CGEventSetIntegerValueField(repeat, kCGKeyboardEventAutorepeat, 1);
+    XCTAssertTrue([tap.sink consumeEvent:repeat type:kCGEventKeyDown]);
+    XCTAssertEqual([[editor valueForKey:@"shortcuts"] bindings].count, 0u);
+    XCTAssertEqual(editor.window.firstResponder, previous);
+    XCTAssertTrue([tap.sink consumeEvent:down type:kCGEventKeyDown]);
+    XCTAssertEqualObjects(previous.title, @"⇧←");
+    XCTAssertNotEqual(editor.window.firstResponder, previous);
+    XCTAssertTrue(tap.running, @"The recorded key release must not reach a Mac system shortcut");
+    XCTAssertTrue([tap.sink consumeEvent:up type:kCGEventKeyUp]);
+    XCTAssertFalse(tap.running);
+    [editor.window makeFirstResponder:previous];
+    XCTAssertTrue(tap.running);
+    [NSNotificationCenter.defaultCenter postNotificationName:NSApplicationDidResignActiveNotification object:NSApp];
+    XCTAssertFalse(tap.running);
+    XCTAssertFalse([tap.sink consumeEvent:down type:kCGEventKeyDown]);
+    [editor.window makeFirstResponder:previous];
+    [NSNotificationCenter.defaultCenter postNotificationName:NSMenuDidBeginTrackingNotification object:nil];
+    XCTAssertFalse(tap.running);
+    XCTAssertNotEqual(editor.window.firstResponder, previous);
+    [editor save:nil];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForKeyCode:123 modifiers:OrbisShortcutShift], OrbisWorkspacePrevious);
+    CFRelease(down); CFRelease(up); CFRelease(repeat);
+}
+
+- (void)testMouseShortcutCanBeAssignedWithoutPressingTheMappedButton
+{
+    NSString *suite = [@"OrbisManualMouseShortcutTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+    [self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+    OrbisShortcutsController *editor = [[[OrbisShortcutsController alloc] initWithDefaults:defaults] autorelease];
+    [editor.window orderFront:nil];
+    NSButton *choose = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-mouse-shortcut-1");
+    XCTAssertNotNil(choose, @"A system-mapped button must be assignable without triggering its Mac action");
+    if (!choose) { [editor cancel:nil]; return; }
+    [choose performClick:nil];
+    NSWindow *picker = editor.window.attachedSheet;
+    XCTAssertNotNil(picker);
+    NSPopUpButton *button = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-button");
+    [button selectItemWithTag:4];
+    NSButton *control = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-control");
+    NSButton *shift = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-shift");
+    control.state = shift.state = NSControlStateValueOn;
+    NSButton *assign = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-assign");
+    XCTAssertNotNil(assign);
+    [assign performClick:nil];
+    NSButton *field = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-shortcut-1");
+    XCTAssertEqualObjects(field.title, @"⌃⇧Mouse Button 5");
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForMouseButton:4 modifiers:OrbisShortcutControl | OrbisShortcutShift], OrbisWorkspaceNone);
+    [editor save:nil];
+    saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForMouseButton:4 modifiers:OrbisShortcutControl | OrbisShortcutShift], OrbisWorkspacePrevious);
+    XCTAssertEqual([saved actionForMouseButton:4 modifiers:0], OrbisWorkspaceNone);
+}
+
+- (void)testManualMousePickerPreservesExistingBindingAndRejectsCollisions
+{
+    NSString *suite = [@"OrbisManualMouseCollisionTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[[NSUserDefaults alloc] initWithSuiteName:suite] autorelease];
+    [self addTeardownBlock:^{ [defaults removePersistentDomainForName:suite]; }];
+    OrbisShortcutsController *editor = [[[OrbisShortcutsController alloc] initWithDefaults:defaults] autorelease];
+    OrbisWorkspaceShortcuts *draft = [editor valueForKey:@"shortcuts"];
+    XCTAssertTrue([draft assignMouseButton:4 modifiers:OrbisShortcutCommand label:@"⌘Mouse Button 5"
+        toAction:OrbisWorkspacePrevious error:nil]);
+    [editor.window orderFront:nil];
+    NSButton *choose = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-mouse-shortcut-1");
+    [choose performClick:nil];
+    NSWindow *picker = editor.window.attachedSheet;
+    NSPopUpButton *button = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-button");
+    NSButton *command = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-command");
+    XCTAssertEqual(button.selectedItem.tag, 4);
+    XCTAssertEqual(command.state, NSControlStateValueOn);
+    [button selectItemWithTag:3];
+    NSButton *cancel = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-cancel");
+    [cancel performClick:nil];
+    XCTAssertEqual([draft actionForMouseButton:4 modifiers:OrbisShortcutCommand], OrbisWorkspacePrevious);
+    XCTAssertEqual([draft actionForMouseButton:3 modifiers:OrbisShortcutCommand], OrbisWorkspaceNone);
+    // Allow AppKit to finish dismissing the first sheet before opening another.
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+    choose = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"workspace-mouse-shortcut-2");
+    [choose performClick:nil];
+    picker = editor.window.attachedSheet;
+    button = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-button");
+    [button selectItemWithTag:4];
+    command = (id)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-command");
+    command.state = NSControlStateValueOn;
+    [(NSButton *)FindViewWithAccessibilityIdentifier(picker.contentView, @"mouse-shortcut-assign") performClick:nil];
+    XCTAssertEqualObjects(editor.window.attachedSheet, picker, @"A collision must keep the picker open");
+    XCTAssertTrue([[editor valueForKey:@"mouseFeedback"] stringValue].length > 0);
+    XCTAssertEqual([draft actionForMouseButton:4 modifiers:OrbisShortcutCommand], OrbisWorkspacePrevious);
+    XCTAssertEqualObjects([draft labelForAction:OrbisWorkspaceNext], @"Not assigned");
+    [editor cancel:nil];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual(saved.bindings.count, 0u);
 }
 
 + (void)setUp
@@ -382,25 +568,40 @@ static void DrainSheetCompletion(void)
 {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     id original = [[defaults objectForKey:OrbisFullscreenInputCaptureKey] retain];
+    id originalLayout = [[defaults objectForKey:OrbisCapturedMacKeyboardLayoutKey] retain];
+    [defaults removeObjectForKey:OrbisCapturedMacKeyboardLayoutKey];
     [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
     OrbisDisplaySettings *settings = [[[OrbisDisplaySettings alloc] init] autorelease];
     OrbisDisplaySettingsController *editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
     NSButton *capture = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-fullscreen-input-capture");
     XCTAssertNotNil(capture);
     XCTAssertEqual(capture.state, NSControlStateValueOff);
+    NSPopUpButton *layout = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView,
+        @"settings-captured-keyboard-layout");
+    XCTAssertNotNil(layout);
+    XCTAssertEqual(layout.numberOfItems, (NSInteger)2);
+    XCTAssertEqual(layout.indexOfSelectedItem, (NSInteger)0, @"Physical remote typing with right AltGr is the default");
+    [layout selectItemAtIndex:1];
     capture.state = NSControlStateValueOn;
     NSButton *cancel = FindButtonWithTitle(editor.window.contentView, @"Cancel");
     [cancel sendAction:cancel.action to:cancel.target];
     XCTAssertFalse([defaults boolForKey:OrbisFullscreenInputCaptureKey]);
+    XCTAssertFalse([defaults boolForKey:OrbisCapturedMacKeyboardLayoutKey], @"Cancel must preserve the typing mode");
     [editor release];
     [defaults setBool:YES forKey:OrbisFullscreenInputCaptureKey];
+    [defaults setBool:YES forKey:OrbisCapturedMacKeyboardLayoutKey];
     editor = [[OrbisDisplaySettingsController alloc] initWithSettings:settings];
     capture = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-fullscreen-input-capture");
     XCTAssertEqual(capture.state, NSControlStateValueOn);
+    layout = (id)FindViewWithAccessibilityIdentifier(editor.window.contentView, @"settings-captured-keyboard-layout");
+    XCTAssertEqual(layout.indexOfSelectedItem, (NSInteger)1, @"Settings must reopen with the saved Mac typing mode");
     [editor release];
     if (original) [defaults setObject:original forKey:OrbisFullscreenInputCaptureKey];
     else [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
     [original release];
+    if (originalLayout) [defaults setObject:originalLayout forKey:OrbisCapturedMacKeyboardLayoutKey];
+    else [defaults removeObjectForKey:OrbisCapturedMacKeyboardLayoutKey];
+    [originalLayout release];
 }
 
 - (void)testDisplaySettingsPersistResolutionsAndDraggedOffsetsWithoutChangingConnections

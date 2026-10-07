@@ -69,6 +69,8 @@ set(ORBIS_MACOS_SOURCES
     Sources/OrbisSessionEndPolicy.c
     Sources/OrbisRemoteView.h
     Sources/OrbisInputCapture.h
+    Sources/OrbisInputEventTap.h
+    Sources/OrbisInputEventTap.m
     Sources/OrbisInputCapture.m
     Sources/OrbisInputCaptureSettings.m
     Sources/OrbisSessionController.h

@@ -1,8 +1,53 @@
 /* SPDX-License-Identifier: MIT */
 
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>
+#import <IOKit/hidsystem/IOLLEvent.h>
 #import "MRDPView.h"
 #import "OrbisInputCapture.h"
+#import "OrbisKeyboardCompatibility.h"
+#import <ApplicationServices/ApplicationServices.h>
+#include <unistd.h>
+
+// Replace only the macOS permission and filter creation boundary. Exercise the
+// production event-filter adapter, including an OS-created filter with stripped keys.
+static BOOL osAccessibility = YES, osKeyboardAccess = YES, osPartialKeyboard, osTapCreated, osTapListUnavailable;
+static CGEventMask osRequestedMask;
+static NSUInteger osTapCreations;
+Boolean OrbisTestAccessibilityAllowed(void) { return osAccessibility; }
+bool OrbisTestKeyboardAllowed(void) { return osKeyboardAccess; }
+static void TestMachPortCallback(CFMachPortRef port, void *message, CFIndex size, void *info)
+{ (void)port; (void)message; (void)size; (void)info; }
+CFMachPortRef OrbisTestCreateEventTap(CGEventTapLocation location, CGEventTapPlacement placement,
+    CGEventTapOptions options, CGEventMask mask, CGEventTapCallBack callback, void *context)
+{
+    (void)location; (void)placement; (void)options; (void)callback; (void)context;
+    osRequestedMask = mask; osTapCreated = YES; osTapCreations++;
+    CFMachPortContext portContext = {0};
+    return CFMachPortCreate(kCFAllocatorDefault, TestMachPortCallback, &portContext, NULL);
+}
+void OrbisTestEnableEventTap(CFMachPortRef port, bool enable) { (void)port; osTapCreated = enable; }
+CGError OrbisTestEventTapList(uint32_t maximum, CGEventTapInformation *list, uint32_t *count)
+{
+    if (osTapListUnavailable) return kCGErrorFailure;
+    *count = osTapCreated ? 2 : 1;
+    if (!maximum || !list) return kCGErrorSuccess;
+    if (maximum < *count) return kCGErrorRangeCheck;
+    // A pre-existing complete filter must not disguise our new partial filter.
+    list[0] = (CGEventTapInformation){ .eventTapID = 41, .tapPoint = kCGSessionEventTap,
+        .tappingProcess = getpid(), .enabled = true, .eventsOfInterest = UINT64_MAX };
+    if (osTapCreated)
+        list[1] = (CGEventTapInformation){ .eventTapID = 42, .tapPoint = kCGSessionEventTap,
+            .tappingProcess = getpid(), .enabled = true, .eventsOfInterest = osRequestedMask &
+                ~(osPartialKeyboard ? (CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp)) : 0) };
+    return kCGErrorSuccess;
+}
+
+@interface OrbisEventSinkFixture : NSObject <OrbisInputEventSink>
+@end
+@implementation OrbisEventSinkFixture
+- (BOOL)consumeEvent:(CGEventRef)event type:(CGEventType)type { (void)event; (void)type; return NO; }
+@end
 
 static NSMutableArray *events;
 static NSUInteger failures;
@@ -76,13 +121,40 @@ BOOL OrbisRecordUnicodeKeyboardEvent(rdpInput *input, UINT16 flags, UINT16 code)
 - (MRDPView *)inputCapturePointerTargetAtScreenPoint:(NSPoint)point { (void)point; return eligible ? view : nil; }
 @end
 
+@interface OrbisSpanishTestTextTranslator : OrbisKeyboardTextTranslator
+@end
+@implementation OrbisSpanishTestTextTranslator
+- (NSData *)keyboardLayoutData
+{
+    CFArrayRef sources = TISCreateInputSourceList((CFDictionaryRef)@{
+        (id)kTISPropertyInputSourceID: @"com.apple.keylayout.Spanish-ISO" }, true);
+    NSData *data = nil;
+    if (CFArrayGetCount(sources))
+        data = [[(NSData *)TISGetInputSourceProperty((TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0),
+            kTISPropertyUnicodeKeyLayoutData) retain] autorelease];
+    CFRelease(sources);
+    return data;
+}
+@end
+
 @interface OrbisTestInputCapture : OrbisInputCapture
 @property(nonatomic) BOOL allowTap;
+@property(nonatomic) BOOL deniesKeyboard;
 @property(nonatomic) NSUInteger tapAttempts;
+- (NSData *)keyboardLayoutData;
 @end
 @implementation OrbisTestInputCapture
-@synthesize allowTap, tapAttempts;
+@synthesize allowTap, tapAttempts, deniesKeyboard;
+- (BOOL)keyboardCaptureAllowed { return !deniesKeyboard; }
 - (BOOL)installTap { tapAttempts++; return allowTap; }
+- (instancetype)initWithDelegate:(id<OrbisInputCaptureDelegate>)delegate
+{
+    if (!(self = [super initWithDelegate:delegate])) return nil;
+    [_textTranslator release]; _textTranslator = [[OrbisSpanishTestTextTranslator alloc] init];
+    return self;
+}
+- (NSData *)keyboardLayoutData { return [_textTranslator keyboardLayoutData]; }
+
 @end
 
 @implementation OrbisKeyboardTestView
@@ -268,16 +340,16 @@ static void CheckCommandEventOrdering(void)
     [events removeAllObjects];
     view = [[OrbisKeyboardTestView alloc] init];
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
-    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 14, @"e", @"e", NSEventModifierFlagCommand)];
     // AppKit may omit keyUp for keys used while Command is held.
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", 0)];
     NSInteger balance = 0;
     for (NSDictionary *event in events)
     {
-        if ([event[@"code"] unsignedIntValue] == 0x4B)
+        if ([event[@"code"] unsignedIntValue] == 0x12)
             balance += ([event[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) ? -1 : 1;
     }
-    Require(balance == 0, @"Releasing Command must not leave an unmapped arrow key held remotely");
+    Require(balance == 0, @"Releasing Command must not leave an unmapped key held remotely");
     [view release];
 }
 
@@ -303,12 +375,12 @@ static void CheckCommandReleaseTransitions(void)
         [view keyDown:Key(NSEventTypeKeyDown, keyCode.unsignedShortValue, text, text, NSEventModifierFlagCommand)];
         [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", 0)];
         [view keyUp:Key(NSEventTypeKeyUp, keyCode.unsignedShortValue, text, text, 0)];
-        Require(events.count == (keyCode.unsignedShortValue == 8 ? 4 : 2),
+        Require(events.count == (keyCode.unsignedShortValue == 8 ? 4 : 6),
             @"An atomic Command shortcut must ignore keyUp arriving after Command release");
         [view release];
     }
 
-    for (NSNumber *keyCode in @[ @123, @124, @125, @126, @14 ])
+    for (NSNumber *keyCode in @[ @14 ])
     {
         [events removeAllObjects];
         view = [[OrbisKeyboardTestView alloc] init];
@@ -332,8 +404,8 @@ static void CheckCommandReleaseTransitions(void)
     [events removeAllObjects];
     view = [[OrbisKeyboardTestView alloc] init];
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
-    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
-    [view keyUp:Key(NSEventTypeKeyUp, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 14, @"e", @"e", NSEventModifierFlagCommand)];
+    [view keyUp:Key(NSEventTypeKeyUp, 14, @"e", @"e", NSEventModifierFlagCommand)];
     [view setCommandKeyDown:NO];
     Require(events.count == 2, @"A Command key released normally must not be released again");
     [view release];
@@ -341,23 +413,23 @@ static void CheckCommandReleaseTransitions(void)
     [events removeAllObjects];
     view = [[OrbisKeyboardTestView alloc] init];
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
-    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 14, @"e", @"e", NSEventModifierFlagCommand)];
     NSEvent *repeat = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
         modifierFlags:NSEventModifierFlagCommand timestamp:2 windowNumber:0 context:nil
-        characters:@"" charactersIgnoringModifiers:@"" isARepeat:YES keyCode:123];
+        characters:@"e" charactersIgnoringModifiers:@"e" isARepeat:YES keyCode:14];
     [view keyDown:repeat];
     [view setCommandKeyDown:NO];
     Require(events.count == 3 && ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
-        @"Repeated Command arrows must end with one remote release");
+        @"Repeated unmapped Command keys must end with one remote release");
     [view release];
 
     [events removeAllObjects];
     view = [[OrbisKeyboardTestView alloc] init];
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagCommand)];
-    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", NSEventModifierFlagCommand)];
+    [view keyDown:Key(NSEventTypeKeyDown, 14, @"e", @"e", NSEventModifierFlagCommand)];
     [view cancelPendingCommandTap];
     [view setCommandKeyDown:NO];
-    Require(events.count == 2 && [events.lastObject[@"code"] unsignedIntValue] == 0x4B &&
+    Require(events.count == 2 && [events.lastObject[@"code"] unsignedIntValue] == 0x12 &&
         ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
         @"Focus cancellation must release Command keys without creating a Super tap");
     [view release];
@@ -366,10 +438,10 @@ static void CheckCommandReleaseTransitions(void)
     view = [[OrbisKeyboardTestView alloc] init];
     NSEventModifierFlags chord = NSEventModifierFlagCommand | NSEventModifierFlagShift;
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", chord)];
-    [view keyDown:Key(NSEventTypeKeyDown, 123, @"", @"", chord)];
+    [view keyDown:Key(NSEventTypeKeyDown, 14, @"e", @"e", chord)];
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 55, @"", @"", NSEventModifierFlagShift)];
     Require(events.count == 3 && [events[0][@"code"] unsignedIntValue] == 0x2A &&
-        [events.lastObject[@"code"] unsignedIntValue] == 0x4B &&
+        [events.lastObject[@"code"] unsignedIntValue] == 0x12 &&
         ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
         @"Recovering a Command key must preserve Shift while it is physically held");
     [view flagsChanged:Key(NSEventTypeFlagsChanged, 56, @"", @"", 0)];
@@ -399,10 +471,108 @@ static CGEventRef CaptureKey(CGEventType type, unsigned short code, CGEventFlags
     return event;
 }
 
+// Pointer traffic must not turn a held editing modifier into a physical Super tap.
+static void CheckCapturedEditingPointerInterleaving(void)
+{
+    for (NSNumber *localLayout in @[ @NO, @YES ])
+    {
+        [events removeAllObjects];
+        OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+        view.capturesLocalKeyboardLayout = localLayout.boolValue;
+        CGEventRef command = CaptureKey(kCGEventFlagsChanged, 55, kCGEventFlagMaskCommand);
+        [view sendCapturedEvent:command windowPoint:NSZeroPoint];
+        CFRelease(command);
+        for (NSUInteger index = 0; index < 6; index++)
+        {
+            unsigned short code = index % 2 ? 9 : 8;
+            CGEventRef down = CaptureKey(kCGEventKeyDown, code, kCGEventFlagMaskCommand);
+            CGEventRef up = CaptureKey(kCGEventKeyUp, code, kCGEventFlagMaskCommand);
+            [view sendCapturedEvent:down windowPoint:NSZeroPoint];
+            [view sendCapturedEvent:up windowPoint:NSZeroPoint];
+            CFRelease(down); CFRelease(up);
+            CGEventRef pointer = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(10, 10), kCGMouseButtonLeft);
+            CGEventSetFlags(pointer, kCGEventFlagMaskCommand);
+            [view sendCapturedEvent:pointer windowPoint:NSMakePoint(10, 10)];
+            CFRelease(pointer);
+        }
+        CGEventRef released = CaptureKey(kCGEventFlagsChanged, 55, 0);
+        [view sendCapturedEvent:released windowPoint:NSZeroPoint];
+        CFRelease(released);
+        Require(events.count == 24, @"Copy/paste with intervening pointer movement must send only six complete Control chords");
+        BOOL sentSuper = NO;
+        for (NSDictionary *event in events) sentSuper |= [event[@"code"] unsignedIntValue] == 0x5B;
+        Require(!sentSuper, @"Moving the mouse while Command is held after editing must never emit Super");
+        [view release];
+    }
+    [events removeAllObjects];
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    CGEventRef command = CaptureKey(kCGEventFlagsChanged, 55, kCGEventFlagMaskCommand);
+    CGEventRef pointer = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(10, 10), kCGMouseButtonLeft);
+    CGEventSetFlags(pointer, kCGEventFlagMaskCommand);
+    [view sendCapturedEvent:command windowPoint:NSZeroPoint];
+    [view sendCapturedEvent:pointer windowPoint:NSMakePoint(10, 10)];
+    CGEventSetFlags(command, 0);
+    [view sendCapturedEvent:command windowPoint:NSZeroPoint];
+    Require(events.count == 2 && [events[0][@"code"] unsignedIntValue] == 0x5B &&
+        ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Pointer movement alone must preserve a standalone Command tap");
+    [events removeAllObjects];
+    CGEventSetFlags(command, kCGEventFlagMaskCommand);
+    [view sendCapturedEvent:command windowPoint:NSZeroPoint];
+    CGEventRef tab = CaptureKey(kCGEventKeyDown, 48, kCGEventFlagMaskCommand);
+    [view sendCapturedEvent:tab windowPoint:NSZeroPoint];
+    [view sendCapturedEvent:pointer windowPoint:NSMakePoint(10, 10)];
+    Require(events.count == 2, @"Pointer movement must preserve Super already held for a physical chord");
+    CGEventSetType(tab, kCGEventKeyUp);
+    [view sendCapturedEvent:tab windowPoint:NSZeroPoint];
+    CGEventSetFlags(command, 0);
+    [view sendCapturedEvent:command windowPoint:NSZeroPoint];
+    Require(events.count == 4 && [events.lastObject[@"code"] unsignedIntValue] == 0x5B &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"A physical Command chord must remain balanced with pointer traffic");
+    CFRelease(command); CFRelease(pointer); CFRelease(tab); [view release];
+}
+
+static void CheckRapidDistinctPastePresses(void)
+{
+    for (NSNumber *captured in @[ @NO, @YES ])
+    {
+        [events removeAllObjects];
+        OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+        for (NSUInteger index = 0; index < 6; index++)
+        {
+            if (captured.boolValue)
+            {
+                CGEventRef down = CaptureKey(kCGEventKeyDown, 9, kCGEventFlagMaskCommand);
+                CGEventSetTimestamp(down, (index + 1) * 10000000);
+                CGEventRef up = CaptureKey(kCGEventKeyUp, 9, kCGEventFlagMaskCommand);
+                [view sendCapturedEvent:down windowPoint:NSZeroPoint];
+                [view sendCapturedEvent:up windowPoint:NSZeroPoint];
+                CFRelease(down); CFRelease(up);
+            }
+            else
+            {
+                NSEvent *down = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                    modifierFlags:NSEventModifierFlagCommand timestamp:(index + 1) * 0.01 windowNumber:0 context:nil
+                    characters:@"v" charactersIgnoringModifiers:@"v" isARepeat:NO keyCode:9];
+                [view keyDown:down];
+                [view keyDown:down]; // AppKit redispatch of the identical menu event.
+                [view keyUp:Key(NSEventTypeKeyUp, 9, @"v", @"v", NSEventModifierFlagCommand)];
+            }
+        }
+        [view setCommandKeyDown:NO];
+        Require(events.count == 24, @"Distinct rapid paste presses must each deliver one complete Control+V chord");
+        [view release];
+    }
+}
+
 static void CheckFullscreenInputCapture(void)
 {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     id original = [[defaults objectForKey:OrbisFullscreenInputCaptureKey] retain];
+    NSString *layoutKey = OrbisCapturedMacKeyboardLayoutKey;
+    id originalLayout = [[defaults objectForKey:layoutKey] retain];
+    [defaults removeObjectForKey:layoutKey];
     OrbisCaptureTestWindow *window = [[OrbisCaptureTestWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
         styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
     [window setReleasedWhenClosed:NO];
@@ -424,6 +594,14 @@ static void CheckFullscreenInputCapture(void)
     Require(![capture consumeEvent:down type:kCGEventKeyDown] && !capture.tapAttempts,
         @"An enabled setting must still preserve windowed input");
     window.captureFullscreen = YES;
+    capture.deniesKeyboard = YES;
+    Require(![capture consumeEvent:down type:kCGEventKeyDown] && !capture.active && !capture.tapAttempts && !events.count,
+        @"Without Input Monitoring, a modifier-only OS filter must never consume input or report keyboard capture as active");
+    [capture stop]; capture.deniesKeyboard = NO; capture.tapAttempts = 0; [events removeAllObjects];
+    CGEventRef commandModifier = CaptureKey(kCGEventFlagsChanged, 55, kCGEventFlagMaskCommand);
+    Require([capture consumeEvent:commandModifier type:kCGEventFlagsChanged] && !events.count,
+        @"Captured Command must wait for a chord before choosing Control editing or Super");
+    CFRelease(commandModifier);
     Require([capture consumeEvent:down type:kCGEventKeyDown] && [capture consumeEvent:up type:kCGEventKeyUp] &&
         [capture consumeEvent:released type:kCGEventFlagsChanged] && capture.active,
         @"Fullscreen Command+Tab must be consumed before the Mac app switcher");
@@ -432,14 +610,164 @@ static void CheckFullscreenInputCapture(void)
         ([events[2][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) &&
         ([events[3][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
         @"Captured Command+Tab must reach RDP as a complete physical Super+Tab sequence");
+    for (NSNumber *localLayout in @[ @NO, @YES ])
+    for (NSNumber *shift in @[ @NO, @YES ])
+    for (NSNumber *key in @[ @8, @9 ])
+    {
+        [defaults setBool:localLayout.boolValue forKey:layoutKey];
+        [events removeAllObjects];
+        CGEventFlags editFlags = kCGEventFlagMaskCommand | (shift.boolValue ? kCGEventFlagMaskShift : 0);
+        CGEventRef command = CaptureKey(kCGEventFlagsChanged, 55, editFlags);
+        CGEventRef editDown = CaptureKey(kCGEventKeyDown, key.unsignedShortValue, editFlags);
+        CGEventRef editUp = CaptureKey(kCGEventKeyUp, key.unsignedShortValue, 0);
+        [capture consumeEvent:command type:kCGEventFlagsChanged];
+        [capture consumeEvent:editDown type:kCGEventKeyDown];
+        [capture consumeEvent:released type:kCGEventFlagsChanged];
+        [capture consumeEvent:editUp type:kCGEventKeyUp];
+        NSUInteger controlIndex = shift.boolValue ? 3 : 0;
+        Require(events.count == (shift.boolValue ? 8 : 4) && [events[controlIndex][@"code"] unsignedIntValue] == 0x1D &&
+            [events[controlIndex + 1][@"code"] unsignedIntValue] == (key.integerValue == 8 ? 0x2E : 0x2F) &&
+            ([events[controlIndex + 2][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE) &&
+            ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+            @"Fullscreen Command+C/V and Shift variants must preserve remote editing in both layouts, including late releases");
+        for (NSDictionary *event in events)
+            Require([event[@"code"] unsignedIntValue] != 0x5B,
+                @"An editing shortcut must never trigger remote Super or Activities");
+        CFRelease(command); CFRelease(editDown); CFRelease(editUp);
+    }
+    [defaults setBool:YES forKey:layoutKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:OrbisInputCaptureSettingsDidChangeNotification object:nil];
     [events removeAllObjects];
     CGEventRef optionDown = CaptureKey(kCGEventKeyDown, 19, kCGEventFlagMaskAlternate);
     CGEventRef optionUp = CaptureKey(kCGEventKeyUp, 19, kCGEventFlagMaskAlternate);
+    CGEventRef optionFlags = CaptureKey(kCGEventFlagsChanged, 58, kCGEventFlagMaskAlternate);
+    [capture consumeEvent:optionFlags type:kCGEventFlagsChanged];
+    Require(!events.count, @"Mac-layout typing must defer Alt until a non-text shortcut needs it");
+    Require([capture keyboardLayoutData] != nil, @"The Spanish ISO layout must be available for native translation tests");
+    [capture consumeEvent:optionDown type:kCGEventKeyDown];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    [capture consumeEvent:optionUp type:kCGEventKeyUp];
+    Require(events.count == 2 && UnicodeEvents().count == 2 &&
+        [events[0][@"code"] unsignedIntValue] == '@' &&
+        ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+        @"Mac-layout fullscreen capture must send Spanish Option+2 as @ without Alt or a physical 2");
+    [events removeAllObjects];
+    CGEventFlags rightFlags = kCGEventFlagMaskAlternate | NX_DEVICERALTKEYMASK;
+    CGEventRef rightDown = CaptureKey(kCGEventKeyDown, 19, rightFlags);
+    CGEventRef rightUp = CaptureKey(kCGEventKeyUp, 19, rightFlags);
+    [capture consumeEvent:rightDown type:kCGEventKeyDown]; [capture consumeEvent:rightUp type:kCGEventKeyUp];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    Require(events.count == 2 && UnicodeEvents().count == 2 && [events[0][@"code"] unsignedIntValue] == '@',
+        @"Mac-layout Spanish typing must also send @ with right Option+2");
+    [events removeAllObjects];
+    CGEventRef tabDown = CaptureKey(kCGEventKeyDown, 48, kCGEventFlagMaskAlternate);
+    CGEventRef tabUp = CaptureKey(kCGEventKeyUp, 48, kCGEventFlagMaskAlternate);
+    [capture consumeEvent:tabDown type:kCGEventKeyDown]; [capture consumeEvent:tabUp type:kCGEventKeyUp];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    Require(events.count == 4 && !UnicodeEvents().count && [events[0][@"code"] unsignedIntValue] == 0x38 &&
+        [events[1][@"code"] unsignedIntValue] == 0x0F,
+        @"Local typing must preserve physical Alt+Tab while capture stays active");
+    [events removeAllObjects];
+    for (NSNumber *shift in @[ @NO, @YES ])
+    {
+        CGEventRef less = CaptureKey(kCGEventKeyDown, 50, shift.boolValue ? kCGEventFlagMaskShift : 0);
+        CGEventRef lessUp = CaptureKey(kCGEventKeyUp, 50, 0);
+        CGEventSetIntegerValueField(less, kCGKeyboardEventKeyboardType, 41);
+        [capture consumeEvent:less type:kCGEventKeyDown]; [capture consumeEvent:lessUp type:kCGEventKeyUp];
+        Require(UnicodeEvents().count == 2 && [UnicodeEvents()[0][@"code"] unsignedIntValue] == (shift.boolValue ? '>' : '<'),
+            @"The Spanish ISO key next to Shift must type < and >, not ordinal symbols");
+        [capture consumeEvent:released type:kCGEventFlagsChanged]; [events removeAllObjects];
+        CFRelease(less); CFRelease(lessUp);
+    }
+    // Caps/Shift and Option effects belong to the local character, not a remote shortcut.
+    CGEventRef shifted = CaptureKey(kCGEventKeyDown, 19, kCGEventFlagMaskShift);
+    CGEventRef shiftedUp = CaptureKey(kCGEventKeyUp, 19, kCGEventFlagMaskShift);
+    [capture consumeEvent:shifted type:kCGEventKeyDown];
+    [capture consumeEvent:shiftedUp type:kCGEventKeyUp];
+    Require(UnicodeEvents().count == 2 && [UnicodeEvents()[0][@"code"] unsignedIntValue] == '"',
+        @"Captured Shift+2 must use Spanish Mac punctuation even if the remote layout differs");
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    [events removeAllObjects];
+    // Spanish acute accent is a dead key; it must compose with the next letter locally.
+    CGEventRef accent = CaptureKey(kCGEventKeyDown, 39, 0);
+    CGEventRef accentUp = CaptureKey(kCGEventKeyUp, 39, 0);
+    CGEventRef letter = CaptureKey(kCGEventKeyDown, 14, 0);
+    CGEventRef letterUp = CaptureKey(kCGEventKeyUp, 14, 0);
+    [capture consumeEvent:accent type:kCGEventKeyDown]; [capture consumeEvent:accentUp type:kCGEventKeyUp];
+    Require(!events.count, @"A local dead key must not leak its physical key to the remote desktop");
+    [capture consumeEvent:letter type:kCGEventKeyDown]; [capture consumeEvent:letterUp type:kCGEventKeyUp];
+    Require(events.count == 2 && UnicodeEvents().count == 2 &&
+        [events[0][@"code"] unsignedIntValue] == 0x00E9,
+        @"Captured Spanish dead-key composition must send the accented character once");
+    CFRelease(shifted); CFRelease(shiftedUp); CFRelease(accent); CFRelease(accentUp); CFRelease(letter); CFRelease(letterUp);
+    [defaults removeObjectForKey:layoutKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:OrbisInputCaptureSettingsDidChangeNotification object:nil];
+    [events removeAllObjects];
     [capture consumeEvent:optionDown type:kCGEventKeyDown]; [capture consumeEvent:optionUp type:kCGEventKeyUp];
     [capture consumeEvent:released type:kCGEventFlagsChanged];
     Require(events.count == 4 && [events[0][@"code"] unsignedIntValue] == 0x38 &&
         [events[1][@"code"] unsignedIntValue] == 0x03 && !UnicodeEvents().count,
-        @"Captured Option macros must forward physical Alt+2 rather than a Mac-generated Unicode symbol");
+        @"Default capture must retain physical left Alt+2");
+    [events removeAllObjects];
+    [capture consumeEvent:rightDown type:kCGEventKeyDown]; [capture consumeEvent:rightUp type:kCGEventKeyUp];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    Require(events.count == 4 && !UnicodeEvents().count &&
+        [events[0][@"code"] unsignedIntValue] == 0x38 && ([events[0][@"flags"] unsignedIntValue] & KBD_FLAGS_EXTENDED) &&
+        [events[1][@"code"] unsignedIntValue] == 0x03 &&
+        ([events[3][@"flags"] unsignedIntValue] & (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE)) == (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE),
+        @"Default capture must preserve right Option as AltGr with a matching release");
+    [events removeAllObjects];
+    CGEventRef rightModifier = CaptureKey(kCGEventFlagsChanged, 61, rightFlags);
+    [capture consumeEvent:rightModifier type:kCGEventFlagsChanged];
+    // Some event sources preserve the side only on the modifier transition.
+    [capture consumeEvent:optionDown type:kCGEventKeyDown];
+    [capture consumeEvent:optionUp type:kCGEventKeyUp];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    Require(events.count == 4 && [events[0][@"code"] unsignedIntValue] == 0x38 &&
+        ([events[0][@"flags"] unsignedIntValue] & KBD_FLAGS_EXTENDED) &&
+        [events[1][@"code"] unsignedIntValue] == 0x03 &&
+        ([events[3][@"flags"] unsignedIntValue] & (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE)) ==
+        (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE),
+        @"Holding right Option must keep AltGr when subsequent keys omit device-side flags");
+    CFRelease(rightModifier);
+    [events removeAllObjects];
+    rightModifier = CaptureKey(kCGEventFlagsChanged, 61, kCGEventFlagMaskAlternate);
+    CGEventRef leftModifier = CaptureKey(kCGEventFlagsChanged, 58, kCGEventFlagMaskAlternate);
+    [capture consumeEvent:rightModifier type:kCGEventFlagsChanged];
+    [capture consumeEvent:optionDown type:kCGEventKeyDown];
+    [capture consumeEvent:optionUp type:kCGEventKeyUp];
+    [capture consumeEvent:leftModifier type:kCGEventFlagsChanged];
+    [capture consumeEvent:rightModifier type:kCGEventFlagsChanged];
+    [capture consumeEvent:optionDown type:kCGEventKeyDown];
+    [capture consumeEvent:optionUp type:kCGEventKeyUp];
+    [capture consumeEvent:released type:kCGEventFlagsChanged];
+    Require(events.count == 8 && ([events[0][@"flags"] unsignedIntValue] & KBD_FLAGS_EXTENDED) &&
+        [events[3][@"code"] unsignedIntValue] == 0x38 &&
+        ([events[3][@"flags"] unsignedIntValue] & (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE)) ==
+        (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE) &&
+        [events[4][@"code"] unsignedIntValue] == 0x38 &&
+        !([events[4][@"flags"] unsignedIntValue] & KBD_FLAGS_EXTENDED) &&
+        [events[7][@"code"] unsignedIntValue] == 0x38 &&
+        !([events[7][@"flags"] unsignedIntValue] & KBD_FLAGS_EXTENDED),
+        @"Modifier key codes must distinguish AltGr and Alt, including independently held Options without device flags");
+    CFRelease(rightModifier); CFRelease(leftModifier);
+    [events removeAllObjects];
+    CGEventRef iso = CaptureKey(kCGEventKeyDown, 50, 0);
+    CGEventRef isoUp = CaptureKey(kCGEventKeyUp, 50, 0);
+    CGEventSetIntegerValueField(iso, kCGKeyboardEventKeyboardType, 41);
+    [capture consumeEvent:iso type:kCGEventKeyDown]; [capture consumeEvent:isoUp type:kCGEventKeyUp];
+    Require(events.count == 2 && [events[0][@"code"] unsignedIntValue] == 0x56 &&
+        [events[1][@"code"] unsignedIntValue] == 0x56,
+        @"Physical ISO typing must retain the <> position even on a third-party keyboard");
+    [events removeAllObjects];
+    [capture consumeEvent:rightDown type:kCGEventKeyDown];
+    delegate.eligible = NO; [capture refresh];
+    Require(events.count == 4 &&
+        ([events.lastObject[@"flags"] unsignedIntValue] & (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE)) ==
+        (KBD_FLAGS_EXTENDED | KBD_FLAGS_RELEASE),
+        @"Losing fullscreen focus must release a held AltGr as well as its physical key");
+    delegate.eligible = YES; [capture refresh];
+    CFRelease(iso); CFRelease(isoUp); CFRelease(rightDown); CFRelease(rightUp); CFRelease(tabDown); CFRelease(tabUp); CFRelease(optionFlags);
     [events removeAllObjects];
     [capture consumeEvent:down type:kCGEventKeyDown]; delegate.eligible = NO; [capture refresh];
     Require(!capture.active && events.count == 4 &&
@@ -506,6 +834,167 @@ static void CheckFullscreenInputCapture(void)
     if (original) [defaults setObject:original forKey:OrbisFullscreenInputCaptureKey];
     else [defaults removeObjectForKey:OrbisFullscreenInputCaptureKey];
     [original release];
+    if (originalLayout) [defaults setObject:originalLayout forKey:layoutKey];
+    else [defaults removeObjectForKey:layoutKey];
+    [originalLayout release];
+}
+
+// Exercise both entry points with the same native editing commands.
+static void CheckEditingParity(void)
+{
+    NSArray *cases = @[
+        @[@51, @"\177", @(NSEventModifierFlagCommand), @[@0x2A, @0x47, @0x47, @0x2A, @0x0E, @0x0E]],
+        @[@123, @"\uF702", @(NSEventModifierFlagCommand), @[@0x47, @0x47]],
+        @[@124, @"\uF703", @(NSEventModifierFlagCommand | NSEventModifierFlagShift), @[@0x2A, @0x4F, @0x4F, @0x2A]],
+        @[@126, @"\uF700", @(NSEventModifierFlagCommand), @[@0x1D, @0x47, @0x47, @0x1D]],
+        @[@123, @"\uF702", @(NSEventModifierFlagOption), @[@0x1D, @0x4B, @0x4B, @0x1D]],
+        @[@51, @"\177", @(NSEventModifierFlagOption), @[@0x1D, @0x0E, @0x0E, @0x1D]],
+        @[@117, @"\uF728", @(NSEventModifierFlagOption), @[@0x1D, @0x53, @0x53, @0x1D]],
+        @[@126, @"\uF700", @(NSEventModifierFlagOption), @[@0x4B, @0x4B, @0x1D, @0x48, @0x48, @0x1D]],
+        @[@125, @"\uF701", @(NSEventModifierFlagOption), @[@0x4D, @0x4D, @0x1D, @0x50, @0x50, @0x1D]]
+    ];
+    for (NSArray *item in cases)
+    {
+        for (NSUInteger captured = 0; captured < 2; captured++)
+        {
+            [events removeAllObjects];
+            OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+            unsigned short code = [item[0] unsignedShortValue];
+            NSString *text = item[1];
+            NSEventModifierFlags flags = [item[2] unsignedLongValue];
+            NSEvent *down = Key(NSEventTypeKeyDown, code, text, text, flags);
+            NSEvent *up = Key(NSEventTypeKeyUp, code, text, text, 0);
+            if (captured)
+            {
+                [view sendCapturedEvent:down.CGEvent windowPoint:NSZeroPoint];
+                [view sendCapturedEvent:up.CGEvent windowPoint:NSZeroPoint];
+                [view releaseCapturedInput];
+            }
+            else
+            {
+                [view keyDown:down]; [view keyUp:up]; [view setCommandKeyDown:NO];
+            }
+            NSArray *expected = item[3];
+            Require(events.count == expected.count, @"Native editing must produce the same complete chord sequence in windowed and captured input");
+            for (NSUInteger i = 0; i < MIN(events.count, expected.count); i++)
+                Require([events[i][@"code"] unsignedIntValue] == [expected[i] unsignedIntValue],
+                    @"Native line, document, word and selection actions must use their remote editing equivalent");
+            NSMutableDictionary *balance = [NSMutableDictionary dictionary];
+            for (NSDictionary *event in events)
+            {
+                UINT16 wireFlags = [event[@"flags"] unsignedIntValue];
+                UINT8 wireCode = [event[@"code"] unsignedIntValue];
+                Require(![event[@"unicode"] boolValue] && wireCode != 0x5B && wireCode != 0x38,
+                    @"Mapped editing must not leak native text, Super, or Alt");
+                BOOL navigation = wireCode >= 0x47 && wireCode <= 0x53;
+                Require(((wireFlags & KBD_FLAGS_EXTENDED) != 0) == navigation,
+                    @"Navigation actions must retain their extended RDP scancode");
+                NSNumber *identity = @((wireFlags & KBD_FLAGS_EXTENDED) | wireCode);
+                NSInteger value = [balance[identity] integerValue] + ((wireFlags & KBD_FLAGS_RELEASE) ? -1 : 1);
+                balance[identity] = @(value);
+                Require(value >= 0, @"Editing must never release a remote key before pressing it");
+            }
+            for (NSNumber *value in balance.allValues)
+                Require(value.integerValue == 0, @"Mapped editing and cleanup must leave every remote key released");
+            // Editing is repeatable even when successive events arrive within the menu coalescing interval.
+            [events removeAllObjects];
+            if (captured)
+            {
+                [view sendCapturedEvent:down.CGEvent windowPoint:NSZeroPoint];
+                [view sendCapturedEvent:down.CGEvent windowPoint:NSZeroPoint];
+                [view releaseCapturedInput];
+            }
+            else { [view keyDown:down]; [view keyDown:down]; [view setCommandKeyDown:NO]; }
+            Require(events.count == expected.count * 2, @"Native editing repeats must not be discarded as duplicate menu commands");
+            [view release];
+        }
+    }
+}
+
+static void CheckCapturedWordDeletionMetadata(void)
+{
+    for (NSNumber *emptyUnicode in @[ @NO, @YES ])
+    {
+        [events removeAllObjects];
+        OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+        CGEventFlags flags = kCGEventFlagMaskAlternate | NX_DEVICELALTKEYMASK;
+        CGEventRef modifier = CaptureKey(kCGEventFlagsChanged, 58, flags);
+        CGEventRef down = CaptureKey(kCGEventKeyDown, 51, flags);
+        CGEventRef up = CaptureKey(kCGEventKeyUp, 51, flags);
+        CGEventRef released = CaptureKey(kCGEventFlagsChanged, 58, 0);
+        if (emptyUnicode.boolValue) CGEventKeyboardSetUnicodeString(down, 0, NULL);
+        [view sendCapturedEvent:modifier windowPoint:NSZeroPoint];
+        [view sendCapturedEvent:down windowPoint:NSZeroPoint];
+        [view sendCapturedEvent:up windowPoint:NSZeroPoint];
+        [view sendCapturedEvent:released windowPoint:NSZeroPoint];
+        RequireWordDeletion(0);
+        Require(events.count == 4,
+            @"Captured native editing must never tap remote Alt and move focus to the menu before deleting text");
+        [events removeAllObjects];
+        [view sendCapturedEvent:modifier windowPoint:NSZeroPoint];
+        Require(!events.count, @"Left Alt must remain pending until its physical chord or standalone release is known");
+        [view sendCapturedEvent:released windowPoint:NSZeroPoint];
+        Require(events.count == 2 && [events[0][@"code"] unsignedIntValue] == 0x38 &&
+            [events[1][@"code"] unsignedIntValue] == 0x38 &&
+            ([events[1][@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+            @"A standalone left Option tap must retain normal remote Alt behavior");
+        CFRelease(modifier); CFRelease(down); CFRelease(up); CFRelease(released);
+        [view release];
+    }
+}
+
+static void CheckAltGrEditingIsolation(void)
+{
+    for (NSNumber *localLayout in @[ @NO, @YES ])
+    {
+        [events removeAllObjects];
+        OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+        view.capturesLocalKeyboardLayout = localLayout.boolValue;
+        CGEventFlags flags = kCGEventFlagMaskAlternate | NX_DEVICERALTKEYMASK;
+        CGEventRef modifier = CaptureKey(kCGEventFlagsChanged, 61, flags);
+        CGEventRef down = CaptureKey(kCGEventKeyDown, 51, flags);
+        CGEventRef up = CaptureKey(kCGEventKeyUp, 51, flags);
+        CGEventRef released = CaptureKey(kCGEventFlagsChanged, 61, 0);
+        [view sendCapturedEvent:modifier windowPoint:NSZeroPoint];
+        [view sendCapturedEvent:down windowPoint:NSZeroPoint];
+        [view sendCapturedEvent:up windowPoint:NSZeroPoint];
+        [view sendCapturedEvent:released windowPoint:NSZeroPoint];
+        Require(events.count == 4 && [events[0][@"code"] unsignedIntValue] == (localLayout.boolValue ? 0x1D : 0x38) &&
+            [events[1][@"code"] unsignedIntValue] == 0x0E &&
+            [events[2][@"code"] unsignedIntValue] == 0x0E &&
+            ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_RELEASE),
+            @"Right Option must preserve AltGr in remote-layout mode and use native word deletion only in Mac-layout mode");
+        if (!localLayout.boolValue && events.count == 4)
+            Require(([events[0][@"flags"] unsignedIntValue] & KBD_FLAGS_EXTENDED) &&
+                ([events.lastObject[@"flags"] unsignedIntValue] & KBD_FLAGS_EXTENDED),
+                @"An AltGr editing key must retain the right Alt scancode on both modifier transitions");
+        CFRelease(modifier); CFRelease(down); CFRelease(up); CFRelease(released);
+        [view release];
+    }
+}
+
+static void CheckSystemCaptureCapabilities(void)
+{
+    OrbisInputEventTap *tap = [[OrbisInputEventTap alloc] init];
+    OrbisEventSinkFixture *sink = [[OrbisEventSinkFixture alloc] init];
+    osKeyboardAccess = NO; osTapCreations = 0;
+    Require(![tap startWithSink:sink] && !osTapCreations,
+        @"Denied keyboard monitoring must not create a partial modifier or mouse filter");
+    osKeyboardAccess = YES; osAccessibility = NO;
+    Require(![tap startWithSink:sink] && !osTapCreations,
+        @"Denied Accessibility must not create a system input filter");
+    osAccessibility = YES; osPartialKeyboard = YES;
+    Require(![tap startWithSink:sink] && !osTapCreated,
+        @"The actual filter mask must contain key presses and releases, even if permission preflight reports access");
+    osPartialKeyboard = NO; osTapListUnavailable = YES;
+    Require(![tap startWithSink:sink] && !osTapCreated,
+        @"An unverified system filter must not be reported as active");
+    osTapListUnavailable = NO;
+    Require([tap startWithSink:sink] && osTapCreated,
+        @"A verified complete system filter must be available to the session input policy");
+    [tap stop]; [tap stop];
+    Require(!osTapCreated, @"Stopping the filter must be idempotent and restore local input");
+    [tap release]; [sink release];
 }
 
 int main(void)
@@ -514,9 +1003,23 @@ int main(void)
 	{
 		[NSApplication sharedApplication];
 		events = [[NSMutableArray alloc] init];
+        CheckSystemCaptureCapabilities();
+        CheckAltGrEditingIsolation();
+        CheckEditingParity();
         CheckFullscreenInputCapture();
+        CheckCapturedEditingPointerInterleaving();
+        CheckRapidDistinctPastePresses();
+        CheckCapturedWordDeletionMetadata();
         CheckCommandEventOrdering();
         CheckCommandReleaseTransitions();
+        [events removeAllObjects];
+        OrbisKeyboardTestView *isoView = [[OrbisKeyboardTestView alloc] init];
+        [isoView keyDown:Key(NSEventTypeKeyDown, 50, @"<", @"<", 0)];
+        [isoView keyUp:Key(NSEventTypeKeyUp, 50, @"<", @"<", 0)];
+        Require(events.count == 2 && [events[0][@"code"] unsignedIntValue] == 0x56 &&
+            [events[1][@"code"] unsignedIntValue] == 0x56,
+            @"Windowed ISO typing must map <> correctly even if Apple hardware detection reports ANSI");
+        [isoView release];
 		CheckDisplayViewports();
 		CheckOptionBackspace(NO, NO);
 		CheckOptionBackspace(YES, NO);
