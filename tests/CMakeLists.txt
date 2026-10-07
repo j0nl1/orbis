@@ -79,11 +79,44 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   target_compile_definitions(orbis_virtual_display_tests PRIVATE
     freerdp_input_send_keyboard_event=OrbisRecordWorkspaceKeyboardEvent)
   target_link_libraries(orbis_virtual_display_tests PRIVATE orbis_macos_ui ${APPKIT_FRAMEWORK}
-    "-framework IOKit" "-framework CoreGraphics" "-framework Carbon"
+    "-framework IOKit" "-framework CoreGraphics" "-framework Carbon" "-framework AVFoundation"
     "${keyboard_runtime}/libfreerdp3.3.dylib"
     "${keyboard_runtime}/libfreerdp-client3.3.dylib"
     "${keyboard_runtime}/libwinpr3.3.dylib")
   target_link_options(orbis_virtual_display_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_executable(orbis_clipboard_tests
+    ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisClipboardTests.m
+    ${keyboard_source}/client/Mac/MRDPView.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisKeyboardCompatibility.m
+    ${keyboard_source}/client/Mac/Keyboard.m
+    ${keyboard_source}/client/Mac/Clipboard.m
+    ${keyboard_source}/client/Mac/mf_client.m
+    ${keyboard_source}/client/Mac/MRDPCursor.m)
+  target_include_directories(orbis_clipboard_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/macos/Sources ${keyboard_source}/client/Mac
+    ${keyboard_source}/include ${keyboard_source}/winpr/include
+    ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
+  target_compile_options(orbis_clipboard_tests PRIVATE -fno-objc-arc -fblocks)
+  target_link_libraries(orbis_clipboard_tests PRIVATE ${APPKIT_FRAMEWORK}
+    "-framework IOKit" "-framework CoreGraphics" "-framework Carbon"
+    "${keyboard_runtime}/libfreerdp3.3.dylib"
+    "${keyboard_runtime}/libfreerdp-client3.3.dylib"
+    "${keyboard_runtime}/libwinpr3.3.dylib")
+  target_link_options(orbis_clipboard_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_test(NAME integration.macos-clipboard COMMAND orbis_clipboard_tests)
+  set_tests_properties(integration.macos-clipboard PROPERTIES LABELS "integration;appkit;freerdp" TIMEOUT 30)
+  add_executable(orbis_microphone_tests ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisMicrophoneTests.m)
+  target_include_directories(orbis_microphone_tests PRIVATE
+    ${keyboard_source}/channels/audin/client/mac ${keyboard_source}/channels/audin/client
+    ${keyboard_source}/include ${keyboard_source}/winpr/include
+    ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
+  target_compile_options(orbis_microphone_tests PRIVATE -fno-objc-arc -fblocks -UNDEBUG)
+  target_link_libraries(orbis_microphone_tests PRIVATE ${FOUNDATION_FRAMEWORK}
+    "-framework CoreFoundation" "-framework AVFoundation" "-framework CoreAudio" "-framework AudioToolbox"
+    "${keyboard_runtime}/libfreerdp3.3.dylib" "${keyboard_runtime}/libwinpr3.3.dylib")
+  target_link_options(orbis_microphone_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_test(NAME integration.macos-microphone COMMAND orbis_microphone_tests)
+  set_tests_properties(integration.macos-microphone PROPERTIES LABELS "integration;freerdp")
   add_test(NAME integration.macos-virtual-display COMMAND orbis_virtual_display_tests)
   set_tests_properties(integration.macos-virtual-display PROPERTIES LABELS "integration;appkit;freerdp" RUN_SERIAL TRUE)
   add_test(NAME integration.macos-keyboard-input COMMAND orbis_keyboard_input_tests)
@@ -155,6 +188,7 @@ target_link_libraries(orbis_tunnel PUBLIC orbis_shared)
 add_library(
   orbis_macos_ui
   STATIC
+  ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisAudioSettings.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisFormControls.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisDisplaySettings.m
   ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisShortcutsController.m

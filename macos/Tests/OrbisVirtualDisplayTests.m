@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: MIT */
 #import <AppKit/AppKit.h>
+#import <AVFoundation/AVFoundation.h>
 #import <freerdp/client/disp.h>
 #import "OrbisSessionController.h"
 #import "OrbisProfile.h"
 #import "OrbisDisplaySettings.h"
+#import "OrbisAudioSettings.h"
 #import "OrbisDirectTransport.h"
 #import "MRDPView.h"
 #import "OrbisRemoteView.h"
@@ -22,6 +24,12 @@ static NSWindow *resolutionFixtureWindow;
 @end
 
 @interface OrbisSessionController (DisplayTests)
+- (BOOL)prepareMicrophoneAccess;
+- (BOOL)beginConnection;
+- (AVAuthorizationStatus)microphoneAuthorizationStatus;
+- (void)requestMicrophoneAccessWithCompletion:(void (^)(BOOL))completion;
+- (void)showMicrophoneAccessHelp;
+- (void)audioSettingsChanged:(NSNotification *)notification;
 - (void)displayChannelConnected:(DispClientContext *)channel;
 - (void)displayControlCaps:(uint32_t)count area:(uint64_t)area;
 - (void)addVirtualDisplay:(id)sender;
@@ -124,6 +132,119 @@ static UINT CaptureLayout(DispClientContext *channel, UINT32 count, DISPLAY_CONT
 static void Require(BOOL value, const char *message)
 {
     if (!value) { fprintf(stderr, "FAIL: %s\n", message); failures++; }
+}
+
+@interface OrbisMicrophonePermissionFixture : OrbisSessionController
+{
+    void (^_permissionCompletion)(BOOL);
+}
+@property(nonatomic) AVAuthorizationStatus authorization;
+@property(nonatomic) NSUInteger permissionRequests;
+@property(nonatomic) NSUInteger permissionHelpCount;
+@property(nonatomic) NSUInteger resumedConnections;
+- (BOOL)microphoneEnabled;
+- (void)completePermission:(BOOL)granted;
+@end
+
+@implementation OrbisMicrophonePermissionFixture
+@synthesize authorization, permissionRequests, resumedConnections, permissionHelpCount;
+- (void)showMicrophoneAccessHelp { permissionHelpCount++; }
+- (AVAuthorizationStatus)microphoneAuthorizationStatus { return authorization; }
+- (void)requestMicrophoneAccessWithCompletion:(void (^)(BOOL))completion
+{
+    permissionRequests++;
+    _permissionCompletion = [completion copy];
+}
+- (BOOL)beginConnection
+{
+    resumedConnections++;
+    return [self prepareMicrophoneAccess];
+}
+- (BOOL)microphoneEnabled { return _microphoneEnabled; }
+- (void)completePermission:(BOOL)granted
+{
+    void (^completion)(BOOL) = [_permissionCompletion autorelease];
+    _permissionCompletion = nil;
+    completion(granted);
+}
+@end
+
+static void DrainPermissionCompletion(void)
+{
+    __block BOOL drained = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ drained = YES; });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (!drained && [deadline timeIntervalSinceNow] > 0)
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+            beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    Require(drained, "Microphone permission completion must run on the main queue");
+}
+
+static void CheckMicrophonePermissions(void)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id original = [[defaults objectForKey:OrbisMicrophoneEnabledKey] retain];
+    [defaults removeObjectForKey:OrbisMicrophoneEnabledKey];
+    OrbisMicrophonePermissionFixture *controller = [[OrbisMicrophonePermissionFixture alloc] init];
+    controller.authorization = AVAuthorizationStatusNotDetermined;
+    Require([controller prepareMicrophoneAccess] && ![controller microphoneEnabled],
+        "Default-off microphone must not delay a connection");
+    Require(controller.permissionRequests == 0, "Default-off microphone must not request OS permission");
+    OrbisSetMicrophoneEnabled(defaults, YES);
+    controller.authorization = AVAuthorizationStatusDenied;
+    Require([controller prepareMicrophoneAccess] && ![controller microphoneEnabled],
+        "Denied access must leave the remote connection available without capture");
+    Require(!OrbisMicrophoneIsEnabled(defaults) && controller.permissionHelpCount == 1,
+        "Denied access must restore the off preference and explain how to enable permission");
+    OrbisSetMicrophoneEnabled(defaults, YES);
+    controller.authorization = AVAuthorizationStatusAuthorized;
+    Require([controller prepareMicrophoneAccess] && [controller microphoneEnabled],
+        "Explicit activation must observe access granted in system settings");
+    OrbisSetMicrophoneEnabled(defaults, NO);
+    Require([controller prepareMicrophoneAccess] && ![controller microphoneEnabled],
+        "Turning sharing off must override existing authorization");
+    Require(controller.permissionRequests == 0, "Resolved permission must not prompt again");
+    [controller stop]; [controller release];
+
+    for (NSUInteger granted = 0; granted <= 1; granted++)
+    {
+        OrbisSetMicrophoneEnabled(defaults, YES);
+        controller = [[OrbisMicrophonePermissionFixture alloc] init];
+        controller.authorization = AVAuthorizationStatusNotDetermined;
+        Require(![controller prepareMicrophoneAccess] && ![controller prepareMicrophoneAccess],
+            "Explicit activation must wait while permission is pending");
+        Require(controller.permissionRequests == 1, "Pending permission must request access once");
+        [controller completePermission:granted != 0];
+        DrainPermissionCompletion();
+        Require(controller.resumedConnections == 1 && controller.permissionRequests == 1,
+            "Completion must resume once without re-prompting if OS status is delayed");
+        Require([controller microphoneEnabled] == (granted != 0), "Capture must respect permission response");
+        [controller stop]; [controller release];
+    }
+
+    OrbisSetMicrophoneEnabled(defaults, YES);
+    controller = [[OrbisMicrophonePermissionFixture alloc] init];
+    controller.authorization = AVAuthorizationStatusNotDetermined;
+    Require(![controller prepareMicrophoneAccess], "Activation must wait for permission");
+    OrbisSetMicrophoneEnabled(defaults, NO);
+    [controller completePermission:YES];
+    DrainPermissionCompletion();
+    Require(![controller microphoneEnabled], "A late grant must not undo an explicit off choice");
+    [controller stop]; [controller release];
+
+    OrbisSetMicrophoneEnabled(defaults, YES);
+    controller = [[OrbisMicrophonePermissionFixture alloc] init];
+    controller.authorization = AVAuthorizationStatusNotDetermined;
+    Require(![controller prepareMicrophoneAccess], "Activation must wait for permission");
+    [controller stop];
+    [controller completePermission:YES];
+    DrainPermissionCompletion();
+    Require(controller.resumedConnections == 0 && ![controller microphoneEnabled],
+        "Permission arriving after cancellation must not connect or enable capture");
+    [controller release];
+    if (original) [defaults setObject:original forKey:OrbisMicrophoneEnabledKey];
+    else [defaults removeObjectForKey:OrbisMicrophoneEnabledKey];
+    [original release];
 }
 
 @interface OrbisDisplayFixtureView : OrbisRemoteView
@@ -593,6 +714,7 @@ int main(void)
     @autoreleasepool
     {
         [OrbisResolutionApplication sharedApplication];
+        CheckMicrophonePermissions();
         pointerEvents = [[NSMutableArray alloc] init];
         id originalSettings = [[[NSUserDefaults standardUserDefaults] objectForKey:@"OrbisDisplaySettings.v1"] retain];
         OrbisAppDelegate *delegate = [[OrbisAppDelegate alloc] init];
@@ -606,6 +728,26 @@ int main(void)
                     if ([item.title isEqualToString:@"Resolution"]) resolutionMenu = item.submenu;
                 }
         Require(displayItem && [displayItem target] == delegate, "Add Virtual Display belongs in the native menu");
+        NSMenuItem *microphoneItem = nil;
+        for (NSMenuItem *root in NSApp.mainMenu.itemArray)
+            for (NSMenuItem *item in root.submenu.itemArray)
+                if (item.action == NSSelectorFromString(@"toggleMicrophone:")) microphoneItem = item;
+        Require(microphoneItem != nil, "Session menu must expose microphone sharing");
+        NSUserDefaults *audioDefaults = NSUserDefaults.standardUserDefaults;
+        id previousMicrophone = [[audioDefaults objectForKey:OrbisMicrophoneEnabledKey] retain];
+        OrbisSetMicrophoneEnabled(audioDefaults, NO);
+        Require([delegate validateMenuItem:microphoneItem] && microphoneItem.state == NSControlStateValueOff,
+            "Quick microphone menu must show the off preference");
+        [NSApp sendAction:microphoneItem.action to:microphoneItem.target from:microphoneItem];
+        Require(OrbisMicrophoneIsEnabled(audioDefaults), "Quick menu activation must persist the shared preference");
+        [delegate validateMenuItem:microphoneItem];
+        Require(microphoneItem.state == NSControlStateValueOn, "Enabled microphone must have a menu checkmark");
+        OrbisSetMicrophoneEnabled(audioDefaults, NO);
+        [delegate validateMenuItem:microphoneItem];
+        Require(microphoneItem.state == NSControlStateValueOff, "Menu checkmark must follow settings changes");
+        if (previousMicrophone) [audioDefaults setObject:previousMicrophone forKey:OrbisMicrophoneEnabledKey];
+        else [audioDefaults removeObjectForKey:OrbisMicrophoneEnabledKey];
+        [previousMicrophone release];
         Require(![delegate validateMenuItem:displayItem], "The menu action must be disabled outside a session");
         for (NSInteger arrangement = 0; arrangement < 4; arrangement++)
         {

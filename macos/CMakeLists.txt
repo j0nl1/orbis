@@ -50,6 +50,9 @@ set(ORBIS_MACOS_SOURCES
     ${ORBIS_SHARED_DIR}/Sources/Profiles/OrbisWorkspaceShortcuts.m
     ${ORBIS_SHARED_DIR}/Sources/Diagnostics/OrbisDiagnostics.h
     ${ORBIS_SHARED_DIR}/Sources/Diagnostics/OrbisDiagnostics.m
+    Sources/OrbisAudioSettings.m
+    Sources/OrbisAudioSettings.h
+    Sources/OrbisMicrophoneControl.h
     Sources/main.m
     Sources/OrbisAppDelegate.h
     Sources/OrbisAppDelegate.m
@@ -128,6 +131,7 @@ target_link_libraries(
     ${NETWORK_FRAMEWORK}
     ${METRICKIT_FRAMEWORK}
     "-framework ApplicationServices"
+    "-framework AVFoundation"
 )
 
 target_compile_options(OrbisMac PRIVATE -fno-objc-arc -g)
@@ -196,7 +200,9 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "$<TARGET_FILE:winpr>"
           "${ORBIS_MACOS_FRAMEWORKS_DIR}/$<TARGET_SONAME_FILE_NAME:winpr>"
-  COMMAND /usr/bin/codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:OrbisMac>"
+  COMMAND /usr/bin/codesign --force --deep --sign -
+          --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/Orbis.entitlements"
+          "$<TARGET_BUNDLE_DIR:OrbisMac>"
   COMMENT "Bundling the native FreeRDP runtime and signing Orbis for local use"
   VERBATIM
 )

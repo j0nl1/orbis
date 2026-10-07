@@ -3,6 +3,7 @@
 set -euo pipefail
 
 app_path="${1:?Usage: sign-orbis-macos.sh APP_PATH}"
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 identity="${ORBIS_MACOS_SIGNING_IDENTITY:-}"
 # Keep a local signing identity across rebuilds without committing certificates
 # or configuring unrelated applications. An invalid configured identity fails
@@ -33,5 +34,5 @@ while IFS= read -r -d '' bundle; do
   codesign "${options[@]}" --preserve-metadata=entitlements "$bundle"
 done < <(find "${app_path}/Contents" -depth -type d \
   \( -name '*.app' -o -name '*.xpc' -o -name '*.framework' \) -print0)
-codesign "${options[@]}" "$app_path"
+codesign "${options[@]}" --entitlements "${project_root}/macos/Orbis.entitlements" "$app_path"
 codesign --verify --deep --strict "$app_path"

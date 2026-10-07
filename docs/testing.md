@@ -122,3 +122,19 @@ and dispatch of Add Virtual Display. Editor and profile
 tests cover manual dimensions, validation, automatic defaults, copying, and
 persistence. These fixtures do not establish server interoperability; validate
 adding and closing a second display against a live remote login before release.
+
+## macOS clipboard and microphone tests
+
+With `ORBIS_TEST_FREERDP_BUILD_DIR` configured, `integration.macos-clipboard`
+exercises concurrent multi-megabyte text copies through the real pasteboard
+observer, RDP callbacks, and WinPR clipboard storage. Only the OS pasteboard is
+replaced, so the test leaves the user's clipboard intact. It checks complete
+remote text, main-thread publication, suppressed echo, and rejected responses.
+
+`integration.macos-microphone` exercises the patched native capture adapter with
+simulated macOS authorization and audio queues. It checks default-off negotiation
+without permission or hardware access, mono/stereo PCM, invalid formats, live
+capture start/stop, and blocked forwarding after mute without recording audio.
+Native settings/menu tests cover the shared preference, Save/Cancel behavior,
+scrollable settings, and permission completion after capture is disabled. Live server tests are
+needed to verify playback and microphone availability in remote applications.
