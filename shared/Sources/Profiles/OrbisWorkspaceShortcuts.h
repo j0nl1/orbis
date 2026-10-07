@@ -23,8 +23,11 @@ typedef NS_OPTIONS(NSUInteger, OrbisShortcutModifiers) {
 + (NSString *)warning;
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults platform:(NSString *)platform;
 - (OrbisWorkspaceAction)actionForKeyCode:(NSUInteger)code modifiers:(OrbisShortcutModifiers)modifiers;
+- (OrbisWorkspaceAction)actionForMouseButton:(NSUInteger)button modifiers:(OrbisShortcutModifiers)modifiers;
 - (BOOL)assignKeyCode:(NSUInteger)code modifiers:(OrbisShortcutModifiers)modifiers
                label:(NSString *)label toAction:(OrbisWorkspaceAction)action error:(NSError **)error;
+- (BOOL)assignMouseButton:(NSUInteger)button modifiers:(OrbisShortcutModifiers)modifiers
+                   label:(NSString *)label toAction:(OrbisWorkspaceAction)action error:(NSError **)error;
 - (void)clearAction:(OrbisWorkspaceAction)action;
 - (NSString *)labelForAction:(OrbisWorkspaceAction)action;
 - (void)save;

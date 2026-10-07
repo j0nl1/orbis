@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- macOS shortcuts can record middle and side mouse buttons, alone or with keyboard modifiers, and execute remote actions in windowed sessions and fullscreen input capture.
+- macOS shortcuts also offer manual mouse button assignment, so existing Mac mouse actions do not need to be triggered while configuring a shortcut.
+- Fullscreen input capture preserves right Option as AltGr while it is held, even when later key events omit the device-side modifier flags.
+- Windowed and fullscreen input share native Mac editing translation for menu shortcuts, word navigation and deletion, line and document boundaries, and selection. Command-Delete deletes to the beginning of the line; editing repeats remain active.
 - iPad diagnostics capture native RDP exit reasons, requested versus unexpected disconnects, scene lifecycle and memory warnings, and sessions interrupted before the next launch.
 - Alt (Option) + the physical key left of 1 toggles remote GNOME Activities on iPad hardware keyboards, without repeated toggles while holding the key.
 - Local macOS and iPad diagnostics with session events, numeric error codes, available crash and hang call stacks, and a JSON export. Reports remain on the device until exported.
@@ -38,6 +42,11 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- Repeated macOS copy/paste preserves distinct rapid presses, and pointer movement while Command is held no longer introduces an unintended remote Super tap.
+- macOS shortcut recording intercepts reserved Mac keyboard combinations while the recording field is active and releases capture on key release, focus loss, menus, or editor closure.
+- macOS captured Option editing no longer taps remote Alt before sending word navigation or deletion, avoiding a menu focus change before the editing action.
+- macOS fullscreen capture checks Input Monitoring as well as Accessibility, preventing partial capture that sends AltGr modifiers while keyboard events bypass the filter. The OS filter, session routing, and native keyboard translation are separate modules; filter activation verifies every requested event. The permission button requests the missing keyboard access.
+- macOS fullscreen capture preserves right Option as AltGr and the ISO `<`/`>` key position. Settings can select the Mac keyboard layout for typing symbols and accents while retaining fullscreen shortcut capture.
 - iPad text clipboard redirection connects remote copies to the system pasteboard and publishes local text before Command-V, Control-V, or the session Paste command.
 - macOS Command shortcuts no longer send an extra remote Super tap when their modifier state arrives after the shortcut.
 - Remote keys used with Command are released when Command is released or focus cleanup runs, including when key-up events are missing or delayed.

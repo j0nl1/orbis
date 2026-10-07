@@ -49,6 +49,39 @@
     [model clearAction:OrbisWorkspaceScreenshotScreen];
     XCTAssertEqual(model.bindings.count, 0u);
 }
+- (void)testMouseBindingsPersistWithoutCollidingWithKeyboardCodes
+{
+    NSUserDefaults *defaults = [self defaults];
+    OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertTrue([model assignKeyCode:3 modifiers:OrbisShortcutShift label:@"Shift F" toAction:OrbisWorkspaceActivities error:nil]);
+    XCTAssertTrue([model assignMouseButton:3 modifiers:OrbisShortcutShift label:@"Shift Mouse Button 4" toAction:OrbisWorkspacePrevious error:nil]);
+    XCTAssertEqual([model actionForKeyCode:3 modifiers:OrbisShortcutShift], OrbisWorkspaceActivities);
+    XCTAssertEqual([model actionForMouseButton:3 modifiers:OrbisShortcutShift], OrbisWorkspacePrevious);
+    XCTAssertEqual([model actionForMouseButton:3 modifiers:0], OrbisWorkspaceNone);
+    NSError *error = nil;
+    XCTAssertFalse([model assignMouseButton:3 modifiers:OrbisShortcutShift label:@"Collision" toAction:OrbisWorkspaceNext error:&error]);
+    XCTAssertNotNil(error);
+    [model save];
+    OrbisWorkspaceShortcuts *saved = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual([saved actionForMouseButton:3 modifiers:OrbisShortcutShift], OrbisWorkspacePrevious);
+    XCTAssertEqual([saved actionForKeyCode:3 modifiers:OrbisShortcutShift], OrbisWorkspaceActivities);
+    XCTAssertTrue([saved assignKeyCode:4 modifiers:0 label:@"H" toAction:OrbisWorkspacePrevious error:nil]);
+    XCTAssertEqual([saved actionForMouseButton:3 modifiers:OrbisShortcutShift], OrbisWorkspaceNone);
+    XCTAssertFalse([saved assignMouseButton:32 modifiers:0 label:@"Invalid" toAction:OrbisWorkspaceNext error:nil]);
+}
+- (void)testMalformedMouseBindingsCannotBecomeKeyboardBindings
+{
+    NSUserDefaults *defaults = [self defaults];
+    [defaults setObject:@{
+        @"5": @{ @"button": @3.5, @"modifiers": @0, @"label": @"Invalid" },
+        @"6": @{ @"button": @3, @"key": @3, @"modifiers": @0, @"label": @"Ambiguous" },
+        @"1": @{ @"button": @4, @"modifiers": @0, @"label": @"Mouse Button 5" }
+    } forKey:@"OrbisWorkspaceShortcuts.v1.macos"];
+    OrbisWorkspaceShortcuts *model = [[[OrbisWorkspaceShortcuts alloc] initWithDefaults:defaults platform:@"macos"] autorelease];
+    XCTAssertEqual(model.bindings.count, 1u);
+    XCTAssertEqual([model actionForMouseButton:4 modifiers:0], OrbisWorkspacePrevious);
+    XCTAssertEqual([model actionForKeyCode:0 modifiers:0], OrbisWorkspaceNone);
+}
 - (void)testMalformedSavedBindingsAreIgnored
 {
     NSUserDefaults *defaults = [self defaults];

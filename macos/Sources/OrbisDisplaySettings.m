@@ -219,7 +219,7 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
 @implementation OrbisDisplaySettingsController
 - (instancetype)initWithSettings:(OrbisDisplaySettings *)settings
 {
-    NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 780)
+    NSWindow *window = [[[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 850)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO] autorelease];
     if (!(self = [super initWithWindow:window])) return nil;
     _settings = [settings copy];
@@ -281,17 +281,26 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
     [_captureInput setState:[[NSUserDefaults standardUserDefaults] boolForKey:OrbisFullscreenInputCaptureKey]
         ? NSControlStateValueOn : NSControlStateValueOff];
     [_captureInput setAccessibilityIdentifier:@"settings-fullscreen-input-capture"];
+    _capturedKeyboardLayout = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_capturedKeyboardLayout addItemsWithTitles:@[ @"Remote keyboard layout (default)", @"Mac keyboard layout" ]];
+    [_capturedKeyboardLayout selectItemAtIndex:[[NSUserDefaults standardUserDefaults]
+        boolForKey:OrbisCapturedMacKeyboardLayoutKey] ? 1 : 0];
+    _capturedKeyboardLayout.accessibilityIdentifier = @"settings-captured-keyboard-layout";
+    _capturedKeyboardLayout.accessibilityLabel = @"Keyboard layout in full screen capture";
+    NSStackView *keyboardRow = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"Typing"], _capturedKeyboardLayout ]];
+    keyboardRow.spacing = 12;
     NSTextField *inputHint = [NSTextField wrappingLabelWithString:
-        @"Forward physical keys, shortcuts, mouse buttons and macros that generate input to the active remote desktop. Command becomes Super and Option becomes Alt. Control + Option + Command + Esc releases capture until you leave full screen or switch apps. Windowed sessions keep their usual Mac shortcuts."];
+        @"Requires Accessibility and Input Monitoring in macOS Privacy & Security. Capture shortcuts, mouse buttons and input macros. Mac layout keeps your usual characters, including Option symbols. Remote layout uses physical keys: left Option is Alt and right Option is AltGr. Mac editing shortcuts keep their usual behavior; other Command chords use Super. Control + Option + Command + Esc releases capture. Windowed sessions keep their usual Mac shortcuts."];
     [inputHint setTextColor:[NSColor secondaryLabelColor]];
     NSButton *permission = [NSButton buttonWithTitle:@"Allow input capture…" target:self action:@selector(requestInputPermission:)];
     [permission setBezelStyle:NSBezelStyleRounded];
-    [permission setToolTip:@"Allow Orbis to control input in macOS Privacy & Security settings. Required for full screen capture."];
-    NSButton *shortcuts = [NSButton buttonWithTitle:@"Keyboard shortcuts…" target:self action:@selector(showShortcuts:)];
+    [permission setToolTip:@"Allow Orbis in both Accessibility and Input Monitoring in macOS Privacy & Security. Both are required for full screen capture."];
+    NSButton *shortcuts = [NSButton buttonWithTitle:@"Shortcuts…" target:self action:@selector(showShortcuts:)];
     shortcuts.bezelStyle = NSBezelStyleRounded;
     NSStackView *inputActions = [NSStackView stackViewWithViews:@[ permission, shortcuts ]];
     inputActions.spacing = 12;
-    [rows addObjectsFromArray:@[ inputTitle, _captureInput, inputHint, inputActions ]];
+    [rows addObjectsFromArray:@[ inputTitle, _captureInput, keyboardRow, inputHint, inputActions ]];
     NSButton *cancel = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)];
     NSButton *save = [NSButton buttonWithTitle:@"Save settings" target:self action:@selector(save:)];
     [cancel setKeyEquivalent:@"\033"]; [save setKeyEquivalent:@"\r"];
@@ -381,20 +390,22 @@ static NSString *const OrbisDisplaySettingsKey = @"OrbisDisplaySettings.v1";
     [_settings saveToDefaults:[NSUserDefaults standardUserDefaults]];
     BOOL enabled = _captureInput.state == NSControlStateValueOn;
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:OrbisFullscreenInputCaptureKey];
+    [[NSUserDefaults standardUserDefaults] setBool:_capturedKeyboardLayout.indexOfSelectedItem == 1
+        forKey:OrbisCapturedMacKeyboardLayoutKey];
     [[NSNotificationCenter defaultCenter] postNotificationName:OrbisInputCaptureSettingsDidChangeNotification object:nil];
-    if (enabled && !AXIsProcessTrusted()) [self requestInputPermission:nil];
+    if (enabled && ![OrbisInputEventTap permissionsGranted]) [self requestInputPermission:nil];
     [self.window.sheetParent endSheet:self.window];
 }
 - (void)requestInputPermission:(id)sender
 {
     (void)sender;
-    AXIsProcessTrustedWithOptions((CFDictionaryRef)@{ (id)kAXTrustedCheckOptionPrompt: @YES });
+    [OrbisInputEventTap requestPermissions];
 }
 - (void)cancel:(id)sender { (void)sender; [self.window.sheetParent endSheet:self.window]; }
 - (void)dealloc
 {
     [_shortcutsController release]; [_settings release]; [_arrangementView release]; [_validationLabel release];
-    [_captureInput release];
+    [_captureInput release]; [_capturedKeyboardLayout release];
     for (NSUInteger i = 0; i < 2; i++) { [_modes[i] release]; [_widths[i] release]; [_heights[i] release]; }
     [super dealloc];
 }
