@@ -178,11 +178,28 @@ static const NSUInteger OrbisSystemReportCount = 10;
 
 - (void)recordEvent:(NSString *)event values:(NSDictionary<NSString *, NSNumber *> *)values
 {
+	[self recordEvent:event values:values rayID:nil];
+}
+
+- (void)recordTunnelEvent:(NSString *)event values:(NSDictionary<NSString *, NSNumber *> *)values
+                   rayID:(NSString *)rayID
+{
+	if (![event hasPrefix:@"tunnel."]) return;
+	[self recordEvent:event values:values rayID:rayID];
+}
+
+- (void)recordEvent:(NSString *)event values:(NSDictionary<NSString *, NSNumber *> *)values
+             rayID:(NSString *)rayID
+{
 	// Restrict the schema to fixed numeric context, rather than arbitrary descriptions.
 	NSSet *allowed = [NSSet setWithArray:@[ @"code", @"rdp_error", @"width", @"height",
 	    @"display_count", @"action", @"enabled", @"transport", @"error_kind",
 	    @"intentional", @"loop_exit", @"rdp_error_info", @"connection_state", @"session_state",
-	    @"app_state", @"previous_timestamp" ]];
+	    @"app_state", @"previous_timestamp", @"transport_id", @"stream_id", @"http_status",
+	    @"close_code", @"close_source", @"opened", @"native_code", @"native_error_kind",
+	    @"underlying_code", @"underlying_error_kind", @"duration_ms", @"sent_bytes",
+	    @"received_bytes", @"send_idle_ms", @"receive_idle_ms", @"stop_source", @"rdp_state",
+	    @"pings_sent", @"pongs_received", @"pong_idle_ms" ]];
 	NSMutableDictionary *context = [NSMutableDictionary dictionary];
 	for (NSString *key in values)
 	{
@@ -195,6 +212,11 @@ static const NSUInteger OrbisSystemReportCount = 10;
 	record[@"launch_id"] = _launchID;
 	record[@"event"] = event;
 	record[@"values"] = context;
+	// Never persist arbitrary response headers, request identifiers, or close reasons.
+	if ([rayID isKindOfClass:NSString.class] && rayID.length <= 36 &&
+	    [rayID rangeOfString:@"\\A[0-9A-Fa-f]{16,32}(-[A-Z]{3})?\\z"
+	        options:NSRegularExpressionSearch].location != NSNotFound)
+		record[@"cf_ray_id"] = rayID;
 	if ([event isEqual:@"app.previous_session_interrupted"] && _previousLaunchID)
 		record[@"previous_launch_id"] = _previousLaunchID;
 	NSData *json = [NSJSONSerialization dataWithJSONObject:record options:NSJSONWritingSortedKeys error:nil];
@@ -241,13 +263,19 @@ static const NSUInteger OrbisSystemReportCount = 10;
 - (void)recordError:(NSError *)error event:(NSString *)event
 {
 	if (!error) return;
+	[self recordEvent:event values:[OrbisDiagnostics valuesForError:error]];
+}
+
++ (NSDictionary<NSString *, NSNumber *> *)valuesForError:(NSError *)error
+{
+	if (!error) return @{};
 	// Error descriptions and userInfo may contain URLs, account names, or secrets.
 	NSArray *domains = @[ NSCocoaErrorDomain, NSPOSIXErrorDomain, NSURLErrorDomain,
 	    @"com.dnexus.orbis.session", @"com.dnexus.orbis.transport", @"com.dnexus.orbis.tunnel",
 	    @"com.dnexus.orbis.keychain", @"com.dnexus.orbis.display" ];
 	NSUInteger kind = [domains indexOfObject:error.domain];
-	[self recordEvent:event values:@{ @"code" : @(error.code),
-	    @"error_kind" : @(kind == NSNotFound ? domains.count : kind) }];
+	return @{ @"code" : @(error.code),
+	    @"error_kind" : @(kind == NSNotFound ? domains.count : kind) };
 }
 
 - (NSDictionary *)stackForDiagnostic:(id)diagnostic

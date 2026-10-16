@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Tunnel diagnostics correlate WebSocket upgrades and disconnects with validated Cloudflare Ray IDs, numeric native errors, byte counts, and heartbeat activity without storing credentials or session content.
 - Remote audio plays through the Mac’s current output device during macOS sessions when supported by the server.
 - Optional macOS microphone sharing starts off and can be enabled or disabled in Settings and Session → Microphone. Both controls share a saved preference and can stop or resume capture during a session, when supported by the server.
 - macOS shortcuts can record middle and side mouse buttons, alone or with keyboard modifiers, and execute remote actions in windowed sessions and fullscreen input capture.
@@ -45,6 +46,9 @@
 
 ### Fixed
 - macOS clipboard storage is synchronized across local copies and remote responses, preventing memory corruption during large text transfers. Remote text is published on the main thread without echoing it back to the server.
+- macOS and iPad sessions explicitly request Unicode keyboard input when parsing their connection settings, restoring Option symbols and native text that FreeRDP otherwise silently rejected.
+- Right Option typing takes priority over configured keyboard shortcuts. Option symbols no longer depend on Command shortcut mapping, and pointer motion or unrelated key releases cannot introduce deferred Alt modifiers in Mac layout mode.
+- macOS clipboard replies remain nonfatal when copied data changes from text to an unsupported image. Clipboard requests are serialized, large text transfers synchronize their shared buffer, and remote copies no longer echo back to the server.
 - Repeated macOS copy/paste preserves distinct rapid presses, and pointer movement while Command is held no longer introduces an unintended remote Super tap.
 - macOS shortcut recording intercepts reserved Mac keyboard combinations while the recording field is active and releases capture on key release, focus loss, menus, or editor closure.
 - macOS captured Option editing no longer taps remote Alt before sending word navigation or deletion, avoiding a menu focus change before the editing action.

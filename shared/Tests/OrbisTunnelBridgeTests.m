@@ -7,11 +7,14 @@
 #import <unistd.h>
 
 #import "OrbisTunnelBridge.h"
+#import "OrbisDiagnostics.h"
 
 @interface OrbisTunnelBridgeTests : XCTestCase
 @property(nonatomic) NSTask *fixture;
 @property(nonatomic) uint16_t fixturePort;
 @property(nonatomic) OrbisTunnelBridge *bridge;
+@property(nonatomic) NSURL *diagnosticsRoot;
+@property(nonatomic) OrbisDiagnostics *diagnostics;
 @end
 
 @implementation OrbisTunnelBridgeTests
@@ -19,6 +22,9 @@
 - (void)setUp
 {
 	[super setUp];
+	self.diagnosticsRoot = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+	    URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+	self.diagnostics = [[OrbisDiagnostics alloc] initWithDirectoryURL:self.diagnosticsRoot];
 	NSDictionary *environment = NSProcessInfo.processInfo.environment;
 	self.fixture = [NSTask new];
 	self.fixture.executableURL = [NSURL fileURLWithPath:environment[@"ORBIS_TUNNEL_FIXTURE_PYTHON"]];
@@ -48,6 +54,7 @@
 		[self.fixture terminate];
 	[self.fixture waitUntilExit];
 	self.fixture = nil;
+	[NSFileManager.defaultManager removeItemAtURL:self.diagnosticsRoot error:nil];
 	[super tearDown];
 }
 
@@ -57,7 +64,8 @@
 	NSError *error = nil;
 	self.bridge = [[OrbisTunnelBridge alloc] initWithEndpoint:[NSURL URLWithString:endpoint]
 	                                              clientID:@"fixture-client"
-	                                          clientSecret:@"fixture-secret" error:&error];
+	                                          clientSecret:@"fixture-secret"
+	                                           diagnostics:self.diagnostics error:&error];
 	XCTAssertNotNil(self.bridge, @"%@", error);
 	XCTestExpectation *ready = [self expectationWithDescription:@"Loopback listener ready"];
 	__block uint16_t port = 0;
@@ -177,6 +185,12 @@
 	                      [NSData dataWithBytes:bytes length:sizeof(bytes)]);
 	[self.bridge stop];
 	XCTAssertEqual([self readBytes:1 fromSocket:socketFD].length, (NSUInteger)0);
+	NSArray *closed = [[self diagnosticEvents] filteredArrayUsingPredicate:
+	    [NSPredicate predicateWithFormat:@"event == 'tunnel.closed'"]];
+	XCTAssertEqual(closed.count, 1u);
+	XCTAssertEqualObjects(closed.firstObject[@"values"][@"intentional"], @1);
+	XCTAssertEqualObjects(closed.firstObject[@"values"][@"sent_bytes"], @4);
+	XCTAssertEqualObjects(closed.firstObject[@"values"][@"received_bytes"], @4);
 	close(socketFD);
 }
 
@@ -222,6 +236,73 @@
 	XCTAssertEqual([self.bridge lastHandshakeError].code, (NSInteger)403);
 	XCTAssertEqual([self readBytes:1 fromSocket:socketFD].length, (NSUInteger)0);
 	close(socketFD);
+}
+
+- (NSArray *)diagnosticEvents
+{
+	NSURL *url = [self.diagnostics exportToDirectory:self.diagnosticsRoot error:nil];
+	return [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:url]
+	    options:0 error:nil][@"events"];
+}
+
+- (void)testEstablishedTCPResetRetainsRayIDAndNativeErrorBeforeClosingLoopback
+{
+	XCTestExpectation *failed = [self expectationWithDescription:@"Established stream reset"];
+	failed.assertForOverFulfill = YES;
+	int socketFD = [self connectToPath:@"/reset" failure:^(NSError *error) { [failed fulfill]; }];
+	[self waitForExpectations:@[ failed ] timeout:5];
+	NSArray *events = [self diagnosticEvents];
+	NSDictionary *opened = [[events filteredArrayUsingPredicate:
+	    [NSPredicate predicateWithFormat:@"event == 'tunnel.opened'"]] firstObject];
+	NSDictionary *ended = [[events filteredArrayUsingPredicate:
+	    [NSPredicate predicateWithFormat:@"event == 'tunnel.closed'"]] firstObject];
+	XCTAssertNotNil(opened);
+	XCTAssertNotNil(ended);
+	XCTAssertEqualObjects(opened[@"cf_ray_id"], @"a4af05b09864f778-LIS");
+	XCTAssertEqualObjects(ended[@"cf_ray_id"], opened[@"cf_ray_id"]);
+	XCTAssertEqualObjects(ended[@"values"][@"stream_id"], opened[@"values"][@"stream_id"]);
+	XCTAssertGreaterThan([opened[@"values"][@"stream_id"] unsignedLongLongValue], 0u);
+	XCTAssertGreaterThan([opened[@"values"][@"transport_id"] unsignedLongLongValue], 0u);
+	XCTAssertEqualObjects(ended[@"values"][@"transport_id"], opened[@"values"][@"transport_id"]);
+	XCTAssertEqualObjects(ended[@"values"][@"intentional"], @0);
+	XCTAssertNotEqual([ended[@"values"][@"native_code"] integerValue], 0);
+	XCTAssertGreaterThan([ended[@"values"][@"duration_ms"] doubleValue], 0);
+	XCTAssertEqual([self readBytes:1 fromSocket:socketFD].length, (NSUInteger)0);
+	NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:events
+	    options:0 error:nil] encoding:NSUTF8StringEncoding];
+	for (NSString *secret in @[ @"fixture-secret", @"fixture-client", @"X-Secret", @"127.0.0.1", @"/reset" ])
+		XCTAssertFalse([json containsString:secret]);
+	close(socketFD);
+}
+
+- (void)testRejectedUpgradeRecordsHTTPStatusAndRayID
+{
+	[self assertFailureAtPath:@"/deny" contains:@"Access denied"];
+	NSArray *events = [self diagnosticEvents];
+	NSDictionary *ended = [[events filteredArrayUsingPredicate:
+	    [NSPredicate predicateWithFormat:@"event == 'tunnel.closed'"]] firstObject];
+	XCTAssertEqualObjects(ended[@"cf_ray_id"], @"a4af05b09864f778-LIS");
+	XCTAssertEqualObjects(ended[@"values"][@"http_status"], @403);
+}
+
+- (void)testRemoteCloseRecordsTheWebSocketCodeWithoutItsReason
+{
+	[self assertFailureAtPath:@"/close" contains:@"closed"];
+	NSArray *events;
+	NSDictionary *closed;
+	NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+	do
+	{
+		events = [self diagnosticEvents];
+		closed = [[events filteredArrayUsingPredicate:
+		    [NSPredicate predicateWithFormat:@"event == 'tunnel.websocket_closed'"]] firstObject];
+		if (!closed) [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+	} while (!closed && deadline.timeIntervalSinceNow > 0);
+	XCTAssertEqualObjects(closed[@"values"][@"close_code"], @1000);
+	NSArray *ended = [events filteredArrayUsingPredicate:
+	    [NSPredicate predicateWithFormat:@"event == 'tunnel.closed'"]];
+	XCTAssertEqual(ended.count, 1u);
+	XCTAssertEqualObjects(ended.firstObject[@"values"][@"intentional"], @0);
 }
 
 @end

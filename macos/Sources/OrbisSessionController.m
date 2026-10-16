@@ -13,6 +13,7 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <AVFoundation/AVFoundation.h>
+#import <IOKit/hidsystem/IOLLEvent.h>
 
 #import "MRDPView.h"
 #import "OrbisRemoteView.h"
@@ -27,6 +28,10 @@
 #import "OrbisSessionEndPolicy.h"
 
 static NSString *const OrbisSessionErrorDomain = @"com.dnexus.orbis.session";
+
+typedef NS_ENUM(NSUInteger, OrbisSessionStopSource) {
+	OrbisSessionStopLocal = 0, OrbisSessionStopRemote, OrbisSessionStopNative, OrbisSessionStopFailure
+};
 
 _Static_assert(FREERDP_ERROR_CONNECT_FAILED == ORBIS_FREERDP_CONNECT_FAILED,
                "Orbis retry policy must match FreeRDP's connection-failed code");
@@ -70,6 +75,8 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)applyWindowResolutions;
 - (void)scheduleWindowResolutions;
 - (void)displayCapabilitiesChanged;
+- (OrbisDiagnostics *)diagnostics;
+- (void)recordRDPEvent:(NSString *)event values:(NSDictionary *)values;
 @end
 
 static OrbisShortcutModifiers OrbisModifiersForFlags(NSEventModifierFlags flags)
@@ -85,6 +92,12 @@ static OrbisShortcutModifiers OrbisModifiersForFlags(NSEventModifierFlags flags)
 - (BOOL)sendWorkspaceShortcutForCode:(NSUInteger)code flags:(NSEventModifierFlags)flags physical:(BOOL)physical
 {
 	if (!is_connected || !instance || !instance->context) return NO;
+	// Some sources identify the Option side only on its modifier transition.
+	NSEventModifierFlags optionSides = flags & (NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK);
+	if (!optionSides) optionSides = capturedOptionSides;
+	// Right Option belongs to text entry; configured actions must not consume it.
+	if ((flags & NSEventModifierFlagOption) && (optionSides & NX_DEVICERALTKEYMASK) &&
+	    !(flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl))) return NO;
 	if ([_workspaceConsumedKeys containsObject:@(code)]) return YES;
 	OrbisShortcutModifiers modifiers = OrbisModifiersForFlags(flags);
 	OrbisWorkspaceShortcuts *shortcuts = [[[OrbisWorkspaceShortcuts alloc]
@@ -219,7 +232,7 @@ static OrbisShortcutModifiers OrbisModifiersForFlags(NSEventModifierFlags flags)
 		return;
 	}
 	NSUInteger code = (NSUInteger)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-	if (type == kCGEventKeyDown && [self sendWorkspaceShortcutForCode:code flags:CGEventGetFlags(event) physical:YES]) return;
+	if (type == kCGEventKeyDown && [self sendWorkspaceShortcutForCode:code flags:(NSEventModifierFlags)CGEventGetFlags(event) physical:YES]) return;
 	if (type == kCGEventKeyUp) [_workspaceConsumedKeys removeObject:@(code)];
 	[super sendCapturedEvent:event windowPoint:point];
 }
@@ -265,11 +278,12 @@ static void OrbisConnectionResultHandler(void *context, const ConnectionResultEv
 
 static void OrbisErrorInfoHandler(void *context, const ErrorInfoEventArgs *event)
 {
+	OrbisSessionController *controller = OrbisControllerForContext(context);
+	[controller recordRDPEvent:@"session.error_info" values:@{ @"rdp_error_info" : @(event->code) }];
 	OrbisSessionEndDisposition disposition =
 	    OrbisSessionEndDispositionForErrorInfo(event->code);
 	if (disposition == OrbisSessionEndDispositionIgnore)
 		return;
-	OrbisSessionController *controller = OrbisControllerForContext(context);
 	if (!controller)
 		return;
 	if (disposition == OrbisSessionEndDispositionEnded)
@@ -691,6 +705,9 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 				[self beginConnection];
 			}
 		}] retain];
+		_transportDiagnosticID = [_transportSession respondsToSelector:@selector(diagnosticIdentifier)]
+		    ? [_transportSession diagnosticIdentifier] : 0;
+		[self recordRDPEvent:@"session.transport_preparing" values:nil];
 		return YES;
 	}
 	[_window makeFirstResponder:_remoteView];
@@ -728,7 +745,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	    @"orbis",
 	    [NSString stringWithFormat:@"/v:%@:%lu", [_profile host], (unsigned long)[_profile port]],
 	    [NSString stringWithFormat:@"/size:%lux%lu", (unsigned long)width, (unsigned long)height],
-	    @"/bpp:32", @"/smart-sizing", @"/disp", @"/clipboard", @"/sound:sys:mac",
+	    @"/bpp:32", @"/kbd:unicode:on", @"/smart-sizing", @"/disp", @"/clipboard", @"/sound:sys:mac",
 	    @"/network:auto", @"/gfx", @"+fonts", nil];
     // Negotiate input capability even while muted, so it can be enabled live.
     // The native adapter keeps the hardware closed until capture is enabled.
@@ -1231,6 +1248,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 {
 	if (_stopping)
 		return;
+	[self recordRDPEvent:@"session.connection_result" values:@{ @"code" : result }];
 	if ([result intValue] != 0)
 	{
 		NSError *transportError = [_transportSession connectionError];
@@ -1296,7 +1314,10 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 - (void)handleSessionEnded
 {
 	if (!_stopping)
+	{
+		_stopSource = OrbisSessionStopRemote;
 		[self stop];
+	}
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath
@@ -1310,19 +1331,44 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 		return;
 	BOOL connected = [[change objectForKey:NSKeyValueChangeNewKey] boolValue];
 	if (!connected && _wasConnected)
+	{
+		// KVO is synchronous on the RDP worker: take the snapshot before native disconnect clears it.
+		[self recordRDPEvent:@"session.rdp_stopped" values:nil];
 		dispatch_async(dispatch_get_main_queue(), ^{
+			if (_stopping) return;
+			_stopSource = OrbisSessionStopNative;
 			[self stop];
 		});
+	}
 }
 
 - (void)finishWithMessage:(NSString *)message code:(NSInteger)code
 {
+	if (_stopping) return;
+	_stopSource = OrbisSessionStopFailure;
 	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.failed" values:@{ @"code" : @(code) }];
 	[_finishError release];
 	_finishError = [[NSError alloc] initWithDomain:OrbisSessionErrorDomain
 	                                        code:code
 	                                    userInfo:@{ NSLocalizedDescriptionKey : message }];
 	[self stop];
+}
+
+- (OrbisDiagnostics *)diagnostics { return OrbisDiagnostics.sharedDiagnostics; }
+
+- (void)recordRDPEvent:(NSString *)event values:(NSDictionary *)values
+{
+	rdpContext *context = (rdpContext *)_context;
+	NSMutableDictionary *snapshot = [@{ @"transport_id" : @(_transportDiagnosticID) } mutableCopy];
+	if (context)
+	{
+		snapshot[@"rdp_error"] = @(freerdp_get_last_error(context));
+		snapshot[@"rdp_error_info"] = @(freerdp_error_info(context->instance));
+		snapshot[@"rdp_state"] = @(freerdp_get_state(context));
+	}
+	[snapshot addEntriesFromDictionary:values ?: @{}];
+	[[self diagnostics] recordEvent:event values:snapshot];
+	[snapshot release];
 }
 
 - (void)disposeConnectionContext
@@ -1381,7 +1427,9 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 {
 	if (_stopping)
 		return;
-	[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"session.stopping" values:nil];
+	[self recordRDPEvent:@"session.stopping" values:@{ @"stop_source" : @(_stopSource),
+	    @"intentional" : @(_stopSource == OrbisSessionStopLocal) }];
+	[[self diagnostics] recordError:[_transportSession connectionError] event:@"transport.failed"];
 	_stopping = YES;
 	[_inputCapture stop];
 	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applyWindowResolutions) object:nil];
@@ -1423,6 +1471,8 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	if (_stopCompletionDelivered || _closingSecondaryWindow)
 		return;
 	_stopCompletionDelivered = YES;
+	[self recordRDPEvent:@"session.disconnected" values:@{ @"stop_source" : @(_stopSource),
+	    @"intentional" : @(_stopSource == OrbisSessionStopLocal) }];
 	[_window setDelegate:nil];
 	[_window orderOut:nil];
 	id<OrbisSessionControllerDelegate> delegate = _delegate;

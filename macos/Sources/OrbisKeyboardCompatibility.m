@@ -130,6 +130,9 @@ OrbisKeyboardEditingPlan OrbisKeyboardPlanForEvent(NSEvent *event, BOOL nativeOp
     {
         [_keyboardLayout release]; _keyboardLayout = [layout retain]; _deadKeyState = 0;
     }
+    // The pending accent exists only locally. Cancelling it must not delete
+    // a character in the remote document.
+    if (_deadKeyState && code == kVK_Delete) { _deadKeyState = 0; return @""; }
     UInt32 modifiers = ((flags & kCGEventFlagMaskShift) ? shiftKey : 0) |
         ((flags & kCGEventFlagMaskAlternate) ? optionKey : 0) |
         ((flags & kCGEventFlagMaskAlphaShift) ? alphaLock : 0);

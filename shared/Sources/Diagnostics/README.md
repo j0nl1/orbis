@@ -10,16 +10,75 @@ executable's Mach-O UUID, OS version, platform, and numeric context. Capture poi
 cover connection attempts, established sessions, failure codes, disconnects,
 display changes, macOS fullscreen/screen transitions, and iPad workspace actions.
 iPad also records scene activation/background transitions and memory warnings.
-Before native RDP teardown, `session.rdp_stopped` captures `rdp_error`,
-`rdp_error_info`, the connection state, and the event-loop exit reason. The
+Before native RDP teardown, `session.rdp_stopped` captures `rdp_error` and
+`rdp_error_info`. iPad also records the adapter connection state and event-loop
+exit reason. macOS takes its snapshot synchronously from the native connection
+notification before disconnect clears the error, including FreeRDP's `rdp_state`.
+macOS also records `session.connection_result`, `session.error_info`, and a final
+snapshot in `session.stopping` before releasing the transport and native context. The
 `session.disconnected` event records `intentional`: 1 for a requested disconnect,
 0 for an unsolicited termination. Transport errors are captured before closing
 the transport.
 The recorder excludes passwords, tokens, hostnames, account names, keyboard input,
 clipboard contents, raw error descriptions, and NSError userInfo. Only numeric
-values under the fixed context keys are accepted. Crash and hang reports retain
+values under the fixed context keys are accepted. The only string context exception
+is `cf_ray_id` on tunnel events: a strictly validated hexadecimal Cloudflare Ray ID
+with an optional three-letter data center suffix. Requests, arbitrary response
+headers, WebSocket close reasons, and NSError descriptions are never exported.
+Crash and hang reports retain
 call stacks, binary UUIDs, offsets, diagnostic app versions and numeric causes;
 free-form exception and termination text is omitted.
+
+## Tunnel correlation and disconnect evidence
+
+Each bridge has a process-local numeric `transport_id`, shared with macOS RDP
+events. Each accepted loopback connection has a separate `stream_id` within that
+bridge. These identifiers distinguish GNOME login handoff streams and subsequent
+attempts without recording profile names, hostnames, or credentials. Combine them
+with `launch_id`; numeric identifiers restart with the process.
+
+`tunnel.connecting`, `tunnel.opened`, and `tunnel.closed` record the HTTP upgrade
+status and, when exposed by URLSession, the response's Cloudflare Ray ID. The
+final event is persisted once, before cancelling either socket. It includes
+monotonic elapsed time (`duration_ms`), binary data byte counts, data inactivity
+(`send_idle_ms` and `receive_idle_ms`), and ping/pong counters. Data byte counts and
+data inactivity exclude heartbeat frames; `pong_idle_ms` is included after the
+first successful heartbeat response. No per-packet events are written by the app.
+
+The final event retains the numeric native error and its domain category under
+`native_code` and `native_error_kind`. If present, up to three underlying NSError
+links are inspected and the deepest numeric cause is retained under
+`underlying_code` and `underlying_error_kind`. No raw error objects are persisted.
+The domain categories match `error_kind` below. `close_code` is URLSession's
+WebSocket close code; zero means unavailable. A later WebSocket delegate callback
+may add `tunnel.websocket_closed` with the observed code, without replacing the
+first failure or recording the close reason.
+
+`close_source` describes the first observed terminal callback:
+
+| Value | Source |
+| --- | --- |
+| 0 | Explicit bridge stop |
+| 1 | Local TCP EOF, including login handoff |
+| 2 | Local TCP error |
+| 3 | WebSocket receive error |
+| 4 | WebSocket send error |
+| 5 | Heartbeat error |
+| 6 | HTTP task completion or rejected redirect |
+| 7 | WebSocket close callback |
+| 8 | Upgrade timeout |
+| 9 | Unexpected non-binary message |
+
+Only source 0 is labelled `intentional`. Local EOF by itself does not establish
+user intent. macOS `stop_source` values are 0 explicit local stop, 1 remote session
+end, 2 native connection loss, and 3 reported failure. These describe local exit
+paths and do not prove which network component caused a reset.
+
+Use the Ray ID and event timestamp to correlate the upgrade with Cloudflare
+Access authentication logs. Authentication acceptance does not explain a later
+TCP reset. Synchronized packet metadata or provider-side request traces may still
+be needed. Packet capture is an external diagnostic operation, separate from the
+application's local recorder.
 
 The store lives in Application Support/Orbis/Diagnostics within each application's
 user directory or iPad sandbox. It keeps two event files of at most 1 MiB each and
@@ -49,7 +108,8 @@ Native `loop_exit` codes are: 0 disconnect requested by FreeRDP, 1 missing event
 handles, 2 wait failure (`code` contains the wait error), 3 receive/check failure,
 4 input loop ended, 5 connect failure, and 6 cancelled connection. These describe
 the exit path; they do not independently identify the cause. `connection_state`
-uses the adapter's TSXConnectionState values. Session marker states are 1
+on iPad uses the adapter's TSXConnectionState values; macOS `rdp_state` uses
+FreeRDP's CONNECTION_STATE values. Session marker states are 1
 connecting and 2 connected; app states are 0 unknown, 1 active, 2 inactive or
 scene disconnected, and 3 background.
 
@@ -72,3 +132,7 @@ interrupted-session recovery, normal termination, malformed markers, and export
 errors. The same tests run on macOS and in the iPad app-hosted suite
 with injected system payloads. Live OS crash/hang delivery still requires testing
 on a real device; the tests do not deliberately crash the user's installed app.
+Loopback transport tests exercise a real established TCP reset, HTTP rejection,
+WebSocket close codes, explicit stop attribution, Ray ID correlation, byte counts,
+and credential exclusion. Native macOS session tests verify that errors are
+captured before context disposal and that repeated stops retain one final event.

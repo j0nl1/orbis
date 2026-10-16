@@ -60,6 +60,8 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 	OrbisRDPTransportRoute *_transportRoute;
 	BOOL _transportPreparing;
 	BOOL _transportPrepared;
+	uint64_t _transportDiagnosticID;
+	NSUInteger _stopSource;
 }
 
 @property(nonatomic, assign) id<OrbisSessionControllerDelegate> delegate;

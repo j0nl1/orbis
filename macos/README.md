@@ -160,8 +160,10 @@ AltGr in remote-layout mode rather than invoking native Option editing.
 Left Option is deferred until a physical chord needs Alt, so native word editing
 does not tap Alt and activate a remote menu before sending its editing chord.
 Unknown captured Command chords use remote Super/Windows;
-a standalone Command tap sends Super. Custom shortcuts take priority over the
-standard editing mappings. Remote applications interpret these chords using
+a standalone Command tap sends Super. Right Option is reserved for typing and
+bypasses configured keyboard shortcuts when Control and Command are released.
+Other custom shortcuts take priority over the standard editing mappings. Remote
+applications interpret these chords using
 their own keybindings; terminal editing conventions can differ from GUI editors.
 
 The input implementation separates the OS filter (`OrbisInputEventTap`), session
@@ -180,7 +182,9 @@ Choose **Typing → Mac keyboard layout** in Settings to keep the Mac's characte
 while capturing fullscreen shortcuts. This mode translates printable keys,
 Option symbols, and dead-key accents using the active Mac layout; Command and
 Control shortcuts still reach the remote desktop. **Remote keyboard layout**
-restores physical typing with separate Alt and AltGr keys. Macros that generate
+restores physical typing with separate Alt and AltGr keys. The Mac layout mode
+requires the remote server to insert Unicode faithfully; use the matching remote
+layout when a server substitutes characters. Macros that generate
 keyboard or mouse events follow this routing. Macros that directly run a Mac script, open a Mac app, or invoke a
 registered system action do not become Linux commands. RDP supports the first
 five mouse buttons; additional buttons can be assigned to Orbis actions in

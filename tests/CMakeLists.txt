@@ -77,7 +77,8 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
     ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
   target_compile_options(orbis_virtual_display_tests PRIVATE -fno-objc-arc -fblocks)
   target_compile_definitions(orbis_virtual_display_tests PRIVATE
-    freerdp_input_send_keyboard_event=OrbisRecordWorkspaceKeyboardEvent)
+    freerdp_input_send_keyboard_event=OrbisRecordWorkspaceKeyboardEvent
+    freerdp_input_send_unicode_keyboard_event=OrbisRecordWorkspaceUnicodeEvent)
   target_link_libraries(orbis_virtual_display_tests PRIVATE orbis_macos_ui ${APPKIT_FRAMEWORK}
     "-framework IOKit" "-framework CoreGraphics" "-framework Carbon" "-framework AVFoundation"
     "${keyboard_runtime}/libfreerdp3.3.dylib"
@@ -121,6 +122,48 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   set_tests_properties(integration.macos-virtual-display PROPERTIES LABELS "integration;appkit;freerdp" RUN_SERIAL TRUE)
   add_test(NAME integration.macos-keyboard-input COMMAND orbis_keyboard_input_tests)
   set_tests_properties(integration.macos-keyboard-input PROPERTIES LABELS "integration;appkit;freerdp")
+
+  add_executable(orbis_clipboard_boundary_tests ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisClipboardBoundaryTests.m
+    ${keyboard_source}/client/Mac/Clipboard.m)
+  target_include_directories(orbis_clipboard_boundary_tests PRIVATE
+    ${keyboard_source}/client/Mac ${keyboard_source}/include ${keyboard_source}/winpr/include
+    ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
+  target_compile_options(orbis_clipboard_boundary_tests PRIVATE -fno-objc-arc -fblocks)
+  target_link_libraries(orbis_clipboard_boundary_tests PRIVATE ${APPKIT_FRAMEWORK}
+    "${keyboard_runtime}/libMacFreeRDP-library.dylib"
+    "${keyboard_runtime}/libfreerdp3.3.dylib"
+    "${keyboard_runtime}/libfreerdp-client3.3.dylib"
+    "${keyboard_runtime}/libwinpr3.3.dylib")
+  target_link_options(orbis_clipboard_boundary_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_test(NAME integration.macos-clipboard-boundary COMMAND orbis_clipboard_boundary_tests)
+  set_tests_properties(integration.macos-clipboard-boundary PROPERTIES LABELS "integration;appkit;freerdp" RUN_SERIAL TRUE)
+  add_test(NAME integration.macos-clipboard-stress COMMAND orbis_clipboard_boundary_tests --stress)
+  set_tests_properties(integration.macos-clipboard-stress PROPERTIES
+    LABELS "integration;appkit;freerdp" RUN_SERIAL TRUE TIMEOUT 45)
+
+  add_executable(orbis_session_diagnostics_tests
+    ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisSessionDiagnosticsTests.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionController.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputCapture.m
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisConnectionRetryPolicy.c
+    ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisSessionEndPolicy.c
+    ${PROJECT_SOURCE_DIR}/shared/Sources/Transport/OrbisRDPTransportRoute.c)
+  target_include_directories(orbis_session_diagnostics_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/macos/Sources ${keyboard_source}/client/Mac
+    ${keyboard_source}/include ${keyboard_source}/winpr/include
+    ${ORBIS_TEST_FREERDP_BUILD_DIR}/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
+  target_compile_options(orbis_session_diagnostics_tests PRIVATE -fno-objc-arc -fblocks)
+  target_compile_definitions(orbis_session_diagnostics_tests PRIVATE freerdp_client_start=OrbisTestClientStart)
+  target_link_libraries(orbis_session_diagnostics_tests PRIVATE orbis_macos_ui ${APPKIT_FRAMEWORK}
+    "-framework IOKit" "-framework CoreGraphics" "-framework AVFoundation"
+    "${keyboard_runtime}/libMacFreeRDP-library.dylib"
+    "${keyboard_runtime}/libfreerdp3.3.dylib"
+    "${keyboard_runtime}/libfreerdp-client3.3.dylib"
+    "${keyboard_runtime}/libwinpr3.3.dylib")
+  target_link_options(orbis_session_diagnostics_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_test(NAME integration.macos-session-diagnostics COMMAND orbis_session_diagnostics_tests)
+  set_tests_properties(integration.macos-session-diagnostics PROPERTIES
+    LABELS "integration;appkit;freerdp;diagnostics" RUN_SERIAL TRUE)
 endif()
 find_library(NETWORK_FRAMEWORK Network REQUIRED)
 find_library(METRICKIT_FRAMEWORK MetricKit REQUIRED)
@@ -143,7 +186,7 @@ add_library(orbis_tunnel STATIC
 )
 target_include_directories(orbis_tunnel PUBLIC ${PROJECT_SOURCE_DIR}/shared/Sources/Transport)
 target_compile_options(orbis_tunnel PRIVATE -fobjc-arc -fblocks -Wall -Wextra)
-target_link_libraries(orbis_tunnel PUBLIC ${FOUNDATION_FRAMEWORK} ${NETWORK_FRAMEWORK})
+target_link_libraries(orbis_tunnel PUBLIC orbis_diagnostics ${FOUNDATION_FRAMEWORK} ${NETWORK_FRAMEWORK})
 
 xctest_add_bundle(OrbisTunnelTests orbis_tunnel
   ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisTunnelBridgeTests.m

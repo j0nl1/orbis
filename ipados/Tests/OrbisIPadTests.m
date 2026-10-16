@@ -467,6 +467,16 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	XCTAssertFalse(session.canAutomaticallyReconnect);
 }
 
+- (void)testSessionRequestsUnicodeInputAfterCommandLineParsing
+{
+    OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+    XCTAssertNotNil(session);
+    XCTAssertTrue(freerdp_settings_get_bool([session mfi]->_context->settings, FreeRDP_UnicodeInput),
+        @"Native text and hardware Option symbols require Unicode input after parsing the real session arguments");
+    XCTAssertEqual(freerdp_settings_get_uint32([session mfi]->_context->settings, FreeRDP_KeyboardLayout), 0x409u,
+        @"The combined keyboard argument must preserve the configured layout while enabling Unicode");
+}
+
 - (void)testUnexpectedSessionEndOffersRetryButIntentionalDisconnectDoesNot
 {
 	OrbisTestRecoveryLibrary *library = [[[OrbisTestRecoveryLibrary alloc] init] autorelease];

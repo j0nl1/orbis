@@ -12,6 +12,7 @@
 
 @implementation OrbisCloudflareTransportSession
 - (NSError *)connectionError { return self.bridge.lastHandshakeError; }
+- (uint64_t)diagnosticIdentifier { return self.bridge.diagnosticIdentifier; }
 - (void)finishPreparationOnPort:(uint16_t)port error:(NSError *)error
 {
 	if (!self.completion)

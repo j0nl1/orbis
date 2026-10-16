@@ -65,6 +65,16 @@ build. Once enabled in a test build directory, subsequent CTest runs include it.
 CTest registration lives in `tests/CMakeLists.txt`. Application builds continue
 to use the platform scripts and the pinned FreeRDP source tree.
 
+## Native clipboard
+
+With `ORBIS_TEST_FREERDP_BUILD_DIR` configured, run
+`ctest --test-dir .build/tests -R integration.macos-clipboard --output-on-failure`.
+The tests use private pasteboards and the real patched FreeRDP clipboard adapter.
+They cover large text in both directions, text-to-image ownership changes,
+serialized data requests, remote-update echo suppression, and concurrent buffer
+replacement while serving text. No remote server or clipboard credentials are
+required, and the user's general pasteboard is left untouched.
+
 ## iPadOS simulator tests
 
 Run `scripts/test-orbis-ipados.sh` on macOS with an available iPad simulator.
@@ -138,3 +148,16 @@ capture start/stop, and blocked forwarding after mute without recording audio.
 Native settings/menu tests cover the shared preference, Save/Cancel behavior,
 scrollable settings, and permission completion after capture is disabled. Live server tests are
 needed to verify playback and microphone availability in remote applications.
+## Keyboard connection regressions
+
+Keyboard regressions use the installed Spanish ISO layout data for captured symbols,
+ISO key positions, and dead-key composition without injecting expected characters
+into CoreGraphics events. Coverage includes incomplete OS event filters, right
+Option shortcut precedence, Command mapping disabled during text entry, and pointer
+or unrelated key-release interleaving. A real RDP receiver must also verify the
+inserted text: correct Unicode calls alone do not establish server text behavior.
+
+Connection setup regressions must run the real command-line parser: FreeRDP
+initializes Unicode input enabled, then disables it during parsing unless requested.
+The macOS fixture checks the real session settings at the network start boundary;
+the iPad XCTest checks Unicode and layout immediately after real session creation.

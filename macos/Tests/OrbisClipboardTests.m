@@ -19,6 +19,8 @@
 - (NSArray *)pasteboardItems { return @[self]; }
 - (NSArray *)types { return @[NSPasteboardTypeString]; }
 - (NSData *)dataForType:(NSString *)type { (void)type; return localData; }
+- (NSString *)stringForType:(NSString *)type
+{ (void)type; return [[[NSString alloc] initWithData:localData encoding:NSUTF8StringEncoding] autorelease]; }
 - (NSInteger)declareTypes:(NSArray *)types owner:(id)owner
 { (void)types; (void)owner; return ++generation; }
 - (BOOL)setString:(NSString *)text forType:(NSString *)type
