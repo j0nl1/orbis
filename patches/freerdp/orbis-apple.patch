@@ -68,34 +68,84 @@ index d690a72..d8b806e 100644
 diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
 --- a/client/Mac/Clipboard.m
 +++ b/client/Mac/Clipboard.m
-@@ -34,13 +34,18 @@
+@@ -34,24 +34,31 @@
  	mfContext *mfc = (mfContext *)cliprdr->custom;
  	WINPR_ASSERT(mfc);
  
-+	ClipboardLock(mfc->clipboard);
- 	pFormatIds = nullptr;
- 	numFormats = ClipboardGetFormatIds(mfc->clipboard, &pFormatIds);
- 
- 	formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
- 
- 	if (!formats)
+-	pFormatIds = nullptr;
+-	numFormats = ClipboardGetFormatIds(mfc->clipboard, &pFormatIds);
+-
+-	formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
+-
+-	if (!formats)
+-		return -1;
+-
+-	for (UINT32 index = 0; index < numFormats; index++)
+-	{
+-		formatId = pFormatIds[index];
+-		formatName = ClipboardGetFormatName(mfc->clipboard, formatId);
+-
+-		formats[index].formatId = formatId;
+-		formats[index].formatName = nullptr;
+-
+-		if ((formatId > CF_MAX) && formatName)
+-			formats[index].formatName = _strdup(formatName);
++	@synchronized((id)mfc->view)
 +	{
-+		ClipboardUnlock(mfc->clipboard);
-+		free(pFormatIds);
- 		return -1;
-+	}
- 
- 	for (UINT32 index = 0; index < numFormats; index++)
- 	{
-@@ -54,6 +59,7 @@
- 			formats[index].formatName = _strdup(formatName);
++		if (!mfc->clipboard) return -1;
++		pFormatIds = nullptr;
++		numFormats = ClipboardGetFormatIds(mfc->clipboard, &pFormatIds);
++
++		formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
++
++		if (!formats && numFormats)
++		{
++			free(pFormatIds);
++			return -1;
++		}
++
++		for (UINT32 index = 0; index < numFormats; index++)
++		{
++			formatId = pFormatIds[index];
++			formatName = ClipboardGetFormatName(mfc->clipboard, formatId);
++
++			formats[index].formatId = formatId;
++			formats[index].formatName = nullptr;
++
++			if ((formatId > CF_MAX) && formatName)
++				formats[index].formatName = _strdup(formatName);
++		}
  	}
  
-+	ClipboardUnlock(mfc->clipboard);
  	formatList.common.msgFlags = 0;
- 	formatList.numFormats = numFormats;
- 	formatList.formats = formats;
-@@ -227,12 +233,12 @@
+@@ -197,13 +204,10 @@
+ 		mfc->numServerFormats = 0;
+ 	}
+ 
+-	if (formatList->numFormats < 1)
+-		return CHANNEL_RC_OK;
+-
+ 	mfc->numServerFormats = formatList->numFormats;
+ 	mfc->serverFormats = (CLIPRDR_FORMAT *)calloc(mfc->numServerFormats, sizeof(CLIPRDR_FORMAT));
+ 
+-	if (!mfc->serverFormats)
++	if (!mfc->serverFormats && mfc->numServerFormats)
+ 		return CHANNEL_RC_NO_MEMORY;
+ 
+ 	for (UINT32 index = 0; index < mfc->numServerFormats; index++)
+@@ -216,6 +220,11 @@
+ 	}
+ 
+ 	mac_cliprdr_send_client_format_list_response(cliprdr, TRUE);
++	if (mfc->requestedFormatId)
++	{
++		mfc->clipboardUpdatePending = TRUE;
++		return CHANNEL_RC_OK;
++	}
+ 
+ 	uint32_t formatId = 0;
+ 	for (UINT32 index = 0; index < mfc->numServerFormats; index++)
+@@ -227,15 +236,32 @@
  		else if (format->formatId == CF_OEMTEXT)
  		{
  			if (formatId == 0)
@@ -106,45 +156,79 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
  		{
  			if (formatId == 0)
 -				formatId == CF_TEXT;
+-		}
+-	}
+-
 +				formatId = CF_TEXT;
- 		}
- 	}
++		}
++	}
++
++	return mac_cliprdr_send_client_format_data_request(cliprdr, formatId);
++}
++
++static UINT mac_cliprdr_complete_request(CliprdrClientContext *cliprdr)
++{
++	mfContext *mfc = (mfContext *)cliprdr->custom;
++	mfc->requestedFormatId = 0;
++	(void)SetEvent(mfc->clipboardRequestEvent);
++	if (!mfc->clipboardUpdatePending) return CHANNEL_RC_OK;
++	mfc->clipboardUpdatePending = FALSE;
++	UINT32 formatId = 0;
++	for (UINT32 i = 0; i < mfc->numServerFormats; i++)
++	{
++		UINT32 candidate = mfc->serverFormats[i].formatId;
++		if (candidate == CF_UNICODETEXT) { formatId = candidate; break; }
++		if (!formatId && (candidate == CF_TEXT || candidate == CF_OEMTEXT)) formatId = candidate;
++	}
+ 	return mac_cliprdr_send_client_format_data_request(cliprdr, formatId);
+ }
  
-@@ -295,8 +301,10 @@
+@@ -295,7 +321,11 @@
  	WINPR_ASSERT(mfc);
  
  	formatId = formatDataRequest->requestedFormatId;
-+	ClipboardLock(mfc->clipboard);
- 	data = (BYTE *)ClipboardGetData(mfc->clipboard, formatId, &size);
+-	data = (BYTE *)ClipboardGetData(mfc->clipboard, formatId, &size);
++	@synchronized((id)mfc->view)
++	{
++		size = 0;
++		data = mfc->clipboard ? (BYTE *)ClipboardGetData(mfc->clipboard, formatId, &size) : nullptr;
++	}
  
-+	ClipboardUnlock(mfc->clipboard);
  	response.common.msgFlags = CB_RESPONSE_OK;
  	response.common.dataLen = size;
- 	response.requestedFormatData = data;
-@@ -332,7 +340,11 @@
+@@ -324,60 +354,43 @@
+ mac_cliprdr_server_format_data_response(CliprdrClientContext *cliprdr,
+                                         const CLIPRDR_FORMAT_DATA_RESPONSE *formatDataResponse)
+ {
+-	UINT32 formatId;
+-	CLIPRDR_FORMAT *format = nullptr;
+ 	mfContext *mfc = (mfContext *)cliprdr->custom;
+ 	MRDPView *view = (MRDPView *)mfc->view;
+-
++	UINT32 formatId = mfc->requestedFormatId;
  	if (formatDataResponse->common.msgFlags & CB_RESPONSE_FAIL)
  	{
  		(void)SetEvent(mfc->clipboardRequestEvent);
 -		return ERROR_INTERNAL_ERROR;
-+		// CB_RESPONSE_FAIL is a valid peer response when clipboard ownership or
-+		// the advertised data changes between our format list and data request.
-+		// Returning an error here tears down the entire cliprdr channel and, with
-+		// GNOME Remote Desktop, the RDP session itself.
-+		return CHANNEL_RC_OK;
- 	}
- 
- 	for (UINT32 index = 0; index < mfc->numServerFormats; index++)
-@@ -347,34 +359,38 @@
- 		return ERROR_INTERNAL_ERROR;
- 	}
- 
-+	NSString *text = nil;
-+	ClipboardLock(mfc->clipboard);
- 	if (format->formatName)
- 		formatId = ClipboardRegisterFormat(mfc->clipboard, format->formatName);
- 	else
- 		formatId = format->formatId;
- 
+-	}
+-
+-	for (UINT32 index = 0; index < mfc->numServerFormats; index++)
+-	{
+-		if (mfc->requestedFormatId == mfc->serverFormats[index].formatId)
+-			format = &(mfc->serverFormats[index]);
+-	}
+-
+-	if (!format)
+-	{
+-		(void)SetEvent(mfc->clipboardRequestEvent);
+-		return ERROR_INTERNAL_ERROR;
+-	}
+-
+-	if (format->formatName)
+-		formatId = ClipboardRegisterFormat(mfc->clipboard, format->formatName);
+-	else
+-		formatId = format->formatId;
+-
 -	const size_t size = formatDataResponse->common.dataLen;
 -
 -	ClipboardSetData(mfc->clipboard, formatId, formatDataResponse->requestedFormatData, size);
@@ -152,15 +236,11 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
 -	(void)SetEvent(mfc->clipboardRequestEvent);
 -
 -	if ((formatId == CF_TEXT) || (formatId == CF_OEMTEXT) || (formatId == CF_UNICODETEXT))
-+	const UINT32 size = formatDataResponse->common.dataLen;
-+	BOOL stored = (!size || formatDataResponse->requestedFormatData) &&
-+	    ClipboardSetData(mfc->clipboard, formatId, formatDataResponse->requestedFormatData, size);
-+	if (stored && ((formatId == CF_TEXT) || (formatId == CF_OEMTEXT) || (formatId == CF_UNICODETEXT)))
- 	{
- 		formatId = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
+-	{
+-		formatId = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
 -
- 		UINT32 dstSize = 0;
- 		char *data = ClipboardGetData(mfc->clipboard, formatId, &dstSize);
+-		UINT32 dstSize = 0;
+-		char *data = ClipboardGetData(mfc->clipboard, formatId, &dstSize);
 -
 -		dstSize = strnlen(data, dstSize); /* we need the size without the null terminator */
 -
@@ -172,26 +252,64 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
 -		NSArray *types = [[NSArray alloc] initWithObjects:NSPasteboardTypeString, nil];
 -		[view->pasteboard_wr declareTypes:types owner:view];
 -		[view->pasteboard_wr setString:str forType:NSPasteboardTypeString];
-+		if (data)
+-	}
+-
+-	return CHANNEL_RC_OK;
++		mac_cliprdr_complete_request(cliprdr);
++		return CHANNEL_RC_OK;
++	}
++	// Ownership changes can replace text with an unsupported image while a reply
++	// is in flight. Drain that reply before requesting the latest offer.
++	if (mfc->clipboardUpdatePending || !formatId)
++		return mac_cliprdr_complete_request(cliprdr);
++	if (formatId != CF_TEXT && formatId != CF_OEMTEXT && formatId != CF_UNICODETEXT)
++		return mac_cliprdr_complete_request(cliprdr);
++	NSString *text = nil;
++	@synchronized(view)
++	{
++		if (formatDataResponse->requestedFormatData &&
++		    ClipboardSetData(mfc->clipboard, formatId, formatDataResponse->requestedFormatData,
++		                     formatDataResponse->common.dataLen))
 +		{
-+			dstSize = strnlen(data, dstSize);
-+			text = [[NSString alloc] initWithBytes:data length:dstSize encoding:NSUTF8StringEncoding];
++			UINT32 size = 0;
++			UINT32 utf8 = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
++			char *data = ClipboardGetData(mfc->clipboard, utf8, &size);
++			if (data) text = [[NSString alloc] initWithBytes:data length:strnlen(data, size)
++			    encoding:NSUTF8StringEncoding];
 +			free(data);
 +		}
 +	}
-+	ClipboardUnlock(mfc->clipboard);
-+	(void)SetEvent(mfc->clipboardRequestEvent);
-+
-+	// Keep the conversion atomic with storage, but never hold its lock while
-+	// calling AppKit or sending channel data. The pasteboard observer shares it.
 +	if (text)
 +	{
 +		[view performSelectorOnMainThread:@selector(receiveClipboardText:)
 +		                      withObject:text waitUntilDone:NO];
 +		[text release];
- 	}
++	}
++	return mac_cliprdr_complete_request(cliprdr);
+ }
  
- 	return CHANNEL_RC_OK;
+ /**
+@@ -407,6 +420,8 @@
+ {
+ 	cliprdr->custom = (void *)mfc;
+ 	mfc->cliprdr = cliprdr;
++	mfc->requestedFormatId = 0;
++	mfc->clipboardUpdatePending = FALSE;
+ 
+ 	mfc->clipboard = ClipboardCreate();
+ 	mfc->clipboardRequestEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+@@ -428,6 +443,10 @@
+ 	cliprdr->custom = nullptr;
+ 	mfc->cliprdr = nullptr;
+ 
+-	ClipboardDestroy(mfc->clipboard);
++	@synchronized((id)mfc->view)
++	{
++		ClipboardDestroy(mfc->clipboard);
++		mfc->clipboard = nullptr;
++	}
+ 	(void)CloseHandle(mfc->clipboardRequestEvent);
+ }
 diff --git a/client/Mac/Keyboard.m b/client/Mac/Keyboard.m
 index 31682d1d5..625142d56 100644
 --- a/client/Mac/Keyboard.m
@@ -671,15 +789,15 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +		const BOOL commandIsDown = (modFlags & NSEventModifierFlagCommand) != 0;
 +		[self setCommandKeyDown:commandIsDown];
 +		modFlags &= ~NSEventModifierFlagCommand;
-+		// Option may produce text locally. Defer remote Alt until a non-text chord
-+		// (such as Option+Tab) actually needs it; an Alt tap can activate menus.
-+		if (!(kbdModFlags & NSEventModifierFlagOption))
-+			modFlags &= ~NSEventModifierFlagOption;
 +	}
++	// Text input is independent of Command shortcut mapping. Defer Alt until a
++	// physical chord needs it, so a modifier-only event cannot activate a menu.
++	if (!(kbdModFlags & NSEventModifierFlagOption))
++		modFlags &= ~NSEventModifierFlagOption;
  
  	WINPR_ASSERT(instance);
  	WINPR_ASSERT(instance->context);
-@@ -496,6 +693,325 @@
+@@ -496,6 +693,327 @@
  
  	updateFlagStates(input, modFlags, kbdModFlags);
  	kbdModFlags = modFlags;
@@ -778,12 +896,14 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +			flags &= ~NSEventModifierFlagCommand;
 +		else if (startsChord) commandTapConsumed = TRUE;
 +	}
++	BOOL startsOptionChord = type == kCGEventKeyDown || type == kCGEventLeftMouseDown ||
++	    type == kCGEventRightMouseDown || type == kCGEventOtherMouseDown;
 +	// Defer left Alt until a physical chord needs it. Native Option editing must
 +	// not tap Alt first and move remote focus from the text field to a menu.
-+	if (mapsCommandShortcutsToControl && type == kCGEventFlagsChanged &&
++	if ((mapsCommandShortcutsToControl || capturesLocalKeyboardLayout) && !startsOptionChord &&
 +	    !(kbdModFlags & NSEventModifierFlagOption)) flags &= ~NSEventModifierFlagOption;
 +	// Mac-layout typing also defers AltGr because its symbols are sent as text.
-+	if (capturesLocalKeyboardLayout && type == kCGEventFlagsChanged && !capturedRightOptionDown)
++	if (capturesLocalKeyboardLayout && !startsOptionChord && !capturedRightOptionDown)
 +		rightOption = FALSE;
 +	if (rightOption != capturedRightOptionDown)
 +	{
@@ -976,7 +1096,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +	NSEventModifierFlags flags = [event modifierFlags];
 +	NSString *text = [event characters];
 +	unsigned short code = [event keyCode];
-+	if (!mapsCommandShortcutsToControl || !(flags & NSEventModifierFlagOption) ||
++	if (!(flags & NSEventModifierFlagOption) ||
 +	    (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) ||
 +	    code >= sizeof(locallyHandledKeyDown) / sizeof(locallyHandledKeyDown[0]) || [text length] == 0)
 +		return FALSE;
@@ -1005,7 +1125,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  - (void)keyDown:(NSEvent *)event
-@@ -509,8 +1025,24 @@
+@@ -509,8 +1027,24 @@
  
  	if (!is_connected)
  		return;
@@ -1032,7 +1152,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  
  	keyFlags = KBD_FLAGS_DOWN;
  	keyCode = [event keyCode];
-@@ -533,6 +1065,11 @@
+@@ -533,6 +1067,11 @@
  	         keyCode, scancode, vkcode, keyFlags, GetVirtualKeyName(vkcode));
  #endif
  
@@ -1044,7 +1164,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	WINPR_ASSERT(instance->context);
  	freerdp_input_send_keyboard_event(instance->context->input, keyFlags, scancode);
  }
-@@ -548,8 +1085,21 @@
+@@ -548,8 +1087,22 @@
  
  	if (!is_connected)
  		return;
@@ -1063,12 +1183,13 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +	DWORD modFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
 +	if (mapsCommandShortcutsToControl)
 +		modFlags &= ~NSEventModifierFlagCommand;
++	if (!(kbdModFlags & NSEventModifierFlagOption)) modFlags &= ~NSEventModifierFlagOption;
 +	updateFlagStates(instance->context->input, modFlags, kbdModFlags);
 +	kbdModFlags = modFlags;
  
  	keyFlags = KBD_FLAGS_RELEASE;
  	keyCode = [event keyCode];
-@@ -673,6 +1223,17 @@
+@@ -673,6 +1226,17 @@
  	return updateFlagStates(input, 0, aKbdModFlags);
  }
  
@@ -1086,7 +1207,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  - (void)releaseResources
  {
  	for (int i = 0; i < argc; i++)
-@@ -686,13 +1247,22 @@
+@@ -686,13 +1250,22 @@
  
  - (void)drawRect:(NSRect)rect
  {
@@ -1114,7 +1235,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  		CGContextSaveGState(cgContext);
  		CGContextClipToRect(
  		    cgContext, CGRectMake(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height));
-@@ -710,6 +1280,16 @@
+@@ -710,69 +1283,45 @@
  	}
  }
  
@@ -1130,46 +1251,81 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +
  - (void)onPasteboardTimerFired:(NSTimer *)timer
  {
- 	UINT32 formatId;
-@@ -719,6 +1299,7 @@
- 	NSString *formatString;
- 	const char *formatType;
- 	NSPasteboardItem *item;
-+	if (!is_connected || !mfc || !mfc->clipboard || !mfc->cliprdr) return;
- 	changeCount = (int)[pasteboard_rd changeCount];
- 
- 	if (changeCount == pasteboard_changecount)
-@@ -752,20 +1333,27 @@
- 
- 			formatString = [[NSString alloc] initWithData:formatData encoding:NSUTF8StringEncoding];
- 
-+			if (!formatString) break;
- 			const char *data = [formatString cStringUsingEncoding:NSUTF8StringEncoding];
- 			const size_t dataLen = [formatString lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
-+			if (dataLen >= UINT32_MAX) { [formatString release]; break; }
-+			ClipboardLock(mfc->clipboard);
- 			formatId = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
--			ClipboardSetData(mfc->clipboard, formatId, data, dataLen + 1);
-+			formatMatch = ClipboardSetData(mfc->clipboard, formatId, data, (UINT32)dataLen + 1);
-+			ClipboardUnlock(mfc->clipboard);
- 			[formatString release];
- 
--			formatMatch = TRUE;
- 
- 			break;
- 		}
- 	}
- 
- 	if (!formatMatch)
+-	UINT32 formatId;
+-	BOOL formatMatch;
+-	int changeCount;
+-	NSData *formatData;
+-	NSString *formatString;
+-	const char *formatType;
+-	NSPasteboardItem *item;
+-	changeCount = (int)[pasteboard_rd changeCount];
+-
+-	if (changeCount == pasteboard_changecount)
+-		return;
+-
++	(void)timer;
++	if (!is_connected || !mfc) return;
++	int changeCount = (int)[pasteboard_rd changeCount];
++	if (changeCount == pasteboard_changecount) return;
+ 	pasteboard_changecount = changeCount;
+-	NSArray *items = [pasteboard_rd pasteboardItems];
+-
+-	if ([items count] < 1)
+-		return;
+-
+-	item = [items objectAtIndex:0];
+-	/**
+-	 * System-Declared Uniform Type Identifiers:
+-	 * https://developer.apple.com/library/ios/documentation/Miscellaneous/Reference/UTIRef/Articles/System-DeclaredUniformTypeIdentifiers.html
+-	 */
+-	formatMatch = FALSE;
+-
+-	for (NSString *type in [item types])
+-	{
+-		formatType = [type UTF8String];
+-
+-		if (strcmp(formatType, "public.utf8-plain-text") == 0)
++	NSString *text = [pasteboard_rd stringForType:NSPasteboardTypeString];
++	const char *data = [text UTF8String];
++	NSUInteger size = [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
++	@synchronized(self)
 +	{
-+		ClipboardLock(mfc->clipboard);
- 		ClipboardEmpty(mfc->clipboard);
-+		ClipboardUnlock(mfc->clipboard);
++		if (!mfc->clipboard) return;
++		// WinPR's clipboard is not thread safe: its channel callbacks run off-main.
++		if (data && size < UINT32_MAX)
+ 		{
+-			formatData = [item dataForType:type];
+-
+-			if (formatData == nil)
+-			{
+-				break;
+-			}
+-
+-			formatString = [[NSString alloc] initWithData:formatData encoding:NSUTF8StringEncoding];
+-
+-			const char *data = [formatString cStringUsingEncoding:NSUTF8StringEncoding];
+-			const size_t dataLen = [formatString lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+-			formatId = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
+-			ClipboardSetData(mfc->clipboard, formatId, data, dataLen + 1);
+-			[formatString release];
+-
+-			formatMatch = TRUE;
+-
+-			break;
++			UINT32 format = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
++			ClipboardSetData(mfc->clipboard, format, data, (UINT32)size + 1);
+ 		}
+-	}
+-
+-	if (!formatMatch)
+-		ClipboardEmpty(mfc->clipboard);
+-
+-	if (mfc->clipboardSync)
++		else ClipboardEmpty(mfc->clipboard);
 +	}
- 
- 	if (mfc->clipboardSync)
++	if (mfc->clipboardSync && mfc->cliprdr)
  		mac_cliprdr_send_client_format_list(mfc->cliprdr);
-@@ -773,6 +1361,8 @@
+ }
  
  - (void)pause
  {
@@ -1178,7 +1334,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	dispatch_async(dispatch_get_main_queue(), ^{
  		[self->pasteboard_timer invalidate];
  	});
-@@ -788,6 +1378,7 @@
+@@ -788,6 +1337,7 @@
  
  - (void)resume
  {
@@ -1186,7 +1342,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	if (!self.is_connected)
  		return;
  
-@@ -932,7 +1523,11 @@
+@@ -932,7 +1482,11 @@
  		return FALSE;
  
  	gdi = instance->context->gdi;
@@ -1199,7 +1355,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	graphics_register_pointer(instance->context->graphics, &rdp_pointer);
  	/* setup pasteboard (aka clipboard) for copy operations (write only) */
  	view->pasteboard_wr = [NSPasteboard generalPasteboard];
-@@ -941,7 +1536,6 @@
+@@ -941,7 +1495,6 @@
  		view->pasteboard_rd = [NSPasteboard generalPasteboard];
  		view->pasteboard_changecount = -1;
  	});
@@ -1207,7 +1363,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	mfc->appleKeyboardType = mac_detect_keyboard_type();
  	return TRUE;
  }
-@@ -962,7 +1556,18 @@
+@@ -962,7 +1515,18 @@
  	                                   mac_OnChannelConnectedEventHandler);
  	PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub,
  	                                      mac_OnChannelDisconnectedEventHandler);
@@ -1226,7 +1382,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **username, char **password,
-@@ -974,65 +1579,75 @@
+@@ -974,65 +1538,75 @@
  	WINPR_ASSERT(password);
  	WINPR_ASSERT(domain);
  
@@ -1357,7 +1513,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **password, char **domain,
-@@ -1092,11 +1707,6 @@
+@@ -1092,11 +1666,6 @@
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
  			goto fail;
  	}
@@ -1369,7 +1525,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	else if (!*password)
  	{
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
-@@ -1149,35 +1759,41 @@
+@@ -1149,35 +1718,41 @@
                                  const char *common_name, const char *subject, const char *issuer,
                                  const char *fingerprint, DWORD flags)
  {
@@ -1440,7 +1596,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
-@@ -1186,35 +1802,11 @@
+@@ -1186,35 +1761,11 @@
                                          const char *old_subject, const char *old_issuer,
                                          const char *old_fingerprint, DWORD flags)
  {
@@ -1481,7 +1637,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  int mac_logon_error_info(freerdp *instance, UINT32 data, UINT32 type)
-@@ -1456,7 +2048,19 @@
+@@ -1456,7 +2007,19 @@
  
  	windows_to_apple_cords(mfc->view, &newDrawRect);
  	dispatch_sync(dispatch_get_main_queue(), ^{
@@ -1502,7 +1658,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	});
  	gdi->primary->hdc->hwnd->ninvalid = 0;
  	return TRUE;
-@@ -1477,23 +2081,35 @@
+@@ -1477,23 +2040,35 @@
  	 * put on the update message queue to be able to properly flush pending updates,
  	 * resize, and then continue with post-resizing graphical updates.
  	 */
@@ -3098,7 +3254,6 @@ index 131fdc1..a957f71 100644
  // session needs a refresh of its view
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
-index 0fde5e3..70dd3c4 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
 @@ -12,7 +12,11 @@
@@ -3113,7 +3268,7 @@ index 0fde5e3..70dd3c4 100644
  #import "RDPCursor.h"
  #import "TSXTypes.h"
  #import "Bookmark.h"
-@@ -23,6 +27,8 @@ NSString *TSXSessionDidFailToConnectNotification = @"TSXSessionDidFailToConnect"
+@@ -23,6 +27,8 @@
  
  @interface RDPSession (Private)
  - (void)runSession;
@@ -3122,7 +3277,7 @@ index 0fde5e3..70dd3c4 100644
  - (void)runSessionFinished:(NSNumber *)result;
  - (mfInfo *)mfi;
  
-@@ -37,6 +43,8 @@ NSString *TSXSessionDidFailToConnectNotification = @"TSXSessionDidFailToConnect"
+@@ -37,6 +43,8 @@
  
  @implementation RDPSession
  
@@ -3131,7 +3286,7 @@ index 0fde5e3..70dd3c4 100644
  @synthesize delegate = _delegate, params = _params, toolbarVisible = _toolbar_visible,
              uiRequestCompleted = _ui_request_completed, bookmark = _bookmark;
  
-@@ -107,6 +115,9 @@ static void freeArguments(int argc, char **argv)
+@@ -107,6 +115,9 @@
  
  	if (!addArgument(&argc, &argv, "/relax-order-checks"))
  		goto out_free;
@@ -3141,10 +3296,20 @@ index 0fde5e3..70dd3c4 100644
  	// Screen Size is set on connect (we need a valid delegate in case the user choose an automatic
  	// screen size)
  
-@@ -260,6 +271,21 @@ static void freeArguments(int argc, char **argv)
- 	if (0 != status)
+@@ -251,13 +262,28 @@
+ 	}
+ 
+ 	// Remote keyboard layout
+-	if (!addArgument(&argc, &argv, "/kbd:layout:%d", 0x409))
++	if (!addArgument(&argc, &argv, "/kbd:layout:%d,unicode:on", 0x409))
  		goto out_free;
  
+ 	status =
+ 	    freerdp_client_settings_parse_command_line(_freerdp->context->settings, argc, argv, FALSE);
+ 
+ 	if (0 != status)
++		goto out_free;
++
 +	rdpSettings *settings = _freerdp->context->settings;
 +
 +	// The iOS command-line parser accepts /dynamic-resolution but does not reliably
@@ -3158,12 +3323,10 @@ index 0fde5e3..70dd3c4 100644
 +		goto out_free;
 +	const char *displayChannel[] = { DISP_CHANNEL_NAME };
 +	if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
-+		goto out_free;
-+
+ 		goto out_free;
+ 
  	freeArguments(argc, argv);
- 	[self mfi]->session = self;
- 	return self;
-@@ -276,7 +302,11 @@ out_free:
+@@ -276,7 +302,11 @@
  	[_name release];
  	[_params release];
  	[_ui_request_completed release];
@@ -3175,7 +3338,7 @@ index 0fde5e3..70dd3c4 100644
  	[super dealloc];
  }
  
-@@ -290,6 +320,39 @@ out_free:
+@@ -290,6 +320,39 @@
  
  - (void)connect
  {
@@ -3215,7 +3378,7 @@ index 0fde5e3..70dd3c4 100644
  	// Set Screen Size to automatic if width or height are still 0
  	rdpSettings *settings = _freerdp->context->settings;
  
-@@ -313,24 +376,38 @@ out_free:
+@@ -313,24 +376,38 @@
  	// TODO: This is a hack to ensure connections to RDVH with 16bpp don't have an odd screen
  	// resolution width
  	//       Otherwise this could result in screen corruption ..
@@ -3256,7 +3419,7 @@ index 0fde5e3..70dd3c4 100644
  		return;
  	}
  }
-@@ -378,8 +455,36 @@ out_free:
+@@ -378,8 +455,36 @@
  
  - (void)sendInputEvent:(NSDictionary *)eventDescriptor
  {
@@ -3295,7 +3458,7 @@ index 0fde5e3..70dd3c4 100644
  }
  
  #pragma mark -
-@@ -504,12 +609,41 @@ out_free:
+@@ -504,12 +609,41 @@
  
  - (void)sessionDidConnect
  {
@@ -3337,7 +3500,7 @@ index 0fde5e3..70dd3c4 100644
  	[[NSNotificationCenter defaultCenter]
  	    postNotificationName:TSXSessionDidFailToConnectNotification
  	                  object:self];
-@@ -518,8 +652,76 @@ out_free:
+@@ -518,8 +652,76 @@
  		[[self delegate] session:self didFailToConnect:reason];
  }
  
@@ -4913,3 +5076,14 @@ diff --git a/channels/audin/client/mac/audin_mac.m b/channels/audin/client/mac/a
 +	(void)audin_mac_free(&mac->iface);
  	return error;
  }
+diff --git a/client/Mac/mfreerdp.h b/client/Mac/mfreerdp.h
+--- a/client/Mac/mfreerdp.h
++++ b/client/Mac/mfreerdp.h
+@@ -57,6 +57,7 @@
+ 	wClipboard* clipboard;
+ 	UINT32 numServerFormats;
+ 	UINT32 requestedFormatId;
++	BOOL clipboardUpdatePending;
+ 	HANDLE clipboardRequestEvent;
+ 	CLIPRDR_FORMAT* serverFormats;
+ 	CliprdrClientContext* cliprdr;

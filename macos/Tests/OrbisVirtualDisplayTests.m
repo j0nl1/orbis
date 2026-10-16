@@ -83,6 +83,12 @@ BOOL OrbisRecordWorkspaceKeyboardEvent(rdpInput *input, UINT16 flags, UINT8 code
     [workspaceKeyboardEvents addObject:@{ @"flags": @(flags), @"code": @(code) }];
     return TRUE;
 }
+BOOL OrbisRecordWorkspaceUnicodeEvent(rdpInput *input, UINT16 flags, UINT16 code)
+{
+    (void)input;
+    [workspaceKeyboardEvents addObject:@{ @"flags": @(flags), @"code": @(code), @"unicode": @YES }];
+    return TRUE;
+}
 @interface OrbisShortcutFixtureView : OrbisRemoteView
 {
     mfContext _fixture; freerdp _instance; rdpInput _input;
@@ -625,6 +631,41 @@ static void CheckConfiguredShortcuts(void)
     CGEventSetType(textShortcut, kCGEventKeyUp); CGEventSetFlags(textShortcut, 0);
     [view sendCapturedEvent:textShortcut windowPoint:NSZeroPoint];
     Require(workspaceKeyboardEvents.count == 2, "A captured text shortcut must not leak its physical key release");
+    [view releaseCapturedInput];
+    [workspaceKeyboardEvents removeAllObjects];
+    CGEventSetType(textShortcut, kCGEventKeyDown);
+    CGEventSetFlags(textShortcut, kCGEventFlagMaskAlternate | 0x40);
+    [view sendCapturedText:@"@" forEvent:textShortcut];
+    CGEventSetType(textShortcut, kCGEventKeyUp);
+    [view sendCapturedEvent:textShortcut windowPoint:NSZeroPoint];
+    Require(workspaceKeyboardEvents.count == 2 && [workspaceKeyboardEvents[0][@"unicode"] boolValue] &&
+        [workspaceKeyboardEvents[0][@"code"] intValue] == '@',
+        "Right Option text must win a configured Option shortcut and consume its release");
+    [workspaceKeyboardEvents removeAllObjects];
+    NSEvent *symbol = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:NSEventModifierFlagOption | 0x40 timestamp:0 windowNumber:0 context:nil
+        characters:@"@" charactersIgnoringModifiers:@"2" isARepeat:NO keyCode:19];
+    [view keyDown:symbol];
+    [view keyUp:ShortcutEvent(NSEventTypeKeyUp, 19, 0)];
+    Require(workspaceKeyboardEvents.count == 2 && [workspaceKeyboardEvents[0][@"unicode"] boolValue] &&
+        [workspaceKeyboardEvents[0][@"code"] intValue] == '@',
+        "Windowed right Option symbols must also win configured shortcuts");
+    [view releaseCapturedInput];
+    view.capturesLocalKeyboardLayout = YES;
+    [workspaceKeyboardEvents removeAllObjects];
+    CGEventRef rightModifier = CGEventCreateKeyboardEvent(NULL, 61, true);
+    CGEventSetType(rightModifier, kCGEventFlagsChanged);
+    CGEventSetFlags(rightModifier, kCGEventFlagMaskAlternate);
+    [view sendCapturedEvent:rightModifier windowPoint:NSZeroPoint];
+    CGEventSetType(textShortcut, kCGEventKeyDown);
+    CGEventSetFlags(textShortcut, kCGEventFlagMaskAlternate);
+    [view sendCapturedText:@"@" forEvent:textShortcut];
+    CGEventSetType(textShortcut, kCGEventKeyUp);
+    [view sendCapturedEvent:textShortcut windowPoint:NSZeroPoint];
+    Require(workspaceKeyboardEvents.count == 2 && [workspaceKeyboardEvents[0][@"unicode"] boolValue] &&
+        [workspaceKeyboardEvents[0][@"code"] intValue] == '@',
+        "Right Option text must retain priority when only the modifier transition identifies its side");
+    CFRelease(rightModifier);
     CFRelease(textShortcut);
     [view releaseCapturedInput]; [view release]; [workspaceKeyboardEvents release]; workspaceKeyboardEvents = nil;
     if (saved) [defaults setObject:saved forKey:key]; else [defaults removeObjectForKey:key]; [saved release];

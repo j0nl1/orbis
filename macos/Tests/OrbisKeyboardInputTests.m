@@ -566,6 +566,39 @@ static void CheckRapidDistinctPastePresses(void)
     }
 }
 
+static void CheckCapturedOptionMotion(void)
+{
+    OrbisKeyboardTestView *view = [[OrbisKeyboardTestView alloc] init];
+    view.capturesLocalKeyboardLayout = YES;
+    OrbisSpanishTestTextTranslator *translator = [[OrbisSpanishTestTextTranslator alloc] init];
+    [events removeAllObjects];
+    CGEventFlags flags = kCGEventFlagMaskAlternate | NX_DEVICERALTKEYMASK;
+    CGEventRef modifier = CaptureKey(kCGEventFlagsChanged, 61, flags);
+    CGEventRef motion = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(20, 20), kCGMouseButtonLeft);
+    CGEventSetFlags(motion, flags);
+    CGEventRef down = CaptureKey(kCGEventKeyDown, 19, flags);
+    CGEventRef up = CaptureKey(kCGEventKeyUp, 19, flags);
+    [view sendCapturedEvent:modifier windowPoint:NSZeroPoint];
+    [view sendCapturedEvent:motion windowPoint:NSMakePoint(20, 20)];
+    [view sendCapturedText:[translator textForEvent:down] forEvent:down];
+    [view sendCapturedEvent:up windowPoint:NSZeroPoint];
+    // An unrelated physical release must not materialize AltGr either.
+    CGEventRef rollover = CaptureKey(kCGEventKeyUp, 14, flags);
+    [view sendCapturedEvent:rollover windowPoint:NSZeroPoint];
+    CFRelease(rollover);
+    CGEventSetFlags(modifier, 0);
+    [view sendCapturedEvent:modifier windowPoint:NSZeroPoint];
+    NSArray *physical = [events filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:
+        ^BOOL(NSDictionary *event, NSDictionary *bindings) { (void)bindings; return ![event[@"unicode"] boolValue]; }]];
+    Require(physical.count == 0,
+        @"Pointer motion before an Option symbol must not send a remote Alt tap or a physical key");
+    Require(UnicodeEvents().count == 2 && [UnicodeEvents()[0][@"code"] unsignedIntValue] == '@',
+        @"The native Spanish layout must produce exactly one @ press and release");
+    CFRelease(modifier); CFRelease(motion); CFRelease(down); CFRelease(up);
+    [translator release];
+    [view release];
+}
+
 static void CheckFullscreenInputCapture(void)
 {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -699,6 +732,16 @@ static void CheckFullscreenInputCapture(void)
     Require(events.count == 2 && UnicodeEvents().count == 2 &&
         [events[0][@"code"] unsignedIntValue] == 0x00E9,
         @"Captured Spanish dead-key composition must send the accented character once");
+    [events removeAllObjects];
+    [capture consumeEvent:accent type:kCGEventKeyDown]; [capture consumeEvent:accentUp type:kCGEventKeyUp];
+    CGEventRef cancelAccent = CaptureKey(kCGEventKeyDown, 51, 0);
+    [capture consumeEvent:cancelAccent type:kCGEventKeyDown];
+    CGEventSetType(cancelAccent, kCGEventKeyUp); [capture consumeEvent:cancelAccent type:kCGEventKeyUp];
+    Require(!events.count, @"Backspace must cancel a pending local accent without deleting remote text");
+    [capture consumeEvent:letter type:kCGEventKeyDown]; [capture consumeEvent:letterUp type:kCGEventKeyUp];
+    Require(events.count == 2 && UnicodeEvents().count == 2 && [events[0][@"code"] unsignedIntValue] == 'e',
+        @"Typing after a cancelled dead key must insert an unaccented letter");
+    CFRelease(cancelAccent);
     CFRelease(shifted); CFRelease(shiftedUp); CFRelease(accent); CFRelease(accentUp); CFRelease(letter); CFRelease(letterUp);
     [defaults removeObjectForKey:layoutKey];
     [[NSNotificationCenter defaultCenter] postNotificationName:OrbisInputCaptureSettingsDidChangeNotification object:nil];
@@ -1003,6 +1046,16 @@ int main(void)
 	{
 		[NSApplication sharedApplication];
 		events = [[NSMutableArray alloc] init];
+        CheckCapturedOptionMotion();
+        [events removeAllObjects];
+        OrbisKeyboardTestView *textOnly = [[OrbisKeyboardTestView alloc] init];
+        textOnly.mapsCommandShortcutsToControl = NO;
+        [textOnly flagsChanged:Key(NSEventTypeFlagsChanged, 61, @"", @"", NSEventModifierFlagOption | NX_DEVICERALTKEYMASK)];
+        [textOnly keyDown:Key(NSEventTypeKeyDown, 19, @"@", @"2", NSEventModifierFlagOption | NX_DEVICERALTKEYMASK)];
+        [textOnly keyUp:Key(NSEventTypeKeyUp, 19, @"@", @"2", 0)];
+        Require(events.count == 2 && UnicodeEvents().count == 2 && [events[0][@"code"] unsignedIntValue] == '@',
+            @"Option text must work when Command shortcut mapping is disabled");
+        [textOnly release];
         CheckSystemCaptureCapabilities();
         CheckAltGrEditingIsolation();
         CheckEditingParity();

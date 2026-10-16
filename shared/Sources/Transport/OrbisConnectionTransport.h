@@ -18,6 +18,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Call on the main queue. Idempotent, including while preparation is pending.
 // Close before releasing; keep this session alive until the RDP attempt ends.
 - (void)close;
+@optional
+// Local numeric correlation only; contains no profile or server identity.
+@property(nonatomic, readonly) uint64_t diagnosticIdentifier;
 @end
 
 typedef void (^OrbisTransportReady)(OrbisTransportDestination *_Nullable destination,

@@ -97,6 +97,28 @@
 	for (NSString *secret in @[ @"secret-password", @"secret-token", @"private.example", @"secret-domain" ])
 		XCTAssertFalse([text containsString:secret]);
 }
+- (void)testRayIDsAreTheOnlyPermittedStringContextAndMustBeStrictlyValidated
+{
+	[self.diagnostics recordTunnelEvent:@"tunnel.opened" values:(id)@{
+	    @"transport_id" : @2, @"stream_id" : @1, @"http_status" : @101,
+	    @"native_code" : @54, @"password" : @"private-secret", @"cf_ray_id" : @"private-secret" }
+	    rayID:@"a4af05b09864f778-LIS"];
+	for (NSString *invalid in @[ @"private-secret", @"a4af05b09864f778-LIS\nInjected: secret",
+	    @"a4af05b09864f778-LIS\n", @"a4af05b09864f778-LIS trailing",
+	    @"a4af05b09864f778-private", @"", @"https://private.example" ])
+		[self.diagnostics recordTunnelEvent:@"tunnel.closed" values:nil rayID:invalid];
+	[self.diagnostics recordEvent:@"session.stopping" values:(id)@{ @"cf_ray_id" : @"private-secret" }];
+	NSArray *events = [self snapshot][@"events"];
+	XCTAssertEqualObjects(events.firstObject[@"cf_ray_id"], @"a4af05b09864f778-LIS");
+	XCTAssertEqualObjects(events.firstObject[@"values"], (@{ @"transport_id" : @2,
+	    @"stream_id" : @1, @"http_status" : @101, @"native_code" : @54 }));
+	for (NSUInteger i = 1; i < events.count; i++) XCTAssertNil(events[i][@"cf_ray_id"]);
+	NSString *text = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:events
+	    options:0 error:nil] encoding:NSUTF8StringEncoding];
+	XCTAssertFalse([text containsString:@"private-secret"]);
+	XCTAssertFalse([text containsString:@"private.example"]);
+}
+
 - (void)testConcurrentRecordsProduceCompleteJSONLines
 {
 	dispatch_apply(80, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(size_t index) {

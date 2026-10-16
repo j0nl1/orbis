@@ -6,6 +6,8 @@ import base64
 import hashlib
 import socketserver
 import struct
+import socket
+import time
 
 
 def read_exact(stream, size):
@@ -55,7 +57,7 @@ class Handler(socketserver.StreamRequestHandler):
         authorized = headers.get("cf-access-client-id") == "fixture-client"
         authorized &= headers.get("cf-access-client-secret") == "fixture-secret"
         if not authorized or path == "/deny":
-            self.connection.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+            self.connection.sendall(b"HTTP/1.1 403 Forbidden\r\nCF-Ray: a4af05b09864f778-LIS\r\nContent-Length: 0\r\n\r\n")
             return
         if path == "/redirect":
             location = f"http://127.0.0.1:{self.server.server_address[1]}/leaked"
@@ -71,8 +73,14 @@ class Handler(socketserver.StreamRequestHandler):
         accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
         self.connection.sendall(
             b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-            + b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n"
+            + b"Sec-WebSocket-Accept: " + accept
+            + b"\r\nCF-Ray: a4af05b09864f778-LIS\r\nX-Secret: fixture-secret\r\n\r\n"
         )
+        if path == "/reset":
+            # Let the client observe the successful upgrade before the real TCP reset.
+            time.sleep(0.1)
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            return
         if path == "/text":
             self.connection.sendall(frame(1, b"unexpected text"))
             return

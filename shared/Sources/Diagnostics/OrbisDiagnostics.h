@@ -7,6 +7,10 @@
 - (instancetype)initWithDirectoryURL:(NSURL *)directory;
 - (void)start;
 - (void)recordEvent:(NSString *)event values:(NSDictionary<NSString *, NSNumber *> *)values;
+// The only permitted string context is a validated Cloudflare Ray ID on tunnel events.
+- (void)recordTunnelEvent:(NSString *)event values:(NSDictionary<NSString *, NSNumber *> *)values
+                   rayID:(NSString *)rayID;
++ (NSDictionary<NSString *, NSNumber *> *)valuesForError:(NSError *)error;
 - (void)recordError:(NSError *)error event:(NSString *)event;
 // iPad has one remote session: 0 = idle, 1 = connecting, 2 = connected.
 - (void)setActiveSessionState:(NSUInteger)state;
