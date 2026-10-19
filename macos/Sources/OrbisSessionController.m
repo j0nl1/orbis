@@ -67,6 +67,7 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)displayChannelConnected:(DispClientContext *)channel;
 - (void)displayChannelDisconnected:(DispClientContext *)channel;
 - (void)displayControlCaps:(uint32_t)count area:(uint64_t)area;
+- (void)displayControlCaps:(uint32_t)count area:(uint64_t)area channel:(DispClientContext *)channel;
 - (void)setConnectingStatus:(NSString *)status;
 - (BOOL)layoutForActiveResolution:(NSSize)resolution result:(OrbisDisplayLayout *)layout;
 - (BOOL)canChangeDisplayResolution;
@@ -75,6 +76,7 @@ _Static_assert(ERRINFO_LOGOFF_BY_USER == ORBIS_ERRINFO_LOGOFF_BY_USER,
 - (void)applyWindowResolutions;
 - (void)scheduleWindowResolutions;
 - (void)displayCapabilitiesChanged;
+- (void)refreshSessionCapabilities;
 - (OrbisDiagnostics *)diagnostics;
 - (void)recordRDPEvent:(NSString *)event values:(NSDictionary *)values;
 @end
@@ -307,7 +309,7 @@ static UINT OrbisDisplayControlCaps(DispClientContext *channel, UINT32 count, UI
 	// Only layouts up to two 8192-square monitors are offered; saturate untrusted caps.
 	uint64_t ceiling = 2ULL * 8192 * 8192;
 	area = count && area > ceiling / count ? ceiling : area * count;
-	[controller displayControlCaps:count area:area];
+	[controller displayControlCaps:count area:area channel:channel];
 	return CHANNEL_RC_OK;
 }
 
@@ -334,6 +336,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 		return nil;
 	NSParameterAssert(transport != nil);
 	_transport = [transport retain];
+	_capabilities = [[OrbisSessionCapabilities alloc] init];
 	_profile = [profile copy];
 	_displaySettings = [[OrbisDisplaySettings loadMigratingProfile:profile] copy];
 	_displayMatchesWindow[0] = ![_displaySettings primaryWidth] && ![_displaySettings primaryHeight];
@@ -623,6 +626,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 - (void)applyMicrophoneCapture
 {
     if (!_context || _stopping) return;
+    [self refreshSessionCapabilities];
     UINT result = orbis_audin_set_enabled((rdpContext *)_context, _microphoneEnabled);
     if (result != CHANNEL_RC_OK && _microphoneEnabled)
     {
@@ -724,6 +728,9 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 		return NO;
 	}
 	_context = context;
+    _capabilityGeneration = [_capabilities beginSession];
+    [(MRDPView *)_remoteView setSessionCapabilities:_capabilities generation:_capabilityGeneration];
+    [self refreshSessionCapabilities];
 	mfContext *macContext = (mfContext *)context;
 	macContext->view = _remoteView;
 	macContext->view_ownership = FALSE;
@@ -835,7 +842,16 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 		_displayChannel = NULL; _displayMaxMonitors = 0; _displayMaxArea = 0;
 	}
 	[_displayLock unlock];
-	[self performSelectorOnMainThread:@selector(updateDisplayControls) withObject:nil waitUntilDone:NO];
+	[self performSelectorOnMainThread:@selector(displayCapabilitiesChanged) withObject:nil waitUntilDone:NO];
+}
+
+- (void)displayControlCaps:(uint32_t)count area:(uint64_t)area channel:(DispClientContext *)channel
+{
+    [_displayLock lock];
+    BOOL current = _displayChannel == channel && channel && channel->custom == self;
+    if (current) { _displayMaxMonitors = count; _displayMaxArea = area; }
+    [_displayLock unlock];
+    if (current) [self performSelectorOnMainThread:@selector(displayCapabilitiesChanged) withObject:nil waitUntilDone:NO];
 }
 
 - (void)displayControlCaps:(uint32_t)count area:(uint64_t)area
@@ -846,15 +862,56 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)displayCapabilitiesChanged
 {
+    [self refreshSessionCapabilities];
 	_windowResolutionDirty |= 3;
 	[self scheduleWindowResolutions];
 	[self updateDisplayControls];
 }
 
+- (OrbisSessionCapabilitiesSnapshot *)capabilities { return _capabilities.snapshot; }
+
+- (void)refreshSessionCapabilities
+{
+    [_displayLock lock];
+    BOOL channel = _displayChannel != NULL;
+    BOOL send = channel && ((DispClientContext *)_displayChannel)->SendMonitorLayout != NULL;
+    uint32_t monitors = _displayMaxMonitors;
+    [_displayLock unlock];
+    OrbisSessionCapabilityFacts facts = { .implemented=YES, .enabled=YES,
+        .permission=OrbisCapabilityPermissionGranted,
+        .channel=channel ? OrbisCapabilityChannelReady : OrbisCapabilityChannelPending,
+        .peerSupport=monitors ? (send ? OrbisCapabilityPeerSupportSupported : OrbisCapabilityPeerSupportUnsupported)
+            : OrbisCapabilityPeerSupportUnknown };
+    OrbisSessionCapabilityLimits *limits = [[[OrbisSessionCapabilityLimits alloc]
+        initWithFormats:@[] maximumBytes:0 maximumMonitors:MIN(2, monitors)
+        maximumWidth:8192 maximumHeight:8192] autorelease];
+    [_capabilities updateFeature:OrbisSessionFeatureDisplayResize direction:OrbisCapabilityDirectionToRemote
+        facts:facts limits:limits forGeneration:_capabilityGeneration];
+    if (monitors && monitors < 2) facts.peerSupport = OrbisCapabilityPeerSupportUnsupported;
+    [_capabilities updateFeature:OrbisSessionFeatureMultipleMonitors direction:OrbisCapabilityDirectionToRemote
+        facts:facts limits:limits forGeneration:_capabilityGeneration];
+    OrbisSessionCapabilityFacts output = { .implemented=YES, .enabled=YES,
+        .permission=OrbisCapabilityPermissionGranted, .channel=OrbisCapabilityChannelPending,
+        .peerSupport=OrbisCapabilityPeerSupportUnknown };
+    [_capabilities updateFeature:OrbisSessionFeatureAudioOutput direction:OrbisCapabilityDirectionFromRemote
+        facts:output limits:nil forGeneration:_capabilityGeneration];
+    AVAuthorizationStatus permission = [self microphoneAuthorizationStatus];
+    OrbisSessionCapabilityFacts microphone = { .implemented=YES,
+        .enabled=OrbisMicrophoneIsEnabled(NSUserDefaults.standardUserDefaults),
+        .permission=permission == AVAuthorizationStatusAuthorized ? OrbisCapabilityPermissionGranted :
+            permission == AVAuthorizationStatusNotDetermined ? OrbisCapabilityPermissionUnknown : OrbisCapabilityPermissionDenied,
+        .channel=OrbisCapabilityChannelPending, .peerSupport=OrbisCapabilityPeerSupportUnknown };
+    // Local authorization is evidence only of local permission. The audio input
+    // channel currently provides no confirmed remote-negotiation observer.
+    [_capabilities updateFeature:OrbisSessionFeatureMicrophone direction:OrbisCapabilityDirectionToRemote
+        facts:microphone limits:nil forGeneration:_capabilityGeneration];
+}
+
 - (BOOL)canAddVirtualDisplay
 {
 	[_displayLock lock]; BOOL supported = _displayChannel && _displayMaxMonitors >= 2; [_displayLock unlock];
-	return supported && _wasConnected && !_stopping && !_displayChangePending &&
+	return supported && [[self.capabilities capabilityForFeature:OrbisSessionFeatureMultipleMonitors
+        direction:OrbisCapabilityDirectionToRemote] canAttempt] && _wasConnected && !_stopping && !_displayChangePending &&
 	    !_secondaryWindow && !_closingSecondaryWindow;
 }
 
@@ -902,7 +959,8 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
     DispClientContext *channel = _displayChannel;
     BOOL supported = channel && channel->SendMonitorLayout && _displayMaxMonitors >= _displayLayout.count;
     [_displayLock unlock];
-    return supported;
+    return supported && [[self.capabilities capabilityForFeature:OrbisSessionFeatureDisplayResize
+        direction:OrbisCapabilityDirectionToRemote] canAttempt];
 }
 
 - (BOOL)layoutForActiveResolution:(NSSize)resolution result:(OrbisDisplayLayout *)layout
@@ -1373,6 +1431,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 
 - (void)disposeConnectionContext
 {
+    [_capabilities endSessionForGeneration:_capabilityGeneration];
 	rdpContext *context = (rdpContext *)_context;
 	if (!context)
 		return;
@@ -1510,6 +1569,7 @@ static void OrbisDisplayChannelDisconnected(void *context, const ChannelDisconne
 	[_password release];
 	[_profile release];
 	[_displaySettings release];
+	[_capabilities release];
 	[_inputCapture release];
 	[_transport release];
 	[super dealloc];

@@ -55,6 +55,7 @@ Other keys use FreeRDP's normal keyboard mapping.
 - Profiles with optional automatic connection
 - Per-profile certificate prompts or automatic certificate acceptance
 - Passwords stored in Apple Keychain rather than in the profile
+- Bidirectional text and image clipboard redirection, subject to remote server support
 - Native-resolution sessions and full-screen macOS windows
 - Coordinated iPad display requests and connection interruption alerts with Retry
 - One automatic retry for explicit graphics or transport failures, cancelled when leaving the app
@@ -92,7 +93,8 @@ assign their combination to a custom action. Custom shortcuts can override typin
 editing, and system functions. Some combinations are reserved by the operating
 system and never reach Orbis. On Mac, forwarding system shortcuts such as
 Command-Shift-3 requires full screen input capture and its macOS permission.
-Screenshots are saved on the Linux computer; image clipboard transfer is not supported.
+Screenshot actions save on the Linux computer. Images copied to the clipboard
+can be pasted across the session when the remote application supports them.
 The screenshot actions use GNOME's Shift-Print and Alt-Print bindings, so changes
 to those bindings on the remote computer affect their behavior.
 

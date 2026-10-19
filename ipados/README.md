@@ -92,13 +92,46 @@ Automatic resolution follows the inset viewport; manually configured resolutions
 remain unchanged. The connection screen shows the computer name and a neutral
 native Cancel button.
 
-Text clipboard redirection works in both directions. Copying remotely updates the
-iPad system pasteboard while Orbis is in the foreground. Command-V, Control-V (including
-Control-Shift-V), or the session menu's Paste command publishes local text before
-sending the remote paste shortcut. Access follows iPadOS paste permissions; the
-app does not poll another app's clipboard. Transfers preserve Unicode and support
-up to 8 MiB of UTF-8 text. Images, rich text, and files are not redirected.
-Clipboard contents are excluded from local diagnostics.
+Text and raster-image clipboard redirection work in both directions. Copying
+remotely updates the iPad system pasteboard while Orbis is in the foreground.
+Command-V, Control-V (including Control-Shift-V), or the session menu's Paste
+command publishes local content before sending the remote paste shortcut. Local
+clipboard reads occur only for those explicit paste actions; construction,
+capability updates, and remote publication do not read another app's clipboard.
+Access follows iPadOS paste permissions. A missing value does not prove that
+permission was denied, and the app never infers a server restriction from a
+transfer failure.
+
+The shared immutable clipboard port separates UIKit publication from RDP format
+negotiation. PNG is preferred and preserves transparency. A CF_DIB fallback
+composites transparency over white for peers without PNG support. Encoded images
+are limited to 32 MiB, 16,777,216 pixels, and 16,384 pixels per side; malformed or
+unsupported representations leave the existing local clipboard unchanged.
+Text retains Unicode and the 8 MiB UTF-8 limit. The input event queue chunks
+both image and text payloads. Multipart local content produces one complete
+offer, retaining both text and image representations. Framing handles partial
+reads/writes and concurrent producers. A serial background producer preserves
+clipboard-before-paste-key ordering and keeps the main thread free for native
+cursor and bitmap callbacks; connection-loop exit retires the pipe
+before waiting for UI completion, releasing any blocked clipboard producer.
+One remote format request is outstanding at a time,
+and superseded offers cannot publish an old response. Rich text and files are
+not redirected. Clipboard contents are excluded from local diagnostics.
+
+The shared session-capability policy reports clipboard channel readiness, image
+and text support per direction, and display-control readiness independently from
+the formats currently copied. Unknown peer support permits a first transfer once
+the local channel is ready. Successful requests refine that evidence. Session
+teardown invalidates the generation, so delayed callbacks cannot revive features
+or publish content after disconnect. iPadOS supports one remote display; the same
+policy exposes that platform limit without duplicating negotiation rules. Display
+dimension limits describe the local 200–8192-pixel range; actual layout requests
+also obey the negotiated server monitor count and total pixel-area budget.
+Malformed or missing display capabilities leave negotiation pending.
+Simulator tests exercise synthetic PNG transfers, DIB fallback, chunking,
+serialization, invalid content, and explicit-read behavior. Real-device paste
+permission prompts, foreground transitions, and compatibility with live remote
+applications still require device verification.
 
 When its scene enters the background, an active remote session requests that the
 server pause display updates and asks iPadOS for limited additional execution

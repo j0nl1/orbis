@@ -18,7 +18,8 @@
 - (NSInteger)changeCount { return generation; }
 - (NSArray *)pasteboardItems { return @[self]; }
 - (NSArray *)types { return @[NSPasteboardTypeString]; }
-- (NSData *)dataForType:(NSString *)type { (void)type; return localData; }
+- (NSData *)dataForType:(NSString *)type
+{ return [type isEqualToString:NSPasteboardTypeString] ? localData : nil; }
 - (NSString *)stringForType:(NSString *)type
 { (void)type; return [[[NSString alloc] initWithData:localData encoding:NSUTF8StringEncoding] autorelease]; }
 - (NSInteger)declareTypes:(NSArray *)types owner:(id)owner
@@ -31,6 +32,9 @@
     generation++;
     return YES;
 }
+- (NSInteger)clearContents { return ++generation; }
+- (BOOL)writeObjects:(NSArray *)objects
+{ return [self setString:[objects.firstObject stringForType:NSPasteboardTypeString] forType:NSPasteboardTypeString]; }
 - (void)dealloc { [localData release]; [remoteText release]; [super dealloc]; }
 @end
 
@@ -113,6 +117,9 @@ int main(void)
             [view onPasteboardTimerFired:nil];
         }
         pthread_join(thread, NULL);
+        Require(channel.ServerFormatList(&channel, &list) == CHANNEL_RC_OK, "fresh remote offer failed");
+        Require(channel.ServerFormatDataResponse(&channel, &worker.response) == CHANNEL_RC_OK,
+            "fresh remote response failed");
         // Deliver queued remote clipboard publication on the main run loop.
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
         while (pasteboard.remoteText.length != characters && [deadline timeIntervalSinceNow] > 0)

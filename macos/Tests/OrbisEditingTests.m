@@ -18,6 +18,7 @@ static NSUInteger failures;
 /* The editing test exercises the real application menu without starting RDP. */
 @implementation OrbisSessionController
 @synthesize delegate = _delegate;
+- (OrbisSessionCapabilitiesSnapshot *)capabilities { return nil; }
 - (id)initWithProfile:(OrbisProfile *)profile password:(NSString *)password
              transport:(id<OrbisConnectionTransport>)transport
 {

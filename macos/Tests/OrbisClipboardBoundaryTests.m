@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 #import "MRDPView.h"
 #import "Clipboard.h"
+#import "OrbisClipboardImage.h"
 
 static NSUInteger failures, requests, lists, successfulResponses;
 static NSData *sentData;
@@ -41,12 +42,15 @@ static UINT List(CliprdrClientContext *ctx, const CLIPRDR_FORMAT_LIST *list)
     pasteboard_wr = pasteboard_rd;
     pasteboard_changecount = (int)pasteboard_rd.changeCount;
     is_connected = 1;
+    OrbisSessionCapabilities *capabilities = [[[OrbisSessionCapabilities alloc] init] autorelease];
+    [self setSessionCapabilities:capabilities generation:[capabilities beginSession]];
     mac_cliprdr_init(mfc, &channel);
     channel.ClientFormatListResponse = ListResponse;
     channel.ClientFormatDataRequest = Request;
     channel.ClientFormatDataResponse = Response;
     channel.ClientFormatList = List;
     mfc->clipboardSync = TRUE;
+    [self setClipboardChannelReady:YES];
     return self;
 }
 - (mfContext *)fixtureContext { return mfc; }
@@ -85,6 +89,10 @@ int main(int argc, const char **argv)
         [NSApplication sharedApplication];
         OrbisClipboardTestView *view = [[OrbisClipboardTestView alloc] init];
         mfContext *ctx = view.fixtureContext;
+        OrbisSessionCapability *initialImage = [view->sessionCapabilities.snapshot
+            capabilityForFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionFromRemote];
+        Require(initialImage.state == OrbisCapabilityStateChecking && initialImage.canAttempt,
+            "Clipboard channel readiness permits an image attempt without claiming peer image support");
         if (argc > 1 && strcmp(argv[1], "--stress") == 0) {
             NSString *payload = [@"large text\n" stringByPaddingToLength:1024 * 1024
                 withString:@"large text\n" startingAtIndex:0];
@@ -146,11 +154,11 @@ int main(int argc, const char **argv)
         // An image can replace a text offer before its outstanding response arrives.
         Advertise(ctx, CF_UNICODETEXT);
         NSUInteger priorRequests = requests;
-        Advertise(ctx, CF_DIB);
+        Advertise(ctx, 0xBEEF);
         Require(Deliver(ctx, remote) == CHANNEL_RC_OK,
             "A text response after an image offer must never disconnect RDP");
         DrainMainQueue();
-        Require(requests == priorRequests, "Unsupported image data must not be requested");
+        Require(requests == priorRequests, "Unsupported format data must not be requested");
 
         // CLIPRDR responses have no request ID, so requests must remain serialized.
         Advertise(ctx, CF_UNICODETEXT);
@@ -171,6 +179,105 @@ int main(int argc, const char **argv)
         ctx->cliprdr->ServerFormatDataRequest(ctx->cliprdr, &request);
         Require((sentFlags & CB_RESPONSE_FAIL) && !sentData.length,
             "A local image must reject a stale text request without killing the channel");
+
+        // A bounded transparent PNG travels through the real channel callbacks.
+        NSBitmapImageRep *bitmap = [[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+            pixelsWide:3 pixelsHigh:2 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+            colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:12 bitsPerPixel:32] autorelease];
+        memset(bitmap.bitmapData, 0, 24);
+        unsigned char *pixels = bitmap.bitmapData;
+        pixels[0] = 255; pixels[3] = 255; pixels[5] = 255; pixels[7] = 128;
+        pixels[14] = 255; pixels[15] = 255;
+        NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        [view->pasteboard_rd clearContents];
+        [view->pasteboard_rd setData:png forType:NSPasteboardTypePNG];
+        [view onPasteboardTimerFired:nil];
+        request.requestedFormatId = ClipboardRegisterFormat(ctx->clipboard, "image/png");
+        ctx->cliprdr->ServerFormatDataRequest(ctx->cliprdr, &request);
+        Require((sentFlags & CB_RESPONSE_OK) && [OrbisClipboardImageCodec normalizedPNGData:sentData] != nil,
+            "Local PNG must be served to the real RDP image request");
+        request.requestedFormatId = ClipboardRegisterFormat(ctx->clipboard, "PNG");
+        ctx->cliprdr->ServerFormatDataRequest(ctx->cliprdr, &request);
+        Require((sentFlags & CB_RESPONSE_OK) && sentData.length,
+            "Windows PNG alias must serve the same image");
+        request.requestedFormatId = CF_DIB;
+        ctx->cliprdr->ServerFormatDataRequest(ctx->cliprdr, &request);
+        Require((sentFlags & CB_RESPONSE_OK) && [OrbisClipboardImageCodec PNGDataFromDIBData:sentData] != nil,
+            "Classic DIB fallback must be decodable");
+        NSData *dib = [[sentData copy] autorelease];
+        CLIPRDR_FORMAT imageFormat = { .formatId=0xC012, .formatName="PNG" };
+        CLIPRDR_FORMAT_LIST imageList = { .numFormats=1, .formats=&imageFormat };
+        ctx->cliprdr->ServerFormatList(ctx->cliprdr, &imageList);
+        Deliver(ctx, png); DrainMainQueue();
+        Require([view->pasteboard_wr dataForType:NSPasteboardTypePNG].length > 0,
+            "Remote PNG must reach the isolated Mac pasteboard");
+        priorLists = lists; [view onPasteboardTimerFired:nil];
+        Require(lists == priorLists, "Remote image publication must not echo to the server");
+        Advertise(ctx, CF_DIB); Deliver(ctx, dib); DrainMainQueue();
+        Require([view->pasteboard_wr dataForType:NSPasteboardTypePNG].length > 0,
+            "Remote DIB must reach the isolated Mac pasteboard as PNG");
+        NSData *beforeInvalid = [view->pasteboard_wr dataForType:NSPasteboardTypePNG];
+        ctx->cliprdr->ServerFormatList(ctx->cliprdr, &imageList);
+        Deliver(ctx, [NSData dataWithBytes:"broken" length:6]); DrainMainQueue();
+        Require([[view->pasteboard_wr dataForType:NSPasteboardTypePNG] isEqual:beforeInvalid],
+            "Malformed image must preserve existing clipboard without closing RDP");
+        Advertise(ctx, CF_UNICODETEXT);
+        ctx->cliprdr->ServerFormatList(ctx->cliprdr, &imageList);
+        priorRequests = requests;
+        Deliver(ctx, remote);
+        Require(requests == priorRequests + 1, "Latest image waits for stale text response");
+        Deliver(ctx, png); DrainMainQueue();
+        Require([view->pasteboard_wr dataForType:NSPasteboardTypePNG].length > 0,
+            "Text-to-image ownership transition must publish the latest format");
+        NSBitmapImageRep *largeBitmap = [[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+            pixelsWide:1024 pixelsHigh:1024 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+            colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:4096 bitsPerPixel:32] autorelease];
+        uint32_t seed = 12345;
+        for (NSUInteger i = 0; i < 1024 * 1024; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            largeBitmap.bitmapData[i * 4] = seed >> 24;
+            largeBitmap.bitmapData[i * 4 + 1] = seed >> 16;
+            largeBitmap.bitmapData[i * 4 + 2] = seed >> 8;
+            largeBitmap.bitmapData[i * 4 + 3] = 255;
+        }
+        NSData *largePNG = [largeBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        Require(largePNG.length > 1024 * 1024, "Large PNG fixture must exceed a megabyte");
+        [view->pasteboard_rd clearContents];
+        [view->pasteboard_rd setData:largePNG forType:NSPasteboardTypePNG];
+        [view onPasteboardTimerFired:nil];
+        request.requestedFormatId = ClipboardRegisterFormat(ctx->clipboard, "PNG");
+        ctx->cliprdr->ServerFormatDataRequest(ctx->cliprdr, &request);
+        Require((sentFlags & CB_RESPONSE_OK) && sentData.length > 1024 * 1024,
+            "A real outgoing image request must return the complete multi-megabyte PNG");
+        ctx->cliprdr->ServerFormatList(ctx->cliprdr, &imageList);
+        Deliver(ctx, largePNG); DrainMainQueue();
+        NSBitmapImageRep *receivedLarge = [NSBitmapImageRep imageRepWithData:
+            [view->pasteboard_wr dataForType:NSPasteboardTypePNG]];
+        Require(receivedLarge.pixelsWide == 1024 && receivedLarge.pixelsHigh == 1024,
+            "A multi-megabyte remote PNG must reach AppKit at full resolution");
+
+        OrbisSessionCapability *receivedImage = [view->sessionCapabilities.snapshot
+            capabilityForFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionFromRemote];
+        Require(receivedImage.state == OrbisCapabilityStateAvailable,
+            "A decoded remote image refines only its transfer direction");
+        OrbisSessionCapabilityFacts restricted = receivedImage.facts;
+        restricted.explicitlyRestricted = YES;
+        [view->sessionCapabilities updateFeature:OrbisSessionFeatureClipboardImage
+            direction:OrbisCapabilityDirectionFromRemote facts:restricted limits:receivedImage.limits
+            forGeneration:view->sessionCapabilityGeneration];
+        priorRequests = requests;
+        ctx->cliprdr->ServerFormatList(ctx->cliprdr, &imageList);
+        Require(requests == priorRequests, "Explicitly restricted image reception must not request data");
+        OrbisSessionCapability *outgoing = [view->sessionCapabilities.snapshot
+            capabilityForFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionToRemote];
+        restricted = outgoing.facts; restricted.enabled = NO;
+        [view->sessionCapabilities updateFeature:OrbisSessionFeatureClipboardImage
+            direction:OrbisCapabilityDirectionToRemote facts:restricted limits:outgoing.limits
+            forGeneration:view->sessionCapabilityGeneration];
+        request.requestedFormatId = ClipboardRegisterFormat(ctx->clipboard, "PNG");
+        ctx->cliprdr->ServerFormatDataRequest(ctx->cliprdr, &request);
+        Require((sentFlags & CB_RESPONSE_FAIL) && !sentData.length,
+            "A disabled outgoing image capability rejects even an existing image request");
         [view release]; [sentData release];
         fprintf(stderr, "Clipboard boundary failures: %lu\n", (unsigned long)failures);
     }

@@ -109,6 +109,10 @@ class Handler(socketserver.StreamRequestHandler):
             if opcode == 9:
                 self.connection.sendall(frame(10, payload))
             elif opcode == 2:
+                if path == "/bounded-echo" and size > 16 * 1024:
+                    # Enforce the connector's reader budget instead of silently truncating data.
+                    self.connection.sendall(frame(8, struct.pack("!H", 1009)))
+                    return
                 # Frame boundaries deliberately differ from the TCP client's write boundaries.
                 midpoint = len(payload) // 2
                 self.connection.sendall(frame(2, payload[:midpoint]))

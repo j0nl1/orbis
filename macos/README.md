@@ -200,3 +200,33 @@ Orbis → Export Diagnostics saves a local JSON history of session events, numer
 error codes, display changes, and available MetricKit crash or hang reports.
 Nothing is uploaded automatically. See the shared Diagnostics README for storage,
 excluded data, OS report delivery, and matching debugging symbols.
+
+## Clipboard formats and session capabilities
+
+The AppKit clipboard adapter implements the shared `OrbisClipboardPort` interface;
+RDP format negotiation remains in the protocol adapter. Plain text and raster
+images are supported in both directions. Images use PNG (`image/png` or Windows
+`PNG`) when available, preserving transparency. Classic DIB is an opaque RGB
+fallback: transparent areas are composited onto white. File transfer and rich text
+are outside this implementation.
+
+Clipboard images are bounded to 32 MiB encoded, 16,777,216 pixels and 16,384
+pixels on either axis. Invalid or oversized images are rejected without changing
+the existing local clipboard or closing the RDP session. PNG and native TIFF
+pasteboard images are normalized through the shared Apple image codec. Local
+clipboard access and publication run on the main thread. Remote ownership
+changes serialize requests, discard obsolete responses and suppress echo offers.
+
+Each session exposes an immutable shared capability snapshot. Clipboard readiness
+comes from its RDP channel; a current content offer does not imply universal
+image support. Unknown peer image support permits a bounded transfer attempt;
+a successful image transfer refines that direction's evidence. Display resizing
+and multiple monitors use actual display-control negotiation. Microphone facts
+record local preference and authorization; remote audio input/output support
+remains unknown until a protocol observer supplies evidence. Ending/replacing a
+session invalidates its capability generation.
+
+The isolated clipboard tests exercise real RDP callbacks with named pasteboards,
+including PNG aliases, DIB fallback, large text, malformed images and ownership
+changes. The image adapter tests also cover transparency, row orientation,
+dimensions and native TIFF conversion. They never use the general pasteboard.

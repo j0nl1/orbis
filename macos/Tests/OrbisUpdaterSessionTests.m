@@ -6,6 +6,7 @@
 /* Replace the RDP transport for this test; the real app delegate is linked. */
 @implementation OrbisSessionController
 @synthesize delegate = _delegate;
+- (OrbisSessionCapabilitiesSnapshot *)capabilities { return nil; }
 - (id)initWithProfile:(OrbisProfile *)profile password:(NSString *)password
              transport:(id<OrbisConnectionTransport>)transport
 {

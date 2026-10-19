@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- macOS and iPadOS clipboard redirection supports images in both directions, preferring PNG to preserve transparency and using an opaque bitmap fallback where required by the remote server.
+- Shared session capabilities distinguish implemented features, local permissions, channel readiness, and observed peer support independently for each transfer direction.
 - Tunnel diagnostics correlate WebSocket upgrades and disconnects with validated Cloudflare Ray IDs, numeric native errors, byte counts, and heartbeat activity without storing credentials or session content.
 - Remote audio plays through the Mac’s current output device during macOS sessions when supported by the server.
 - Optional macOS microphone sharing starts off and can be enabled or disabled in Settings and Session → Microphone. Both controls share a saved preference and can stop or resume capture during a session, when supported by the server.
@@ -45,6 +47,7 @@
 - Automatic signed macOS releases after changes reach main.
 
 ### Fixed
+- Tunnel writes stay within TCP-over-WebSocket connector read budgets, preventing large clipboard transfers from losing bytes in connectors that truncate oversized messages.
 - macOS clipboard storage is synchronized across local copies and remote responses, preventing memory corruption during large text transfers. Remote text is published on the main thread without echoing it back to the server.
 - macOS and iPad sessions explicitly request Unicode keyboard input when parsing their connection settings, restoring Option symbols and native text that FreeRDP otherwise silently rejected.
 - Right Option typing takes priority over configured keyboard shortcuts. Option symbols no longer depend on Command shortcut mapping, and pointer motion or unrelated key releases cannot introduce deferred Alt modifiers in Mac layout mode.

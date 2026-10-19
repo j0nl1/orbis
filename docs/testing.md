@@ -67,6 +67,27 @@ to use the platform scripts and the pinned FreeRDP source tree.
 
 ## Native clipboard
 
+`unit.session-capabilities` exercises the shared capability policy independently
+of RDP, AppKit, and UIKit: directional evidence, initial attempts with unknown
+peer support, explicit restrictions, immutable snapshots, and connection-generation
+reset. The same XCTest source is included in the iPad simulator suite.
+
+`integration.clipboard-images` checks the shared Apple image codec and AppKit
+clipboard port without a remote server. It covers transparent PNG, asymmetric
+bitmap row orientation, TIFF conversion and orientation, image limits, malformed
+data rejection, and preservation of the existing pasteboard after rejection.
+Run these tests with:
+
+```sh
+ctest --test-dir .build/tests -R 'unit.session-capabilities|integration.clipboard-images' --output-on-failure
+```
+
+The iPad suite exercises its UIKit clipboard port using an injected pasteboard,
+explicit paste actions, bounded event chunks, and native RDP clipboard callbacks.
+It does not need a live server or permission to read another app's clipboard.
+Simulator tests do not replace device checks for OS paste prompts or live remote
+application compatibility.
+
 With `ORBIS_TEST_FREERDP_BUILD_DIR` configured, run
 `ctest --test-dir .build/tests -R integration.macos-clipboard --output-on-failure`.
 The tests use private pasteboards and the real patched FreeRDP clipboard adapter.

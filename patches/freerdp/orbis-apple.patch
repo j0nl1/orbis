@@ -1,5 +1,538 @@
+diff --git a/channels/audin/client/mac/audin_mac.m b/channels/audin/client/mac/audin_mac.m
+index dcfd2ed..9757631 100644
+--- a/channels/audin/client/mac/audin_mac.m
++++ b/channels/audin/client/mac/audin_mac.m
+@@ -23,6 +23,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <pthread.h>
+ 
+ #include <winpr/crt.h>
+ #include <winpr/synch.h>
+@@ -63,7 +64,8 @@ typedef UInt32 AudioFormatID;
+ typedef UInt32 AudioFormatFlags;
+ #endif
+ 
+-typedef struct
++typedef struct AudinMacDevice AudinMacDevice;
++struct AudinMacDevice
+ {
+ 	IAudinDevice iface;
+ 
+@@ -76,12 +78,118 @@ typedef struct
+ 
+ 	rdpContext *rdpcontext;
+ 
+-	bool isAuthorized;
++	pthread_mutex_t captureLock;
++	pthread_mutex_t forwardingLock;
++	size_t controlRefs;
++	BOOL enabled;
++	BOOL forwarding;
++	BOOL negotiated;
+ 	bool isOpen;
+ 	AudioQueueRef audioQueue;
+ 	AudioStreamBasicDescription audioFormat;
+ 	AudioQueueBufferRef audioBuffers[MAC_AUDIO_QUEUE_NUM_BUFFERS];
+-} AudinMacDevice;
++};
++
++typedef struct AudinMacControl AudinMacControl;
++struct AudinMacControl
++{
++	rdpContext *context;
++	BOOL enabled;
++	AudinMacDevice *device;
++	AudinMacControl *next;
++};
++
++static pthread_mutex_t audinControlLock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t audinControlCondition = PTHREAD_COND_INITIALIZER;
++static AudinMacControl *audinControls;
++
++static UINT audin_mac_start_capture(AudinMacDevice *mac);
++static UINT audin_mac_stop_capture(AudinMacDevice *mac);
++
++/* Caller holds audinControlLock; new sessions always start with capture disabled. */
++static AudinMacControl *audin_mac_control(rdpContext *context, BOOL create)
++{
++	for (AudinMacControl *item = audinControls; item; item = item->next)
++		if (item->context == context)
++			return item;
++	if (!create)
++		return nullptr;
++	AudinMacControl *item = calloc(1, sizeof(*item));
++	if (!item)
++		return nullptr;
++	item->context = context;
++	item->next = audinControls;
++	audinControls = item;
++	return item;
++}
++
++/* Hold a device lease while manipulating capture outside the registry lock. */
++FREERDP_ENTRY_POINT(FREERDP_API UINT orbis_audin_set_enabled(rdpContext *context, BOOL enabled))
++{
++	if (!context)
++		return ERROR_INVALID_PARAMETER;
++	pthread_mutex_lock(&audinControlLock);
++	AudinMacControl *control = audin_mac_control(context, TRUE);
++	if (!control)
++	{
++		pthread_mutex_unlock(&audinControlLock);
++		return CHANNEL_RC_NO_MEMORY;
++	}
++	control->enabled = enabled;
++	AudinMacDevice *mac = control->device;
++	if (mac)
++		mac->controlRefs++;
++	pthread_mutex_unlock(&audinControlLock);
++	if (!mac)
++		return CHANNEL_RC_OK;
++
++	pthread_mutex_lock(&mac->captureLock);
++	pthread_mutex_lock(&audinControlLock);
++	control = audin_mac_control(context, FALSE);
++	mac->enabled = control ? control->enabled : FALSE;
++	pthread_mutex_unlock(&audinControlLock);
++	UINT error = mac->enabled ? audin_mac_start_capture(mac) : audin_mac_stop_capture(mac);
++	if (error)
++		mac->enabled = FALSE;
++	pthread_mutex_unlock(&mac->captureLock);
++
++	pthread_mutex_lock(&audinControlLock);
++	mac->controlRefs--;
++	pthread_cond_broadcast(&audinControlCondition);
++	pthread_mutex_unlock(&audinControlLock);
++	return error;
++}
++
++/* Call after stopping the FreeRDP client, before freeing its context. */
++FREERDP_ENTRY_POINT(FREERDP_API void orbis_audin_remove_context(rdpContext *context))
++{
++	pthread_mutex_lock(&audinControlLock);
++	AudinMacControl **link = &audinControls;
++	while (*link && (*link)->context != context)
++		link = &(*link)->next;
++	AudinMacDevice *mac = nullptr;
++	if (*link)
++	{
++		AudinMacControl *item = *link;
++		mac = item->device;
++		if (mac)
++			mac->controlRefs++;
++		*link = item->next;
++		free(item);
++	}
++	pthread_mutex_unlock(&audinControlLock);
++	if (mac)
++	{
++		pthread_mutex_lock(&mac->captureLock);
++		mac->enabled = FALSE;
++		(void)audin_mac_stop_capture(mac);
++		pthread_mutex_unlock(&mac->captureLock);
++		pthread_mutex_lock(&audinControlLock);
++		mac->controlRefs--;
++		pthread_cond_broadcast(&audinControlCondition);
++		pthread_mutex_unlock(&audinControlLock);
++	}
++}
+ 
+ static AudioFormatID audin_mac_get_format(const AUDIO_FORMAT *format)
+ {
+@@ -109,16 +217,13 @@ static AudioFormatFlags audin_mac_get_flags_for_format(const AUDIO_FORMAT *forma
+ 
+ static BOOL audin_mac_format_supported(IAudinDevice *device, const AUDIO_FORMAT *format)
+ {
+-	AudinMacDevice *mac = (AudinMacDevice *)device;
+ 	AudioFormatID req_fmt = 0;
+ 
+-	if (!mac->isAuthorized)
+-		return FALSE;
+-
+ 	if (device == nullptr || format == nullptr)
+ 		return FALSE;
+ 
+-	if (format->nChannels != 2)
++	if ((format->nChannels != 1 && format->nChannels != 2) ||
++	    format->wBitsPerSample != 16 || format->nSamplesPerSec == 0)
+ 		return FALSE;
+ 
+ 	req_fmt = audin_mac_get_format(format);
+@@ -139,12 +244,15 @@ static UINT audin_mac_set_format(IAudinDevice *device, const AUDIO_FORMAT *forma
+ {
+ 	AudinMacDevice *mac = (AudinMacDevice *)device;
+ 
+-	if (!mac->isAuthorized)
+-		return ERROR_INTERNAL_ERROR;
++	if (device == nullptr || format == nullptr || FramesPerPacket == 0 ||
++	    FramesPerPacket > UINT32_MAX / 4)
++		return ERROR_INVALID_PARAMETER;
+ 
+-	if (device == nullptr || format == nullptr)
++	if (!audin_mac_format_supported(device, format))
+ 		return ERROR_INVALID_PARAMETER;
+ 
++	pthread_mutex_lock(&mac->captureLock);
++	(void)audin_mac_stop_capture(mac);
+ 	mac->FramesPerPacket = FramesPerPacket;
+ 	mac->format = *format;
+ 	WLog_INFO(TAG, "Audio Format %s [channels=%d, samples=%d, bits=%d]",
+@@ -167,6 +275,7 @@ static UINT audin_mac_set_format(IAudinDevice *device, const AUDIO_FORMAT *forma
+ 	mac->audioFormat.mFormatID = audin_mac_get_format(format);
+ 	mac->audioFormat.mReserved = 0;
+ 	mac->audioFormat.mSampleRate = mac->format.nSamplesPerSec;
++	pthread_mutex_unlock(&mac->captureLock);
+ 	return CHANNEL_RC_OK;
+ }
+ 
+@@ -183,8 +292,11 @@ static void mac_audio_queue_input_cb(void *aqData, AudioQueueRef inAQ, AudioQueu
+ 	(void)inNumPackets;
+ 	(void)inPacketDesc;
+ 
+-	if (buffer_size > 0)
++	/* Turning capture off waits for this forwarding section before returning. */
++	pthread_mutex_lock(&mac->forwardingLock);
++	if (mac->forwarding && mac->receive && buffer_size > 0)
+ 		error = mac->receive(&mac->format, buffer, buffer_size, mac->user_data);
++	pthread_mutex_unlock(&mac->forwardingLock);
+ 
+ 	AudioQueueEnqueueBuffer(inAQ, inBuffer, 0, nullptr);
+ 
+@@ -195,134 +307,116 @@ static void mac_audio_queue_input_cb(void *aqData, AudioQueueRef inAQ, AudioQueu
+ 	}
+ }
+ 
+-static UINT audin_mac_close(IAudinDevice *device)
++/* captureLock serializes lifecycle calls; the audio callback never takes it. */
++static UINT audin_mac_stop_capture(AudinMacDevice *mac)
+ {
+-	UINT errCode = CHANNEL_RC_OK;
+-	AudinMacDevice *mac = (AudinMacDevice *)device;
+-
+-	WINPR_ASSERT(mac);
+-	if (!mac->isAuthorized)
+-	{
+-		WLog_ERR(TAG, "not authorized");
+-		return ERROR_INTERNAL_ERROR;
+-	}
+-
+-	if (device == nullptr)
+-	{
+-		WLog_ERR(TAG, "device == nullptr");
+-		return ERROR_INVALID_PARAMETER;
+-	}
+-
+-	if (mac->isOpen)
+-	{
+-		const OSStatus devStat = AudioQueueStop(mac->audioQueue, true);
+-
+-		if (devStat != 0)
+-		{
+-			errCode = GetLastError();
+-			char errString[1024] = WINPR_C_ARRAY_INIT;
+-			WLog_ERR(TAG, "AudioQueueStop failed with %s [%" PRIu32 "]",
+-			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
+-		}
+-
+-		mac->isOpen = false;
+-	}
+-
++	pthread_mutex_lock(&mac->forwardingLock);
++	mac->forwarding = FALSE;
++	pthread_mutex_unlock(&mac->forwardingLock);
++	OSStatus status = noErr;
+ 	if (mac->audioQueue)
+ 	{
+-		const OSStatus devStat = AudioQueueDispose(mac->audioQueue, true);
+-
+-		if (devStat != 0)
+-		{
+-			errCode = GetLastError();
+-			char errString[1024] = WINPR_C_ARRAY_INIT;
+-			WLog_ERR(TAG, "AudioQueueDispose failed with %s [%" PRIu32 "]",
+-			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
+-		}
+-
++		/* Neither the registry nor forwarding lock is held during callback drain. */
++		if (mac->isOpen)
++			status = AudioQueueStop(mac->audioQueue, true);
++		OSStatus disposed = AudioQueueDispose(mac->audioQueue, true);
++		if (status == noErr)
++			status = disposed;
+ 		mac->audioQueue = nullptr;
+ 	}
++	mac->isOpen = false;
++	return status == noErr ? CHANNEL_RC_OK : CHANNEL_RC_INITIALIZATION_ERROR;
++}
+ 
++static UINT audin_mac_close(IAudinDevice *device)
++{
++	if (!device)
++		return ERROR_INVALID_PARAMETER;
++	AudinMacDevice *mac = (AudinMacDevice *)device;
++	pthread_mutex_lock(&mac->captureLock);
++	UINT error = audin_mac_stop_capture(mac);
++	mac->negotiated = FALSE;
+ 	mac->receive = nullptr;
+ 	mac->user_data = nullptr;
+-	return errCode;
++	pthread_mutex_unlock(&mac->captureLock);
++	return error;
+ }
+ 
+-static UINT audin_mac_open(IAudinDevice *device, AudinReceive receive, void *user_data)
++static UINT audin_mac_start_capture(AudinMacDevice *mac)
+ {
+-	AudinMacDevice *mac = (AudinMacDevice *)device;
+-	DWORD errCode;
+-	char errString[1024];
+-	OSStatus devStat;
+-
+-	if (!mac->isAuthorized)
+-		return ERROR_INTERNAL_ERROR;
+-
+-	mac->receive = receive;
+-	mac->user_data = user_data;
+-	devStat = AudioQueueNewInput(&(mac->audioFormat), mac_audio_queue_input_cb, mac, nullptr,
+-	                             kCFRunLoopCommonModes, 0, &(mac->audioQueue));
+-
+-	if (devStat != 0)
++	if (mac->isOpen || !mac->negotiated)
++		return CHANNEL_RC_OK;
++	@autoreleasepool
+ 	{
+-		errCode = GetLastError();
+-		WLog_ERR(TAG, "AudioQueueNewInput failed with %s [%" PRIu32 "]",
+-		         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
+-		goto err_out;
++		if ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] !=
++		    AVAuthorizationStatusAuthorized)
++			return ERROR_ACCESS_DENIED;
+ 	}
+ 
++	OSStatus status = AudioQueueNewInput(&mac->audioFormat, mac_audio_queue_input_cb, mac,
++	    nullptr, kCFRunLoopCommonModes, 0, &mac->audioQueue);
++	if (status != noErr)
++		goto failed;
+ 	for (size_t index = 0; index < MAC_AUDIO_QUEUE_NUM_BUFFERS; index++)
+ 	{
+-		devStat = AudioQueueAllocateBuffer(mac->audioQueue,
+-		                                   mac->FramesPerPacket * 2 * mac->format.nChannels,
+-		                                   &mac->audioBuffers[index]);
+-
+-		if (devStat != 0)
+-		{
+-			errCode = GetLastError();
+-			WLog_ERR(TAG, "AudioQueueAllocateBuffer failed with %s [%" PRIu32 "]",
+-			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
+-			goto err_out;
+-		}
+-
+-		devStat = AudioQueueEnqueueBuffer(mac->audioQueue, mac->audioBuffers[index], 0, nullptr);
+-
+-		if (devStat != 0)
+-		{
+-			errCode = GetLastError();
+-			WLog_ERR(TAG, "AudioQueueEnqueueBuffer failed with %s [%" PRIu32 "]",
+-			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
+-			goto err_out;
+-		}
++		status = AudioQueueAllocateBuffer(mac->audioQueue,
++		    mac->FramesPerPacket * mac->audioFormat.mBytesPerFrame, &mac->audioBuffers[index]);
++		if (status != noErr)
++			goto failed;
++		status = AudioQueueEnqueueBuffer(mac->audioQueue, mac->audioBuffers[index], 0, nullptr);
++		if (status != noErr)
++			goto failed;
+ 	}
+-
+-	devStat = AudioQueueStart(mac->audioQueue, nullptr);
+-
+-	if (devStat != 0)
+-	{
+-		errCode = GetLastError();
+-		WLog_ERR(TAG, "AudioQueueStart failed with %s [%" PRIu32 "]",
+-		         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
+-		goto err_out;
+-	}
+-
++	status = AudioQueueStart(mac->audioQueue, nullptr);
++	if (status != noErr)
++		goto failed;
+ 	mac->isOpen = true;
++	pthread_mutex_lock(&mac->forwardingLock);
++	mac->forwarding = TRUE;
++	pthread_mutex_unlock(&mac->forwardingLock);
+ 	return CHANNEL_RC_OK;
+-err_out:
+-	(void)audin_mac_close(device);
++failed:
++	WLog_ERR(TAG, "Starting microphone capture failed with OSStatus %d", (int)status);
++	(void)audin_mac_stop_capture(mac);
+ 	return CHANNEL_RC_INITIALIZATION_ERROR;
+ }
+ 
+-static UINT audin_mac_free(IAudinDevice *device)
++static UINT audin_mac_open(IAudinDevice *device, AudinReceive receive, void *user_data)
+ {
++	if (!device || !receive)
++		return ERROR_INVALID_PARAMETER;
+ 	AudinMacDevice *mac = (AudinMacDevice *)device;
+-	int error;
++	pthread_mutex_lock(&mac->captureLock);
++	(void)audin_mac_stop_capture(mac);
++	mac->receive = receive;
++	mac->user_data = user_data;
++	mac->negotiated = TRUE;
++	UINT error = mac->enabled ? audin_mac_start_capture(mac) : CHANNEL_RC_OK;
++	if (error == ERROR_ACCESS_DENIED)
++	{
++		/* Permission changes must not close an otherwise working remote session. */
++		mac->enabled = FALSE;
++		error = CHANNEL_RC_OK;
++	}
++	pthread_mutex_unlock(&mac->captureLock);
++	return error;
++}
+ 
+-	if (device == nullptr)
++static UINT audin_mac_free(IAudinDevice *device)
++{
++	if (!device)
+ 		return ERROR_INVALID_PARAMETER;
+-
++	AudinMacDevice *mac = (AudinMacDevice *)device;
++	pthread_mutex_lock(&audinControlLock);
++	AudinMacControl *control = audin_mac_control(mac->rdpcontext, FALSE);
++	if (control && control->device == mac)
++		control->device = nullptr;
++	while (mac->controlRefs)
++		pthread_cond_wait(&audinControlCondition, &audinControlLock);
++	pthread_mutex_unlock(&audinControlLock);
+ 	(void)audin_mac_close(device);
+-
++	pthread_mutex_destroy(&mac->forwardingLock);
++	pthread_mutex_destroy(&mac->captureLock);
+ 	free(mac);
+ 	return CHANNEL_RC_OK;
+ }
+@@ -389,21 +483,23 @@ static UINT audin_mac_parse_addin_args(AudinMacDevice *device, const ADDIN_ARGV
+ FREERDP_ENTRY_POINT(UINT VCAPITYPE mac_freerdp_audin_client_subsystem_entry(
+     PFREERDP_AUDIN_DEVICE_ENTRY_POINTS pEntryPoints))
+ {
+-	DWORD errCode;
+-	char errString[1024];
+-	const ADDIN_ARGV *args;
+-	AudinMacDevice *mac;
+-	UINT error;
+-	mac = (AudinMacDevice *)calloc(1, sizeof(AudinMacDevice));
+-
++	if (!pEntryPoints || !pEntryPoints->rdpcontext || !pEntryPoints->args ||
++	    !pEntryPoints->pRegisterAudinDevice)
++		return ERROR_INVALID_PARAMETER;
++	AudinMacDevice *mac = calloc(1, sizeof(*mac));
+ 	if (!mac)
+-	{
+-		errCode = GetLastError();
+-		WLog_ERR(TAG, "calloc failed with %s [%" PRIu32 "]",
+-		         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
+ 		return CHANNEL_RC_NO_MEMORY;
++	if (pthread_mutex_init(&mac->captureLock, nullptr) != 0)
++	{
++		free(mac);
++		return CHANNEL_RC_INITIALIZATION_ERROR;
++	}
++	if (pthread_mutex_init(&mac->forwardingLock, nullptr) != 0)
++	{
++		pthread_mutex_destroy(&mac->captureLock);
++		free(mac);
++		return CHANNEL_RC_INITIALIZATION_ERROR;
+ 	}
+-
+ 	mac->iface.Open = audin_mac_open;
+ 	mac->iface.FormatSupported = audin_mac_format_supported;
+ 	mac->iface.SetFormat = audin_mac_set_format;
+@@ -411,59 +507,24 @@ FREERDP_ENTRY_POINT(UINT VCAPITYPE mac_freerdp_audin_client_subsystem_entry(
+ 	mac->iface.Free = audin_mac_free;
+ 	mac->rdpcontext = pEntryPoints->rdpcontext;
+ 	mac->dev_unit = -1;
+-	args = pEntryPoints->args;
+-
+-	if ((error = audin_mac_parse_addin_args(mac, args)))
+-	{
+-		WLog_ERR(TAG, "audin_mac_parse_addin_args failed with %" PRIu32 "!", error);
+-		goto error_out;
+-	}
+-
+-	if ((error = pEntryPoints->pRegisterAudinDevice(pEntryPoints->plugin, (IAudinDevice *)mac)))
++	UINT error = audin_mac_parse_addin_args(mac, pEntryPoints->args);
++	if (error)
++		goto failed;
++	pthread_mutex_lock(&audinControlLock);
++	AudinMacControl *control = audin_mac_control(mac->rdpcontext, TRUE);
++	if (!control || control->device)
+ 	{
+-		WLog_ERR(TAG, "RegisterAudinDevice failed with error %" PRIu32 "!", error);
+-		goto error_out;
++		pthread_mutex_unlock(&audinControlLock);
++		error = control ? CHANNEL_RC_INITIALIZATION_ERROR : CHANNEL_RC_NO_MEMORY;
++		goto failed;
+ 	}
+-
+-#if defined(MAC_OS_X_VERSION_10_14)
+-	if (@available(macOS 10.14, *))
+-	{
+-		@autoreleasepool
+-		{
+-			AVAuthorizationStatus status =
+-			    [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+-			switch (status)
+-			{
+-				case AVAuthorizationStatusAuthorized:
+-					mac->isAuthorized = TRUE;
+-					break;
+-				case AVAuthorizationStatusNotDetermined:
+-					[AVCaptureDevice
+-					    requestAccessForMediaType:AVMediaTypeAudio
+-					            completionHandler:^(BOOL granted) {
+-						            if (granted == YES)
+-						            {
+-							            mac->isAuthorized = TRUE;
+-						            }
+-						            else
+-							            WLog_WARN(TAG, "Microphone access denied by user");
+-					            }];
+-					break;
+-				case AVAuthorizationStatusRestricted:
+-					WLog_WARN(TAG, "Microphone access restricted by policy");
+-					break;
+-				case AVAuthorizationStatusDenied:
+-					WLog_WARN(TAG, "Microphone access denied by policy");
+-					break;
+-				default:
+-					break;
+-			}
+-		}
+-	}
+-#endif
+-
+-	return CHANNEL_RC_OK;
+-error_out:
+-	free(mac);
++	mac->enabled = control->enabled;
++	control->device = mac;
++	pthread_mutex_unlock(&audinControlLock);
++	error = pEntryPoints->pRegisterAudinDevice(pEntryPoints->plugin, &mac->iface);
++	if (!error)
++		return CHANNEL_RC_OK;
++failed:
++	(void)audin_mac_free(&mac->iface);
+ 	return error;
+ }
 diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
-index 86eaa6843..fc344a937 100644
+index 86eaa68..fc344a9 100644
 --- a/client/CMakeLists.txt
 +++ b/client/CMakeLists.txt
 @@ -56,6 +56,14 @@ if(FREERDP_VENDOR AND WITH_CLIENT)
@@ -18,7 +551,7 @@ index 86eaa6843..fc344a937 100644
    endif()
  
 diff --git a/client/Mac/CMakeLists.txt b/client/Mac/CMakeLists.txt
-index d690a72..d8b806e 100644
+index d690a72..3799096 100644
 --- a/client/Mac/CMakeLists.txt
 +++ b/client/Mac/CMakeLists.txt
 @@ -16,10 +16,11 @@ find_library(COCOA_LIBRARY Cocoa REQUIRED)
@@ -28,24 +561,28 @@ index d690a72..d8b806e 100644
 +find_library(CARBON_LIBRARY Carbon REQUIRED)
  
 -set(EXTRA_LIBS ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${APPKIT_LIBRARY} ${IOKIT_LIBRARY})
-+set(EXTRA_LIBS ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${APPKIT_LIBRARY} ${IOKIT_LIBRARY} ${CARBON_LIBRARY})
++set(EXTRA_LIBS "-framework ImageIO" ${COREGRAPHICS_LIBRARY} ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${APPKIT_LIBRARY} ${IOKIT_LIBRARY} ${CARBON_LIBRARY})
  
 -set(XIBS CertificateDialog.xib PasswordDialog.xib)
 +set(XIBS "")
  
  set(SOURCES "")
  
-@@ -30,8 +31,7 @@ set(OBJECTIVE_SOURCES
+@@ -30,8 +31,11 @@ set(OBJECTIVE_SOURCES
      MRDPView.m
      Keyboard.m
      Clipboard.m
 -    CertificateDialog.m
 -    PasswordDialog.m
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../macos/Sources/OrbisMacClipboard.m
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../shared/Sources/Capabilities/OrbisSessionCapabilities.m
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../shared/Sources/Clipboard/OrbisClipboardPort.m
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../shared/Sources/Clipboard/OrbisClipboardImage.m
 +    ${CMAKE_CURRENT_SOURCE_DIR}/../../macos/Sources/OrbisKeyboardCompatibility.m
  )
  
  list(APPEND SOURCES ${OBJECTIVE_SOURCES})
-@@ -43,8 +43,6 @@ set(HEADERS
+@@ -43,8 +47,6 @@ set(HEADERS
      MRDPView.h
      Keyboard.h
      Clipboard.h
@@ -54,21 +591,40 @@ index d690a72..d8b806e 100644
  )
  
  set(RESOURCES "en.lproj/InfoPlist.strings")
-@@ -85,5 +83,8 @@ endif()
+@@ -58,6 +60,7 @@ endif()
+ 
+ add_library(${PROJECT_NAME} ../common/client.c ${SOURCES} ${HEADERS} ${RESOURCES})
+ 
++target_compile_options(${PROJECT_NAME} PRIVATE -fblocks)
+ set(LIBS ${EXTRA_LIBS} freerdp-client)
+ 
+ target_link_libraries(${PROJECT_NAME} PUBLIC ${LIBS})
+@@ -85,5 +88,10 @@ endif()
  
  install(TARGETS ${PROJECT_NAME} COMPONENT client RESOURCE DESTINATION ${CMAKE_INSTALL_DATADIR})
  
 -include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 -add_subdirectory(cli)
-+include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../macos/Sources)
++include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../macos/Sources
++  ${CMAKE_CURRENT_SOURCE_DIR}/../../shared/Sources/Capabilities
++  ${CMAKE_CURRENT_SOURCE_DIR}/../../shared/Sources/Clipboard)
 +option(WITH_MACFREERDP_CLI "Build the legacy MacFreeRDP command-line app" ON)
 +if(WITH_MACFREERDP_CLI)
 +  add_subdirectory(cli)
 +endif()
 diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
+index 1562f32..1ffbc11 100644
 --- a/client/Mac/Clipboard.m
 +++ b/client/Mac/Clipboard.m
-@@ -34,24 +34,31 @@
+@@ -20,6 +20,7 @@
+ 
+ #import "Clipboard.h"
+ #import "MRDPView.h"
++#import "OrbisClipboardImage.h"
+ 
+ int mac_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
+ {
+@@ -34,24 +35,45 @@ int mac_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
  	mfContext *mfc = (mfContext *)cliprdr->custom;
  	WINPR_ASSERT(mfc);
  
@@ -81,22 +637,22 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
 -		return -1;
 -
 -	for (UINT32 index = 0; index < numFormats; index++)
--	{
++	@synchronized((id)mfc->view)
+ 	{
 -		formatId = pFormatIds[index];
 -		formatName = ClipboardGetFormatName(mfc->clipboard, formatId);
--
--		formats[index].formatId = formatId;
--		formats[index].formatName = nullptr;
--
--		if ((formatId > CF_MAX) && formatName)
--			formats[index].formatName = _strdup(formatName);
-+	@synchronized((id)mfc->view)
-+	{
 +		if (!mfc->clipboard) return -1;
 +		pFormatIds = nullptr;
 +		numFormats = ClipboardGetFormatIds(mfc->clipboard, &pFormatIds);
 +
-+		formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
++		MRDPView *view = (MRDPView *)mfc->view;
++        if (![view allowsClipboardFeature:OrbisSessionFeatureClipboardText direction:OrbisCapabilityDirectionToRemote])
++            numFormats = 0;
++        UINT32 textFormats = numFormats;
++        BOOL image = view->localClipboardContent.pngData != nil &&
++            [view allowsClipboardFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionToRemote];
++        if (image) numFormats += view->localClipboardDIB ? 3 : 2;
++        formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
 +
 +		if (!formats && numFormats)
 +		{
@@ -104,21 +660,86 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
 +			return -1;
 +		}
 +
-+		for (UINT32 index = 0; index < numFormats; index++)
++		for (UINT32 index = 0; index < textFormats; index++)
 +		{
 +			formatId = pFormatIds[index];
 +			formatName = ClipboardGetFormatName(mfc->clipboard, formatId);
-+
+ 
+-		formats[index].formatId = formatId;
+-		formats[index].formatName = nullptr;
 +			formats[index].formatId = formatId;
 +			formats[index].formatName = nullptr;
-+
+ 
+-		if ((formatId > CF_MAX) && formatName)
+-			formats[index].formatName = _strdup(formatName);
 +			if ((formatId > CF_MAX) && formatName)
 +				formats[index].formatName = _strdup(formatName);
 +		}
++        if (image) {
++            formats[textFormats].formatId = ClipboardRegisterFormat(mfc->clipboard, "image/png");
++            formats[textFormats++].formatName = _strdup("image/png");
++            formats[textFormats].formatId = ClipboardRegisterFormat(mfc->clipboard, "PNG");
++            formats[textFormats++].formatName = _strdup("PNG");
++            if (view->localClipboardDIB) formats[textFormats].formatId = CF_DIB;
++        }
  	}
  
  	formatList.common.msgFlags = 0;
-@@ -197,13 +204,10 @@
+@@ -102,6 +124,9 @@ static UINT mac_cliprdr_send_client_format_data_request(CliprdrClientContext *cl
+ 
+ 	formatDataRequest.requestedFormatId = formatId;
+ 	mfc->requestedFormatId = formatId;
++    @synchronized((id)mfc->view) {
++        mfc->clipboardRequestedLocalChangeCount = ((MRDPView *)mfc->view)->pasteboard_changecount;
++    }
+ 	(void)ResetEvent(mfc->clipboardRequestEvent);
+ 
+ 	return cliprdr->ClientFormatDataRequest(cliprdr, &formatDataRequest);
+@@ -136,7 +161,9 @@ static UINT mac_cliprdr_monitor_ready(CliprdrClientContext *cliprdr,
+ {
+ 	mfContext *mfc = (mfContext *)cliprdr->custom;
+ 
++    if (![(MRDPView *)mfc->view isCurrentClipboardContext:mfc]) return CHANNEL_RC_OK;
+ 	mfc->clipboardSync = TRUE;
++    [(MRDPView *)mfc->view setClipboardChannelReady:YES forGeneration:mfc->orbisCapabilityGeneration];
+ 	mac_cliprdr_send_client_capabilities(cliprdr);
+ 	mac_cliprdr_send_client_format_list(cliprdr);
+ 
+@@ -177,6 +204,23 @@ static UINT mac_cliprdr_server_capabilities(CliprdrClientContext *cliprdr,
+  *
+  * @return 0 on success, otherwise a Win32 error code
+  */
++static UINT32 mac_cliprdr_preferred_format(mfContext *mfc)
++{
++    UINT32 png = 0, dib = 0, unicode = 0, text = 0;
++    MRDPView *view = (MRDPView *)mfc->view;
++    BOOL imageAllowed = [view allowsClipboardFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionFromRemote];
++    BOOL textAllowed = [view allowsClipboardFeature:OrbisSessionFeatureClipboardText direction:OrbisCapabilityDirectionFromRemote];
++    for (UINT32 i = 0; i < mfc->numServerFormats; i++) {
++        const CLIPRDR_FORMAT *format = &mfc->serverFormats[i];
++        if (format->formatName && (!strcmp(format->formatName, "image/png") || !strcmp(format->formatName, "PNG")))
++            png = format->formatId;
++        else if (format->formatId == CF_DIB || format->formatId == CF_DIBV5) dib = format->formatId;
++        else if (format->formatId == CF_UNICODETEXT) unicode = format->formatId;
++        else if (format->formatId == CF_TEXT || format->formatId == CF_OEMTEXT) text = format->formatId;
++    }
++    return (imageAllowed ? (png ?: dib) : 0) ?: (textAllowed ? (unicode ?: text) : 0);
++}
++
+ static UINT mac_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
+                                            const CLIPRDR_FORMAT_LIST *formatList)
+ {
+@@ -184,6 +228,9 @@ static UINT mac_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
+ 
+ 	mfContext *mfc = (mfContext *)cliprdr->custom;
+ 	WINPR_ASSERT(mfc);
++    @synchronized((id)mfc->view) {
++        mfc->clipboardOfferGeneration = ++((MRDPView *)mfc->view)->clipboardPublicationEpoch;
++    }
+ 
+ 	if (mfc->serverFormats)
+ 	{
+@@ -197,13 +244,10 @@ static UINT mac_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
  		mfc->numServerFormats = 0;
  	}
  
@@ -133,37 +754,35 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
  		return CHANNEL_RC_NO_MEMORY;
  
  	for (UINT32 index = 0; index < mfc->numServerFormats; index++)
-@@ -216,6 +220,11 @@
+@@ -216,27 +260,23 @@ static UINT mac_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
  	}
  
  	mac_cliprdr_send_client_format_list_response(cliprdr, TRUE);
+-
+-	uint32_t formatId = 0;
+-	for (UINT32 index = 0; index < mfc->numServerFormats; index++)
 +	if (mfc->requestedFormatId)
-+	{
-+		mfc->clipboardUpdatePending = TRUE;
-+		return CHANNEL_RC_OK;
-+	}
- 
- 	uint32_t formatId = 0;
- 	for (UINT32 index = 0; index < mfc->numServerFormats; index++)
-@@ -227,15 +236,32 @@
- 		else if (format->formatId == CF_OEMTEXT)
- 		{
- 			if (formatId == 0)
+ 	{
+-		const CLIPRDR_FORMAT *format = &(mfc->serverFormats[index]);
+-
+-		if (format->formatId == CF_UNICODETEXT)
+-			formatId = format->formatId;
+-		else if (format->formatId == CF_OEMTEXT)
+-		{
+-			if (formatId == 0)
 -				formatId == CF_OEMTEXT;
-+				formatId = CF_OEMTEXT;
- 		}
- 		else if (format->formatId == CF_TEXT)
- 		{
- 			if (formatId == 0)
+-		}
+-		else if (format->formatId == CF_TEXT)
+-		{
+-			if (formatId == 0)
 -				formatId == CF_TEXT;
 -		}
--	}
--
-+				formatId = CF_TEXT;
-+		}
-+	}
-+
-+	return mac_cliprdr_send_client_format_data_request(cliprdr, formatId);
++		mfc->clipboardUpdatePending = TRUE;
++		return CHANNEL_RC_OK;
+ 	}
+ 
+-	return mac_cliprdr_send_client_format_data_request(cliprdr, formatId);
++	return mac_cliprdr_send_client_format_data_request(cliprdr, mac_cliprdr_preferred_format(mfc));
 +}
 +
 +static UINT mac_cliprdr_complete_request(CliprdrClientContext *cliprdr)
@@ -173,30 +792,55 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
 +	(void)SetEvent(mfc->clipboardRequestEvent);
 +	if (!mfc->clipboardUpdatePending) return CHANNEL_RC_OK;
 +	mfc->clipboardUpdatePending = FALSE;
-+	UINT32 formatId = 0;
-+	for (UINT32 i = 0; i < mfc->numServerFormats; i++)
-+	{
-+		UINT32 candidate = mfc->serverFormats[i].formatId;
-+		if (candidate == CF_UNICODETEXT) { formatId = candidate; break; }
-+		if (!formatId && (candidate == CF_TEXT || candidate == CF_OEMTEXT)) formatId = candidate;
-+	}
- 	return mac_cliprdr_send_client_format_data_request(cliprdr, formatId);
++	return mac_cliprdr_send_client_format_data_request(cliprdr, mac_cliprdr_preferred_format(mfc));
  }
  
-@@ -295,7 +321,11 @@
+ /**
+@@ -294,8 +334,25 @@ mac_cliprdr_server_format_data_request(CliprdrClientContext *cliprdr,
+ 	mfContext *mfc = (mfContext *)cliprdr->custom;
  	WINPR_ASSERT(mfc);
  
- 	formatId = formatDataRequest->requestedFormatId;
+-	formatId = formatDataRequest->requestedFormatId;
 -	data = (BYTE *)ClipboardGetData(mfc->clipboard, formatId, &size);
-+	@synchronized((id)mfc->view)
-+	{
-+		size = 0;
-+		data = mfc->clipboard ? (BYTE *)ClipboardGetData(mfc->clipboard, formatId, &size) : nullptr;
-+	}
++    formatId = formatDataRequest->requestedFormatId;
++    BOOL imageResponse = NO;
++    @synchronized((id)mfc->view) {
++        MRDPView *view = (MRDPView *)mfc->view;
++        size = 0; data = nullptr;
++        UINT32 png = ClipboardRegisterFormat(mfc->clipboard, "image/png");
++        UINT32 windowsPNG = ClipboardRegisterFormat(mfc->clipboard, "PNG");
++        NSData *image = nil;
++        if (formatId == png || formatId == windowsPNG) image = view->localClipboardContent.pngData;
++        else if (formatId == CF_DIB) image = view->localClipboardDIB;
++        if (image.length && [view allowsClipboardFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionToRemote]) {
++            size = (UINT32)image.length; data = malloc(size);
++            if (data) { memcpy(data, image.bytes, size); imageResponse = YES; }
++        } else if (formatId == CF_TEXT || formatId == CF_OEMTEXT || formatId == CF_UNICODETEXT ||
++                   formatId == CF_LOCALE || formatId == ClipboardRegisterFormat(mfc->clipboard, "text/plain")) {
++            if ([view allowsClipboardFeature:OrbisSessionFeatureClipboardText direction:OrbisCapabilityDirectionToRemote])
++            data = mfc->clipboard ? (BYTE *)ClipboardGetData(mfc->clipboard, formatId, &size) : nullptr;
++        }
++    }
  
  	response.common.msgFlags = CB_RESPONSE_OK;
  	response.common.dataLen = size;
-@@ -324,60 +354,43 @@
+@@ -308,9 +365,14 @@ mac_cliprdr_server_format_data_request(CliprdrClientContext *cliprdr,
+ 		response.requestedFormatData = nullptr;
+ 	}
+ 
+-	cliprdr->ClientFormatDataResponse(cliprdr, &response);
++	UINT sent = cliprdr->ClientFormatDataResponse(cliprdr, &response);
+ 
++    BOOL provided = data != NULL;
+ 	free(data);
++    if (sent == CHANNEL_RC_OK && provided && [(MRDPView *)mfc->view isCurrentClipboardContext:mfc]) {
++        if (imageResponse) [(MRDPView *)mfc->view recordClipboardImageSupport:OrbisCapabilityDirectionToRemote forGeneration:mfc->orbisCapabilityGeneration];
++        else [(MRDPView *)mfc->view recordClipboardTextSupport:OrbisCapabilityDirectionToRemote forGeneration:mfc->orbisCapabilityGeneration];
++    }
+ 
+ 	return CHANNEL_RC_OK;
+ }
+@@ -324,60 +386,60 @@ static UINT
  mac_cliprdr_server_format_data_response(CliprdrClientContext *cliprdr,
                                          const CLIPRDR_FORMAT_DATA_RESPONSE *formatDataResponse)
  {
@@ -252,53 +896,81 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
 -		NSArray *types = [[NSArray alloc] initWithObjects:NSPasteboardTypeString, nil];
 -		[view->pasteboard_wr declareTypes:types owner:view];
 -		[view->pasteboard_wr setString:str forType:NSPasteboardTypeString];
--	}
--
--	return CHANNEL_RC_OK;
 +		mac_cliprdr_complete_request(cliprdr);
 +		return CHANNEL_RC_OK;
-+	}
-+	// Ownership changes can replace text with an unsupported image while a reply
-+	// is in flight. Drain that reply before requesting the latest offer.
-+	if (mfc->clipboardUpdatePending || !formatId)
-+		return mac_cliprdr_complete_request(cliprdr);
-+	if (formatId != CF_TEXT && formatId != CF_OEMTEXT && formatId != CF_UNICODETEXT)
-+		return mac_cliprdr_complete_request(cliprdr);
-+	NSString *text = nil;
-+	@synchronized(view)
-+	{
-+		if (formatDataResponse->requestedFormatData &&
-+		    ClipboardSetData(mfc->clipboard, formatId, formatDataResponse->requestedFormatData,
-+		                     formatDataResponse->common.dataLen))
-+		{
-+			UINT32 size = 0;
-+			UINT32 utf8 = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
-+			char *data = ClipboardGetData(mfc->clipboard, utf8, &size);
-+			if (data) text = [[NSString alloc] initWithBytes:data length:strnlen(data, size)
-+			    encoding:NSUTF8StringEncoding];
-+			free(data);
-+		}
-+	}
-+	if (text)
-+	{
-+		[view performSelectorOnMainThread:@selector(receiveClipboardText:)
-+		                      withObject:text waitUntilDone:NO];
-+		[text release];
-+	}
+ 	}
+-
+-	return CHANNEL_RC_OK;
++    // CLIPRDR has no response identifier. Drain old ownership before requesting
++    // the latest offer; generation checks also guard queued main-thread publication.
++    if (mfc->clipboardUpdatePending || !formatId)
++        return mac_cliprdr_complete_request(cliprdr);
++    NSUInteger length = formatDataResponse->common.dataLen;
++    if (!formatDataResponse->requestedFormatData || !length || length > OrbisClipboardMaximumPNGBytes)
++        return mac_cliprdr_complete_request(cliprdr);
++    NSData *png = nil; NSString *text = nil;
++    BOOL pngFormat = NO;
++    for (UINT32 i = 0; i < mfc->numServerFormats; i++) {
++        CLIPRDR_FORMAT *format = &mfc->serverFormats[i];
++        if (format->formatId == formatId && format->formatName &&
++            (!strcmp(format->formatName, "image/png") || !strcmp(format->formatName, "PNG"))) pngFormat = YES;
++    }
++    NSData *wire = [NSData dataWithBytes:formatDataResponse->requestedFormatData length:length];
++    if (pngFormat) {
++        // Enforce PNG signature before the generic Apple raster decoder.
++        OrbisClipboardContent *encoded = [[[OrbisClipboardContent alloc] initWithText:nil pngData:wire] autorelease];
++        if (encoded) png = [OrbisClipboardImageCodec normalizedPNGData:encoded.pngData];
++    } else if (formatId == CF_DIB || formatId == CF_DIBV5)
++        png = [OrbisClipboardImageCodec PNGDataFromDIBData:wire];
++    else if (formatId == CF_TEXT || formatId == CF_OEMTEXT || formatId == CF_UNICODETEXT) {
++        // Isolated WinPR conversion cannot replace the current local offer.
++        wClipboard *conversion = ClipboardCreate();
++        if (conversion && ClipboardSetData(conversion, formatId, wire.bytes, (UINT32)wire.length)) {
++            UINT32 size = 0;
++            UINT32 utf8 = ClipboardRegisterFormat(conversion, "text/plain");
++            char *data = ClipboardGetData(conversion, utf8, &size);
++            if (data) text = [[[NSString alloc] initWithBytes:data length:strnlen(data, size)
++                encoding:NSUTF8StringEncoding] autorelease];
++            free(data);
++        }
++        ClipboardDestroy(conversion);
++    }
++    OrbisClipboardContent *content = [[[OrbisClipboardContent alloc] initWithText:text pngData:png] autorelease];
++    if (content && (content.text || content.pngData) && [view isCurrentClipboardContext:mfc]) {
++        NSDictionary *publication = @{ @"content":content, @"generation":@(mfc->clipboardOfferGeneration),
++            @"localChange":@(mfc->clipboardRequestedLocalChangeCount) };
++        [view performSelectorOnMainThread:@selector(receiveClipboardPublication:)
++                              withObject:publication waitUntilDone:NO];
++        if (png) [view recordClipboardImageSupport:OrbisCapabilityDirectionFromRemote forGeneration:mfc->orbisCapabilityGeneration];
++        else if (text) [view recordClipboardTextSupport:OrbisCapabilityDirectionFromRemote forGeneration:mfc->orbisCapabilityGeneration];
++    }
++
 +	return mac_cliprdr_complete_request(cliprdr);
  }
  
  /**
-@@ -407,6 +420,8 @@
+@@ -407,6 +469,12 @@ void mac_cliprdr_init(mfContext *mfc, CliprdrClientContext *cliprdr)
  {
  	cliprdr->custom = (void *)mfc;
  	mfc->cliprdr = cliprdr;
 +	mfc->requestedFormatId = 0;
 +	mfc->clipboardUpdatePending = FALSE;
++    @synchronized((id)mfc->view) {
++        mfc->clipboardOfferGeneration = ++((MRDPView *)mfc->view)->clipboardPublicationEpoch;
++        mfc->orbisCapabilityGeneration = ((MRDPView *)mfc->view)->sessionCapabilityGeneration;
++    }
  
  	mfc->clipboard = ClipboardCreate();
  	mfc->clipboardRequestEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-@@ -428,6 +443,10 @@
+@@ -425,9 +493,18 @@ void mac_cliprdr_init(mfContext *mfc, CliprdrClientContext *cliprdr)
+ 
+ void mac_cliprdr_uninit(mfContext *mfc, CliprdrClientContext *cliprdr)
+ {
++	if ([(MRDPView *)mfc->view isCurrentClipboardContext:mfc]) {
++        [(MRDPView *)mfc->view setClipboardChannelReady:NO forGeneration:mfc->orbisCapabilityGeneration];
++        @synchronized((id)mfc->view) { ++((MRDPView *)mfc->view)->clipboardPublicationEpoch; }
++    }
++    mfc->clipboardSync = FALSE;
  	cliprdr->custom = nullptr;
  	mfc->cliprdr = nullptr;
  
@@ -311,7 +983,7 @@ diff --git a/client/Mac/Clipboard.m b/client/Mac/Clipboard.m
  	(void)CloseHandle(mfc->clipboardRequestEvent);
  }
 diff --git a/client/Mac/Keyboard.m b/client/Mac/Keyboard.m
-index 31682d1d5..625142d56 100644
+index 31682d1..625142d 100644
 --- a/client/Mac/Keyboard.m
 +++ b/client/Mac/Keyboard.m
 @@ -158,9 +158,9 @@ static enum APPLE_KEYBOARD_TYPE mac_identify_keyboard_type(uint32_t vendorID, ui
@@ -355,9 +1027,15 @@ index 31682d1d5..625142d56 100644
  
  	if (tIOHIDManagerRef)
 diff --git a/client/Mac/MRDPView.h b/client/Mac/MRDPView.h
+index d7d978f..52dc8c3 100644
 --- a/client/Mac/MRDPView.h
 +++ b/client/Mac/MRDPView.h
-@@ -28,6 +28,12 @@
+@@ -25,9 +25,17 @@
+ #import "mfreerdp.h"
+ #import "mf_client.h"
+ #import "Keyboard.h"
++#import "OrbisClipboardPort.h"
++#import "OrbisSessionCapabilities.h"
  
  #import <CoreGraphics/CoreGraphics.h>
  
@@ -370,7 +1048,7 @@ diff --git a/client/Mac/MRDPView.h b/client/Mac/MRDPView.h
  @interface MRDPView : NSView
  {
  	mfContext *mfc;
-@@ -44,13 +50,34 @@
+@@ -44,14 +52,43 @@
  	int argc;
  	char **argv;
  	DWORD kbdModFlags;
@@ -403,13 +1081,30 @@ diff --git a/client/Mac/MRDPView.h b/client/Mac/MRDPView.h
  	BOOL skipMoveWindowOnce;
 +	BOOL mapsCommandShortcutsToControl;
    @public
++	id<OrbisClipboardPort> clipboardPort;
++	OrbisClipboardContent *localClipboardContent;
++	NSData *localClipboardDIB;
++	OrbisSessionCapabilities *sessionCapabilities;
++	uint64_t sessionCapabilityGeneration;
++	uint64_t clipboardPublicationEpoch;
++	OrbisCapabilityPeerSupport clipboardImagePeer[2];
++	OrbisCapabilityPeerSupport clipboardTextPeer[2];
  	NSPasteboard *pasteboard_rd;
  	NSPasteboard *pasteboard_wr;
-@@ -63,12 +90,28 @@
+ 	int pasteboard_changecount;
+@@ -63,12 +100,36 @@
  - (void)setCursor:(NSCursor *)cursor;
  - (void)setScrollOffset:(int)xOffset y:(int)yOffset w:(int)width h:(int)height;
  
 +- (void)receiveClipboardText:(NSString *)text;
++- (void)receiveClipboardPublication:(NSDictionary *)publication;
++- (BOOL)allowsClipboardFeature:(OrbisSessionFeature)feature direction:(OrbisCapabilityDirection)direction;
++- (BOOL)isCurrentClipboardContext:(mfContext *)candidate;
++- (void)setClipboardChannelReady:(BOOL)ready;
++- (void)setClipboardChannelReady:(BOOL)ready forGeneration:(uint64_t)generation;
++- (void)recordClipboardImageSupport:(OrbisCapabilityDirection)direction forGeneration:(uint64_t)generation;
++- (void)recordClipboardTextSupport:(OrbisCapabilityDirection)direction forGeneration:(uint64_t)generation;
++- (void)setSessionCapabilities:(OrbisSessionCapabilities *)capabilities generation:(uint64_t)generation;
  - (void)onPasteboardTimerFired:(NSTimer *)timer;
 +- (void)setCommandKeyDown:(BOOL)commandIsDown;
 +- (void)cancelPendingCommandTap;
@@ -435,6 +1130,7 @@ diff --git a/client/Mac/MRDPView.h b/client/Mac/MRDPView.h
  @end
  
 diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
+index e82f50b..a967793 100644
 --- a/client/Mac/MRDPView.m
 +++ b/client/Mac/MRDPView.m
 @@ -17,6 +17,8 @@
@@ -446,32 +1142,35 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  #include <winpr/windows.h>
  
  #include "mf_client.h"
-@@ -24,8 +26,7 @@
+@@ -24,8 +26,9 @@
  #import "MRDPView.h"
  #import "MRDPCursor.h"
  #import "Clipboard.h"
 -#import "PasswordDialog.h"
 -#import "CertificateDialog.h"
++#import "OrbisMacClipboard.h"
++#import "OrbisClipboardImage.h"
 +#import "OrbisKeyboardCompatibility.h"
  
  #include <winpr/crt.h>
  #include <winpr/assert.h>
-@@ -48,8 +49,14 @@
+@@ -48,9 +51,15 @@
  #import "freerdp/log.h"
  
  #import <CoreGraphics/CoreGraphics.h>
 +#import <IOKit/hidsystem/IOLLEvent.h>
  
  #define TAG CLIENT_TAG("mac")
-+
+ 
 +__attribute__((visibility("default")))
 +NSString *const MRDPViewDidPresentFirstFrameNotification =
 +    @"MRDPViewDidPresentFirstFrameNotification";
 +NSString *const MRDPViewDidResizeDesktopNotification = @"MRDPViewDidResizeDesktopNotification";
- 
++
  static BOOL mf_Pointer_New(rdpContext *context, rdpPointer *pointer);
  static void mf_Pointer_Free(rdpContext *context, rdpPointer *pointer);
-@@ -67,16 +74,21 @@
+ static BOOL mf_Pointer_Set(rdpContext *context, rdpPointer *pointer);
+@@ -67,16 +76,21 @@ static void input_activity_cb(freerdp *instance);
  static DWORD WINAPI mac_client_thread(void *param);
  static void windows_to_apple_cords(MRDPView *view, NSRect *r);
  static CGContextRef mac_create_bitmap_context(rdpContext *context);
@@ -493,7 +1192,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  
  	WINPR_ASSERT(rdp_context);
  	context = rdp_context;
-@@ -148,6 +160,7 @@
+@@ -148,6 +162,7 @@ DWORD WINAPI mac_client_thread(void *param)
  		}
  
  		[view setIs_connected:1];
@@ -501,7 +1200,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  		nCount = 0;
  		events[nCount++] = mfc->stopEvent;
  
-@@ -203,7 +216,7 @@
+@@ -203,7 +218,7 @@ DWORD WINAPI mac_client_thread(void *param)
  		}
  
  	disconnect:
@@ -510,7 +1209,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  		freerdp_disconnect(instance);
  
  		ExitThread(0);
-@@ -253,12 +266,14 @@
+@@ -253,12 +268,14 @@ DWORD WINAPI mac_client_thread(void *param)
  	self->currentCursor = cursor;
  	dispatch_async(dispatch_get_main_queue(), ^{
  		[[self window] invalidateCursorRectsForView:self];
@@ -526,7 +1225,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  - (BOOL)acceptsFirstResponder
-@@ -266,6 +281,101 @@
+@@ -266,6 +283,101 @@ DWORD WINAPI mac_client_thread(void *param)
  	return YES;
  }
  
@@ -628,7 +1327,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  - (void)mouseMoved:(NSEvent *)event
  {
  	[super mouseMoved:event];
-@@ -273,12 +383,33 @@
+@@ -273,12 +385,33 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -662,7 +1361,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  - (void)mouseDown:(NSEvent *)event
  {
  	[super mouseDown:event];
-@@ -286,6 +417,12 @@
+@@ -286,6 +419,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -675,7 +1374,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -299,6 +436,11 @@
+@@ -299,6 +438,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -687,7 +1386,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -312,6 +454,12 @@
+@@ -312,6 +456,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -700,7 +1399,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -325,6 +473,11 @@
+@@ -325,6 +475,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -712,7 +1411,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -338,6 +491,12 @@
+@@ -338,6 +493,12 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -725,7 +1424,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -352,6 +511,11 @@
+@@ -352,6 +513,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -737,7 +1436,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
-@@ -415,12 +579,28 @@
+@@ -415,6 +581,11 @@ DWORD WINAPI mac_client_thread(void *param)
  	if (!self.is_connected)
  		return;
  
@@ -749,10 +1448,10 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	NSPoint loc = [event locationInWindow];
  	int x = (int)loc.x;
  	int y = (int)loc.y;
- 	// send mouse motion event to RDP server
+@@ -422,6 +593,17 @@ DWORD WINAPI mac_client_thread(void *param)
  	mf_scale_mouse_event(context, PTR_FLAGS_MOVE, x, y);
  }
-+
+ 
 +- (void)rightMouseDragged:(NSEvent *)event
 +{
 +	[self mouseDragged:event];
@@ -763,10 +1462,11 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +	[self mouseDragged:event];
 +}
 +
- 
++
  static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE type)
  {
-@@ -465,6 +645,13 @@
+ 	/**
+@@ -465,6 +647,13 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  #endif
  
@@ -780,7 +1480,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	/* Perform keycode correction for all ISO keyboards */
  
  	if (type == APPLE_KEYBOARD_TYPE_ISO)
-@@ -484,6 +671,16 @@
+@@ -484,6 +673,16 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  		return;
  
  	DWORD modFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -797,12 +1497,10 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  
  	WINPR_ASSERT(instance);
  	WINPR_ASSERT(instance->context);
-@@ -496,6 +693,327 @@
- 
- 	updateFlagStates(input, modFlags, kbdModFlags);
+@@ -498,6 +697,327 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  	kbdModFlags = modFlags;
-+}
-+
+ }
+ 
 +// Captured text already includes the local layout's modifiers and dead-key composition.
 +- (void)sendCapturedText:(NSString *)text forEvent:(CGEventRef)event
 +{
@@ -1122,15 +1820,15 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +		freerdp_input_send_unicode_keyboard_event(input, KBD_FLAGS_RELEASE, character);
 +	}
 +	return TRUE;
- }
- 
++}
++
  - (void)keyDown:(NSEvent *)event
-@@ -509,8 +1027,24 @@
+ {
+ 	DWORD keyCode;
+@@ -509,8 +1029,24 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
--
--	[self flagsChanged:event];
 +	if (mapsCommandShortcutsToControl && ([event modifierFlags] & NSEventModifierFlagCommand))
 +		[self setCommandKeyDown:YES];
 +	if ([self sendMappedEditingEvent:event])
@@ -1140,7 +1838,8 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +	unsigned short code = [event keyCode];
 +	if (code < sizeof(locallyHandledKeyDown) / sizeof(locallyHandledKeyDown[0]))
 +		locallyHandledKeyDown[code] = FALSE;
-+
+ 
+-	[self flagsChanged:event];
 +	DWORD modFlags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
 +	if (mapsCommandShortcutsToControl && (modFlags & NSEventModifierFlagCommand))
 +	{
@@ -1152,7 +1851,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  
  	keyFlags = KBD_FLAGS_DOWN;
  	keyCode = [event keyCode];
-@@ -533,6 +1067,11 @@
+@@ -533,6 +1069,11 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  	         keyCode, scancode, vkcode, keyFlags, GetVirtualKeyName(vkcode));
  #endif
  
@@ -1164,7 +1863,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	WINPR_ASSERT(instance->context);
  	freerdp_input_send_keyboard_event(instance->context->input, keyFlags, scancode);
  }
-@@ -548,8 +1087,22 @@
+@@ -548,8 +1089,22 @@ static DWORD fixKeyCode(DWORD keyCode, unichar keyChar, enum APPLE_KEYBOARD_TYPE
  
  	if (!is_connected)
  		return;
@@ -1189,7 +1888,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  
  	keyFlags = KBD_FLAGS_RELEASE;
  	keyCode = [event keyCode];
-@@ -673,6 +1226,17 @@
+@@ -673,6 +1228,19 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  	return updateFlagStates(input, 0, aKbdModFlags);
  }
  
@@ -1201,20 +1900,20 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +		mirror->is_connected = 0;
 +	}
 +	[displayMirrors release];
++	[clipboardPort release]; [localClipboardContent release]; [localClipboardDIB release];
++	[sessionCapabilities release];
 +	[super dealloc];
 +}
 +
  - (void)releaseResources
  {
  	for (int i = 0; i < argc; i++)
-@@ -686,13 +1250,22 @@
+@@ -686,13 +1254,22 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)drawRect:(NSRect)rect
  {
 -	if (!context)
 -		return;
--
--	if (self->bitmap_context)
 +	CGImageRef cgImage = nullptr;
 +	MRDPView *source = displaySource ?: self;
 +	@synchronized (source)
@@ -1227,7 +1926,8 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +		CGImageRef crop = CGImageCreateWithImageInRect(cgImage, NSRectToCGRect(displayRegion));
 +		CGImageRelease(cgImage); cgImage = crop;
 +	}
-+
+ 
+-	if (self->bitmap_context)
 +	if (cgImage)
  	{
  		CGContextRef cgContext = [[NSGraphicsContext currentContext] CGContext];
@@ -1235,20 +1935,105 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  		CGContextSaveGState(cgContext);
  		CGContextClipToRect(
  		    cgContext, CGRectMake(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height));
-@@ -710,69 +1283,45 @@
+@@ -710,69 +1287,134 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  	}
  }
  
++- (void)setSessionCapabilities:(OrbisSessionCapabilities *)capabilities generation:(uint64_t)generation
++{
++    @synchronized(self) {
++        if (sessionCapabilities != capabilities) { [sessionCapabilities release]; sessionCapabilities = [capabilities retain]; }
++        sessionCapabilityGeneration = generation;
++        clipboardImagePeer[0] = clipboardImagePeer[1] = OrbisCapabilityPeerSupportUnknown;
++        clipboardTextPeer[0] = clipboardTextPeer[1] = OrbisCapabilityPeerSupportUnknown;
++    }
++    [self setClipboardChannelReady:NO];
++}
++- (BOOL)isCurrentClipboardContext:(mfContext *)candidate
++{
++    @synchronized(self) {
++        return candidate == mfc && candidate->orbisCapabilityGeneration == sessionCapabilityGeneration;
++    }
++}
++- (BOOL)allowsClipboardFeature:(OrbisSessionFeature)feature direction:(OrbisCapabilityDirection)direction
++{
++    @synchronized(self) {
++        return !sessionCapabilities || [[sessionCapabilities.snapshot capabilityForFeature:feature direction:direction] canAttempt];
++    }
++}
++- (void)setClipboardChannelReady:(BOOL)ready
++{ [self setClipboardChannelReady:ready forGeneration:sessionCapabilityGeneration]; }
++- (void)setClipboardChannelReady:(BOOL)ready forGeneration:(uint64_t)generation
++{
++    @synchronized(self) {
++        if (generation != sessionCapabilityGeneration) return;
++        OrbisSessionCapabilityLimits *imageLimits = [[[OrbisSessionCapabilityLimits alloc]
++            initWithFormats:@[@"image/png", @"PNG", @"CF_DIB"] maximumBytes:OrbisClipboardMaximumPNGBytes
++            maximumMonitors:0 maximumWidth:OrbisClipboardMaximumImageDimension
++            maximumHeight:OrbisClipboardMaximumImageDimension] autorelease];
++        for (NSUInteger direction = 0; direction < 2; direction++) {
++            OrbisSessionCapabilityFacts facts = { .implemented=YES, .enabled=YES,
++                .permission=OrbisCapabilityPermissionGranted,
++                .channel=ready ? OrbisCapabilityChannelReady : OrbisCapabilityChannelPending,
++                .peerSupport=clipboardTextPeer[direction] };
++            [sessionCapabilities updateFeature:OrbisSessionFeatureClipboardText direction:direction facts:facts
++                limits:nil forGeneration:sessionCapabilityGeneration];
++            facts.peerSupport = clipboardImagePeer[direction];
++            [sessionCapabilities updateFeature:OrbisSessionFeatureClipboardImage direction:direction facts:facts
++                limits:imageLimits forGeneration:sessionCapabilityGeneration];
++        }
++    }
++}
++- (void)recordClipboardSupport:(OrbisSessionFeature)feature direction:(OrbisCapabilityDirection)direction
++                forGeneration:(uint64_t)generation
++{
++    @synchronized(self) {
++        if (generation != sessionCapabilityGeneration) return;
++        if (feature == OrbisSessionFeatureClipboardImage) clipboardImagePeer[direction] = OrbisCapabilityPeerSupportSupported;
++        else clipboardTextPeer[direction] = OrbisCapabilityPeerSupportSupported;
++        if (!sessionCapabilities) return;
++        OrbisSessionCapability *capability = [sessionCapabilities.snapshot capabilityForFeature:feature direction:direction];
++        OrbisSessionCapabilityFacts facts = capability.facts;
++        facts.peerSupport = OrbisCapabilityPeerSupportSupported;
++        [sessionCapabilities updateFeature:feature direction:direction facts:facts limits:capability.limits
++            forGeneration:generation];
++    }
++}
++- (void)recordClipboardImageSupport:(OrbisCapabilityDirection)direction forGeneration:(uint64_t)generation
++{ [self recordClipboardSupport:OrbisSessionFeatureClipboardImage direction:direction forGeneration:generation]; }
++- (void)recordClipboardTextSupport:(OrbisCapabilityDirection)direction forGeneration:(uint64_t)generation
++{ [self recordClipboardSupport:OrbisSessionFeatureClipboardText direction:direction forGeneration:generation]; }
++- (id<OrbisClipboardPort>)localClipboardPort
++{
++    NSAssert(NSThread.isMainThread, @"Clipboard access requires the main thread");
++    if (!clipboardPort && pasteboard_rd) clipboardPort = [[OrbisMacClipboard alloc] initWithPasteboard:pasteboard_rd];
++    return clipboardPort;
++}
 +- (void)receiveClipboardText:(NSString *)text
 +{
-+	NSAssert([NSThread isMainThread], @"Clipboard publication requires the main thread");
-+	if (!is_connected || !pasteboard_wr || !text) return;
-+	[pasteboard_wr declareTypes:@[NSPasteboardTypeString] owner:self];
-+	[pasteboard_wr setString:text forType:NSPasteboardTypeString];
-+	// Remote publication must not be advertised back as a new local copy.
-+	pasteboard_changecount = (int)[pasteboard_wr changeCount];
++    if (!is_connected || ![self allowsClipboardFeature:OrbisSessionFeatureClipboardText
++        direction:OrbisCapabilityDirectionFromRemote]) return;
++    OrbisClipboardContent *content = [[[OrbisClipboardContent alloc] initWithText:text pngData:nil] autorelease];
++    if (content && [[self localClipboardPort] publishContent:content])
++        pasteboard_changecount = (int)pasteboard_wr.changeCount;
 +}
-+
++- (void)receiveClipboardPublication:(NSDictionary *)publication
++{
++    NSAssert(NSThread.isMainThread, @"Clipboard publication requires the main thread");
++    @synchronized(self) {
++        if (!is_connected || !mfc || !mfc->cliprdr ||
++            [publication[@"generation"] unsignedLongLongValue] != clipboardPublicationEpoch ||
++            [publication[@"localChange"] longLongValue] != pasteboard_rd.changeCount) return;
++        OrbisClipboardContent *content = publication[@"content"];
++        NSString *text = [self allowsClipboardFeature:OrbisSessionFeatureClipboardText
++            direction:OrbisCapabilityDirectionFromRemote] ? content.text : nil;
++        NSData *image = [self allowsClipboardFeature:OrbisSessionFeatureClipboardImage
++            direction:OrbisCapabilityDirectionFromRemote] ? content.pngData : nil;
++        OrbisClipboardContent *allowed = [[[OrbisClipboardContent alloc] initWithText:text pngData:image] autorelease];
++        if (allowed && [[self localClipboardPort] publishContent:allowed])
++            pasteboard_changecount = (int)pasteboard_wr.changeCount;
++    }
++}
  - (void)onPasteboardTimerFired:(NSTimer *)timer
  {
 -	UINT32 formatId;
@@ -1263,11 +2048,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 -	if (changeCount == pasteboard_changecount)
 -		return;
 -
-+	(void)timer;
-+	if (!is_connected || !mfc) return;
-+	int changeCount = (int)[pasteboard_rd changeCount];
-+	if (changeCount == pasteboard_changecount) return;
- 	pasteboard_changecount = changeCount;
+-	pasteboard_changecount = changeCount;
 -	NSArray *items = [pasteboard_rd pasteboardItems];
 -
 -	if ([items count] < 1)
@@ -1285,15 +2066,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 -		formatType = [type UTF8String];
 -
 -		if (strcmp(formatType, "public.utf8-plain-text") == 0)
-+	NSString *text = [pasteboard_rd stringForType:NSPasteboardTypeString];
-+	const char *data = [text UTF8String];
-+	NSUInteger size = [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
-+	@synchronized(self)
-+	{
-+		if (!mfc->clipboard) return;
-+		// WinPR's clipboard is not thread safe: its channel callbacks run off-main.
-+		if (data && size < UINT32_MAX)
- 		{
+-		{
 -			formatData = [item dataForType:type];
 -
 -			if (formatData == nil)
@@ -1312,19 +2085,39 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 -			formatMatch = TRUE;
 -
 -			break;
-+			UINT32 format = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
-+			ClipboardSetData(mfc->clipboard, format, data, (UINT32)size + 1);
- 		}
+-		}
 -	}
 -
 -	if (!formatMatch)
 -		ClipboardEmpty(mfc->clipboard);
 -
 -	if (mfc->clipboardSync)
-+		else ClipboardEmpty(mfc->clipboard);
-+	}
-+	if (mfc->clipboardSync && mfc->cliprdr)
- 		mac_cliprdr_send_client_format_list(mfc->cliprdr);
+-		mac_cliprdr_send_client_format_list(mfc->cliprdr);
++    (void)timer;
++    if (!is_connected || !mfc) return;
++    int changeCount = (int)pasteboard_rd.changeCount;
++    if (changeCount == pasteboard_changecount) return;
++    BOOL textAllowed = [self allowsClipboardFeature:OrbisSessionFeatureClipboardText direction:OrbisCapabilityDirectionToRemote];
++    BOOL imageAllowed = [self allowsClipboardFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionToRemote];
++    if (!mfc->clipboardSync) return;
++    OrbisClipboardContent *read = (textAllowed || imageAllowed) ? [[self localClipboardPort] readContent] : nil;
++    OrbisClipboardContent *content = [[[OrbisClipboardContent alloc]
++        initWithText:textAllowed ? read.text : nil pngData:imageAllowed ? read.pngData : nil] autorelease];
++    NSData *dib = content.pngData ? [OrbisClipboardImageCodec DIBDataFromPNGData:content.pngData] : nil;
++    @synchronized(self) {
++        pasteboard_changecount = changeCount;
++        [localClipboardContent release]; localClipboardContent = [content retain];
++        [localClipboardDIB release]; localClipboardDIB = [dib retain];
++        if (!mfc->clipboard) return;
++        ClipboardEmpty(mfc->clipboard);
++        if (content.text) {
++            const char *text = content.text.UTF8String;
++            UINT32 format = ClipboardRegisterFormat(mfc->clipboard, "text/plain");
++            ClipboardSetData(mfc->clipboard, format, text,
++                (UINT32)[content.text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] + 1);
++        }
++    }
++    if (mfc->clipboardSync && mfc->cliprdr) mac_cliprdr_send_client_format_list(mfc->cliprdr);
  }
  
  - (void)pause
@@ -1334,7 +2127,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	dispatch_async(dispatch_get_main_queue(), ^{
  		[self->pasteboard_timer invalidate];
  	});
-@@ -788,6 +1337,7 @@
+@@ -788,6 +1430,7 @@ static BOOL releaseFlagStates(rdpInput *input, UINT32 aKbdModFlags)
  
  - (void)resume
  {
@@ -1342,7 +2135,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	if (!self.is_connected)
  		return;
  
-@@ -932,7 +1482,11 @@
+@@ -932,7 +1575,11 @@ BOOL mac_post_connect(freerdp *instance)
  		return FALSE;
  
  	gdi = instance->context->gdi;
@@ -1355,7 +2148,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	graphics_register_pointer(instance->context->graphics, &rdp_pointer);
  	/* setup pasteboard (aka clipboard) for copy operations (write only) */
  	view->pasteboard_wr = [NSPasteboard generalPasteboard];
-@@ -941,7 +1495,6 @@
+@@ -941,7 +1588,6 @@ BOOL mac_post_connect(freerdp *instance)
  		view->pasteboard_rd = [NSPasteboard generalPasteboard];
  		view->pasteboard_changecount = -1;
  	});
@@ -1363,7 +2156,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	mfc->appleKeyboardType = mac_detect_keyboard_type();
  	return TRUE;
  }
-@@ -962,7 +1515,18 @@
+@@ -962,7 +1608,18 @@ void mac_post_disconnect(freerdp *instance)
  	                                   mac_OnChannelConnectedEventHandler);
  	PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub,
  	                                      mac_OnChannelDisconnectedEventHandler);
@@ -1382,7 +2175,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **username, char **password,
-@@ -974,65 +1538,75 @@
+@@ -974,65 +1631,75 @@ static BOOL mac_show_auth_dialog(MRDPView *view, NSString *title, char **usernam
  	WINPR_ASSERT(password);
  	WINPR_ASSERT(domain);
  
@@ -1392,12 +2185,6 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 -
 -	if (*username)
 -		dialog.username = [NSString stringWithCString:*username encoding:NSUTF8StringEncoding];
--
--	if (*password)
--		dialog.password = [NSString stringWithCString:*password encoding:NSUTF8StringEncoding];
--
--	if (*domain)
--		dialog.domain = [NSString stringWithCString:*domain encoding:NSUTF8StringEncoding];
 +	__block NSString *submittedIdentity = nil;
 +	__block NSString *submittedPassword = nil;
 +	__block BOOL accepted = FALSE;
@@ -1441,10 +2228,14 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
 +		showDialog();
 +	else
 +		dispatch_sync(dispatch_get_main_queue(), showDialog);
-+
+ 
+-	if (*password)
+-		dialog.password = [NSString stringWithCString:*password encoding:NSUTF8StringEncoding];
 +	if (!accepted)
 +		return FALSE;
-+
+ 
+-	if (*domain)
+-		dialog.domain = [NSString stringWithCString:*domain encoding:NSUTF8StringEncoding];
 +	char *submittedUser = nullptr;
 +	char *submittedDomain = nullptr;
 +	if (!freerdp_parse_username([submittedIdentity UTF8String], &submittedUser, &submittedDomain))
@@ -1513,7 +2304,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **password, char **domain,
-@@ -1092,11 +1666,6 @@
+@@ -1092,11 +1759,6 @@ static BOOL mac_authenticate_raw(freerdp *instance, char **username, char **pass
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
  			goto fail;
  	}
@@ -1525,7 +2316,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	else if (!*password)
  	{
  		if (!mac_show_auth_dialog(view, title, username, password, domain))
-@@ -1149,35 +1718,41 @@
+@@ -1149,35 +1811,41 @@ DWORD mac_verify_certificate_ex(freerdp *instance, const char *host, UINT16 port
                                  const char *common_name, const char *subject, const char *issuer,
                                  const char *fingerprint, DWORD flags)
  {
@@ -1596,7 +2387,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
-@@ -1186,35 +1761,11 @@
+@@ -1186,35 +1854,11 @@ DWORD mac_verify_changed_certificate_ex(freerdp *instance, const char *host, UIN
                                          const char *old_subject, const char *old_issuer,
                                          const char *old_fingerprint, DWORD flags)
  {
@@ -1637,7 +2428,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  }
  
  int mac_logon_error_info(freerdp *instance, UINT32 data, UINT32 type)
-@@ -1456,7 +2007,19 @@
+@@ -1456,7 +2100,19 @@ BOOL mac_end_paint(rdpContext *context)
  
  	windows_to_apple_cords(mfc->view, &newDrawRect);
  	dispatch_sync(dispatch_get_main_queue(), ^{
@@ -1658,7 +2449,7 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	});
  	gdi->primary->hdc->hwnd->ninvalid = 0;
  	return TRUE;
-@@ -1477,23 +2040,35 @@
+@@ -1477,23 +2133,35 @@ BOOL mac_desktop_resize(rdpContext *context)
  	 * put on the update message queue to be able to properly flush pending updates,
  	 * resize, and then continue with post-resizing graphical updates.
  	 */
@@ -1680,14 +2471,13 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  		return FALSE;
  
 -	view->bitmap_context = mac_create_bitmap_context(context);
--
--	if (!view->bitmap_context)
 +	CGContextRef bitmapContext = mac_create_bitmap_context(context);
 +	@synchronized (view)
 +	{
 +		view->bitmap_context = bitmapContext;
 +	}
-+
+ 
+-	if (!view->bitmap_context)
 +	if (!bitmapContext)
  		return FALSE;
  
@@ -1702,9 +2492,11 @@ diff --git a/client/Mac/MRDPView.m b/client/Mac/MRDPView.m
  	e.width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
  	e.height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
 diff --git a/client/Mac/mf_client.m b/client/Mac/mf_client.m
+index f88209e..a0f06bd 100644
 --- a/client/Mac/mf_client.m
 +++ b/client/Mac/mf_client.m
-@@ -146,5 +146,12 @@ void mf_scale_mouse_event(void *context, UINT16 flags, UINT16 x, UINT16 y)
+@@ -145,6 +145,13 @@ static void mf_scale_mouse_coordinates(mfContext *mfc, UINT16 *px, UINT16 *py)
+ void mf_scale_mouse_event(void *context, UINT16 flags, UINT16 x, UINT16 y)
  {
  	mfContext *mfc = (mfContext *)context;
 +	/* The button sender does not encode wheel events on the AInput channel. */
@@ -1717,8 +2509,23 @@ diff --git a/client/Mac/mf_client.m b/client/Mac/mf_client.m
  	MRDPView *view = (MRDPView *)mfc->view;
  	// Convert to windows coordinates
  	y = [view frame].size.height - y;
+diff --git a/client/Mac/mfreerdp.h b/client/Mac/mfreerdp.h
+index bc93150..c19a12f 100644
+--- a/client/Mac/mfreerdp.h
++++ b/client/Mac/mfreerdp.h
+@@ -57,6 +57,10 @@ typedef struct
+ 	wClipboard* clipboard;
+ 	UINT32 numServerFormats;
+ 	UINT32 requestedFormatId;
++	BOOL clipboardUpdatePending;
++	UINT64 clipboardOfferGeneration;
++	UINT64 orbisCapabilityGeneration;
++	INT64 clipboardRequestedLocalChangeCount;
+ 	HANDLE clipboardRequestEvent;
+ 	CLIPRDR_FORMAT* serverFormats;
+ 	CliprdrClientContext* cliprdr;
 diff --git a/client/iOS/AppDelegate.h b/client/iOS/AppDelegate.h
-index dc13cd8fa..26a075ef5 100644
+index dc13cd8..26a075e 100644
 --- a/client/iOS/AppDelegate.h
 +++ b/client/iOS/AppDelegate.h
 @@ -12,7 +12,7 @@
@@ -1831,7 +2638,7 @@ index 1f4f473..cc28352 100644
  	 Called when the application is about to terminate.
  	 Save data if appropriate.
 diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
-index b1cc404..62fb92b 100644
+index b1cc404..a99448a 100644
 --- a/client/iOS/CMakeLists.txt
 +++ b/client/iOS/CMakeLists.txt
 @@ -30,6 +30,11 @@ project(iFreeRDP VERSION ${FREERDP_DEFAULT_PROJECT_VERSION})
@@ -1867,7 +2674,7 @@ index b1cc404..62fb92b 100644
  
  message("sysroot:    ${CMAKE_SYSROOT}")
  message("target:     ${CMAKE_OSX_DEPLOYMENT_TARGET}")
-@@ -85,6 +90,12 @@ include_directories(SYSTEM ${IOS_CLIENT_FREERDP_DIR})
+@@ -85,6 +90,14 @@ include_directories(SYSTEM ${IOS_CLIENT_FREERDP_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_MISC_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_MODELS_DIR})
  include_directories(SYSTEM ${IOS_CLIENT_VIEWS_DIR})
@@ -1877,10 +2684,12 @@ index b1cc404..62fb92b 100644
 +include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/About)
 +include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/Diagnostics)
 +include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/Transport)
++include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/Capabilities)
++include_directories(SYSTEM ${ORBIS_SHARED_DIR}/Sources/Clipboard)
  
  # Dependencies
  include(ExternalDeps)
-@@ -115,6 +126,21 @@ set(SRCS
+@@ -115,6 +128,21 @@ set(SRCS
      Controllers/CredentialsEditorController.m
      Controllers/CredentialsInputController.h
      Controllers/CredentialsInputController.m
@@ -1902,7 +2711,7 @@ index b1cc404..62fb92b 100644
      Controllers/EditorBaseController.h
      Controllers/EditorBaseController.m
      Controllers/EditorSelectionController.h
-@@ -123,14 +149,14 @@ set(SRCS
+@@ -123,14 +151,14 @@ set(SRCS
      Controllers/EncryptionController.m
      Controllers/MainTabBarController.h
      Controllers/MainTabBarController.m
@@ -1919,7 +2728,7 @@ index b1cc404..62fb92b 100644
      FreeRDP/ios_cliprdr.h
      FreeRDP/ios_cliprdr.m
      FreeRDP/ios_freerdp_events.h
-@@ -155,6 +181,21 @@ set(SRCS
+@@ -155,6 +183,25 @@ set(SRCS
      Models/Encryptor.m
      Models/GlobalDefaults.h
      Models/GlobalDefaults.m
@@ -1938,10 +2747,14 @@ index b1cc404..62fb92b 100644
 +    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTransportFactory.m
 +    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisTunnelBridge.m
 +    ${ORBIS_SHARED_DIR}/Sources/Transport/OrbisRDPTransportRoute.c
++    ${ORBIS_SHARED_DIR}/Sources/Capabilities/OrbisSessionCapabilities.m
++    ${ORBIS_SHARED_DIR}/Sources/Clipboard/OrbisClipboardPort.m
++    ${ORBIS_SHARED_DIR}/Sources/Clipboard/OrbisClipboardImage.m
++    ${ORBIS_IPADOS_APP_DIR}/Sources/OrbisIPadClipboard.m
      Models/RDPKeyboard.h
      Models/RDPKeyboard.m
      Models/RDPSession.h
-@@ -204,10 +245,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
+@@ -204,10 +251,8 @@ set(IOS_CLIENT_RESOURCES_XIBS
      Resources/EditSubEditTableViewCell.xib
      Resources/EditTextTableViewCell.xib
      Resources/MainWindow.xib
@@ -1952,7 +2765,7 @@ index b1cc404..62fb92b 100644
  )
  
  set(IOS_CLIENT_RESOURCES_PNGS
-@@ -224,6 +263,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
+@@ -224,6 +269,7 @@ set(IOS_CLIENT_RESOURCES_PNGS
      Resources/alert-window-landscape.png
      Resources/alert-window.png
      Resources/cancel_button_background.png
@@ -1960,7 +2773,7 @@ index b1cc404..62fb92b 100644
      Resources/Default@2x.png
      Resources/Default-568h@2x.png
      Resources/Default-Landscape@2x~ipad.png
-@@ -287,6 +327,17 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
+@@ -287,8 +333,20 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
  find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
  find_library(WEBKIT_FRAMEWORK WebKit REQUIRED)
  find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
@@ -1977,8 +2790,11 @@ index b1cc404..62fb92b 100644
 +    PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fblocks")
  
  set(EXTRA_LIBS
++    "-framework ImageIO"
      ${FOUNDATION_FRAMEWORK}
-@@ -298,9 +349,11 @@ set(EXTRA_LIBS
+     ${COREGRAPHICS_FRAMEWORK}
+     ${METAL_FRAMEWORK}
+@@ -298,9 +356,11 @@ set(EXTRA_LIBS
      ${SYSTEMCONFIGURATION_FRAMEWORK}
      ${WEBKIT_FRAMEWORK}
      ${GAMECONTROLLER_FRAMEWORK}
@@ -1991,7 +2807,7 @@ index b1cc404..62fb92b 100644
                ${IOS_CLIENT_RESOURCES_DIR}/en.lproj ${IOS_CLIENT_DIR}/Defaults.plist
  )
  
-@@ -325,7 +378,11 @@ add_executable(
+@@ -325,7 +385,11 @@ add_executable(
  add_dependencies(${PROJECT_NAME} freerdp)
  
  set_target_properties(
@@ -2004,7 +2820,7 @@ index b1cc404..62fb92b 100644
                               RESOURCE "${RESOURCES}"
  )
  
-@@ -347,6 +404,26 @@ if(TARGET winpr3-lib)
+@@ -347,6 +411,26 @@ if(TARGET winpr3-lib)
    list(APPEND _ios_embed_frameworks "${_ios_winpr_runtime_location}")
  endif()
  
@@ -2031,7 +2847,7 @@ index b1cc404..62fb92b 100644
  if(AVCODEC_LIBRARIES MATCHES "\\.framework/")
    get_filename_component(_ios_ffmpeg_framework "${AVCODEC_LIBRARIES}" DIRECTORY)
    list(APPEND _ios_embed_frameworks "${_ios_ffmpeg_framework}")
-@@ -358,3 +435,11 @@ if(_ios_embed_frameworks)
+@@ -358,3 +442,11 @@ if(_ios_embed_frameworks)
                                 XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
    )
  endif()
@@ -2761,8 +3577,356 @@ index b6d378c..860ae5c 100644
  	[_session_scrollview addGestureRecognizer:doubleLongPressRecognizer];
  	[_session_scrollview addGestureRecognizer:single3FingersTapRecognizer];
  
+diff --git a/client/iOS/FreeRDP/ios_cliprdr.m b/client/iOS/FreeRDP/ios_cliprdr.m
+index 6fec27f..07efd82 100644
+--- a/client/iOS/FreeRDP/ios_cliprdr.m
++++ b/client/iOS/FreeRDP/ios_cliprdr.m
+@@ -30,6 +30,27 @@
+ #include <freerdp/client/cliprdr.h>
+ 
+ #include "ios_cliprdr.h"
++#import "RDPSession.h"
++#import "OrbisClipboardImage.h"
++
++static void ios_cliprdr_publish(mfContext *afc, NSString *text, NSData *png)
++{
++	if (!afc || !afc->mfi || !afc->mfi->session) return;
++	NSMutableDictionary *delivery = [NSMutableDictionary dictionaryWithDictionary:@{
++	    @"session": @(afc->clipboardSessionGeneration), @"offer": @(afc->clipboardOfferGeneration) }];
++	if (text) delivery[@"text"] = text;
++	if (png) delivery[@"png"] = png;
++	[afc->mfi->session performSelectorOnMainThread:@selector(receiveClipboardContent:)
++	    withObject:delivery waitUntilDone:NO];
++}
++static BOOL ios_cliprdr_publish_text(rdpContext *context, UINT8 *data, UINT32 size)
++{
++	mfContext *afc = (mfContext *)context;
++	if (!afc || size > OrbisClipboardMaximumTextBytes) return TRUE;
++	NSString *text = [[[NSString alloc] initWithBytes:data length:size encoding:NSUTF8StringEncoding] autorelease];
++	if (text) ios_cliprdr_publish(afc, text, nil);
++	return TRUE;
++}
+ 
+ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
+ {
+@@ -49,9 +70,27 @@ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
+ 	if (!afc || !afc->cliprdr)
+ 		return ERROR_INVALID_PARAMETER;
+ 
++	if (afc->clipboardPNG)
++	{
++		CLIPRDR_FORMAT imageFormats[5] = { 0 };
++		UINT32 count = 0;
++		imageFormats[count++] = (CLIPRDR_FORMAT){ .formatId = ClipboardRegisterFormat(afc->clipboard, "PNG"), .formatName = "PNG" };
++		imageFormats[count++] = (CLIPRDR_FORMAT){ .formatId = ClipboardRegisterFormat(afc->clipboard, "image/png"), .formatName = "image/png" };
++		if (afc->clipboardDIB) imageFormats[count++] = (CLIPRDR_FORMAT){ .formatId = CF_DIB };
++		if (afc->clipboardHasText)
++		{
++			imageFormats[count++] = (CLIPRDR_FORMAT){ .formatId = CF_UNICODETEXT };
++			imageFormats[count++] = (CLIPRDR_FORMAT){ .formatId = CF_TEXT };
++		}
++		formatList.common.msgType = CB_FORMAT_LIST;
++		formatList.numFormats = count;
++		formatList.formats = imageFormats;
++		return cliprdr->ClientFormatList ? cliprdr->ClientFormatList(cliprdr, &formatList) : ERROR_INVALID_PARAMETER;
++	}
++
+ 	pFormatIds = nullptr;
+ 	numFormats = ClipboardGetFormatIds(afc->clipboard, &pFormatIds);
+-	formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
++	formats = (CLIPRDR_FORMAT *)calloc(MAX(numFormats, 1), sizeof(CLIPRDR_FORMAT));
+ 
+ 	if (!formats)
+ 		goto fail;
+@@ -83,6 +122,8 @@ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
+ 	rc = afc->cliprdr->ClientFormatList(afc->cliprdr, &formatList);
+ fail:
+ 	free(pFormatIds);
++	if (formats)
++		for (UINT32 index = 0; index < numFormats; index++) free(formats[index].formatName);
+ 	free(formats);
+ 	return rc;
+ }
+@@ -106,16 +147,19 @@ static UINT ios_cliprdr_send_client_format_data_request(CliprdrClientContext *cl
+ 	formatDataRequest.common.msgFlags = 0;
+ 	formatDataRequest.requestedFormatId = formatId;
+ 	afc->requestedFormatId = formatId;
++	afc->clipboardRequestedGeneration = afc->clipboardOfferGeneration;
++	afc->clipboardRequestPending = TRUE;
+ 	(void)ResetEvent(afc->clipboardRequestEvent);
+ 	rc = cliprdr->ClientFormatDataRequest(cliprdr, &formatDataRequest);
++	if (rc != CHANNEL_RC_OK) afc->clipboardRequestPending = FALSE;
+ fail:
+ 	return rc;
+ }
+ 
+ static UINT ios_cliprdr_send_client_capabilities(CliprdrClientContext *cliprdr)
+ {
+-	CLIPRDR_CAPABILITIES capabilities;
+-	CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet;
++	CLIPRDR_CAPABILITIES capabilities = WINPR_C_ARRAY_INIT;
++	CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet = WINPR_C_ARRAY_INIT;
+ 
+ 	if (!cliprdr || !cliprdr->ClientCapabilities)
+ 		return ERROR_INVALID_PARAMETER;
+@@ -155,6 +199,7 @@ static UINT ios_cliprdr_monitor_ready(CliprdrClientContext *cliprdr,
+ 		return rc;
+ 
+ 	afc->clipboardSync = TRUE;
++	[afc->mfi->session updateClipboardCapabilityReady:YES generation:afc->clipboardSessionGeneration];
+ 	return CHANNEL_RC_OK;
+ }
+ 
+@@ -194,6 +239,23 @@ static UINT ios_cliprdr_server_capabilities(CliprdrClientContext *cliprdr,
+ 	return CHANNEL_RC_OK;
+ }
+ 
++static UINT ios_cliprdr_request_latest(CliprdrClientContext *cliprdr)
++{
++	mfContext *afc = (mfContext *)cliprdr->custom;
++	if (afc->clipboardRequestPending) return CHANNEL_RC_OK;
++	UINT32 png = 0, dib = 0, unicode = 0, text = 0;
++	for (UINT32 i = 0; i < afc->numServerFormats; i++)
++	{
++		CLIPRDR_FORMAT *format = &afc->serverFormats[i];
++		if (format->formatName && (!strcmp(format->formatName, "PNG") || !strcmp(format->formatName, "image/png"))) png = format->formatId;
++		else if (format->formatId == CF_DIB || format->formatId == CF_DIBV5) dib = format->formatId;
++		else if (format->formatId == CF_UNICODETEXT) unicode = format->formatId;
++		else if (format->formatId == CF_TEXT) text = format->formatId;
++	}
++	UINT32 best = png ?: dib ?: unicode ?: text;
++	return best ? ios_cliprdr_send_client_format_data_request(cliprdr, best) : CHANNEL_RC_OK;
++}
++
+ /**
+  * Function description
+  *
+@@ -214,6 +276,9 @@ static UINT ios_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
+ 	if (!afc)
+ 		return ERROR_INVALID_PARAMETER;
+ 
++	afc->clipboardOfferGeneration++;
++	[afc->mfi->session setClipboardOfferGeneration:afc->clipboardOfferGeneration forSession:afc->clipboardSessionGeneration];
++
+ 	if (afc->serverFormats)
+ 	{
+ 		for (UINT32 index = 0; index < afc->numServerFormats; index++)
+@@ -224,6 +289,15 @@ static UINT ios_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
+ 		afc->numServerFormats = 0;
+ 	}
+ 
++	CLIPRDR_FORMAT_LIST_RESPONSE acknowledgment = WINPR_C_ARRAY_INIT;
++	acknowledgment.common.msgType = CB_FORMAT_LIST_RESPONSE;
++	acknowledgment.common.msgFlags = CB_RESPONSE_OK;
++	if (cliprdr->ClientFormatListResponse)
++	{
++		rc = cliprdr->ClientFormatListResponse(cliprdr, &acknowledgment);
++		if (rc != CHANNEL_RC_OK) return rc;
++	}
++	if (formatList->numFormats > 256 || (formatList->numFormats && !formatList->formats)) return CHANNEL_RC_OK;
+ 	if (formatList->numFormats < 1)
+ 		return CHANNEL_RC_OK;
+ 
+@@ -247,24 +321,7 @@ static UINT ios_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
+ 		}
+ 	}
+ 
+-	BOOL unicode = FALSE;
+-	BOOL text = FALSE;
+-	for (UINT32 index = 0; index < afc->numServerFormats; index++)
+-	{
+-		format = &(afc->serverFormats[index]);
+-
+-		if (format->formatId == CF_UNICODETEXT)
+-			unicode = TRUE;
+-
+-		else if (format->formatId == CF_TEXT)
+-			text = TRUE;
+-	}
+-
+-	if (unicode)
+-		return ios_cliprdr_send_client_format_data_request(cliprdr, CF_UNICODETEXT);
+-	if (text)
+-		return ios_cliprdr_send_client_format_data_request(cliprdr, CF_TEXT);
+-	return CHANNEL_RC_OK;
++	return ios_cliprdr_request_latest(cliprdr);
+ }
+ 
+ /**
+@@ -337,7 +394,18 @@ ios_cliprdr_server_format_data_request(CliprdrClientContext *cliprdr,
+ 		return ERROR_INVALID_PARAMETER;
+ 
+ 	formatId = formatDataRequest->requestedFormatId;
+-	data = (BYTE *)ClipboardGetData(afc->clipboard, formatId, &size);
++	ClipboardLock(afc->clipboard);
++	const char *name = ClipboardGetFormatName(afc->clipboard, formatId);
++	NSData *image = formatId == CF_DIB ? afc->clipboardDIB :
++	    (name && (!strcmp(name, "PNG") || !strcmp(name, "image/png")) ? afc->clipboardPNG : nil);
++	if (afc->clipboardPNG && !(afc->clipboardHasText && (formatId == CF_UNICODETEXT || formatId == CF_TEXT)))
++	{
++		size = (UINT32)image.length;
++		data = image ? malloc(size) : NULL;
++		if (data) memcpy(data, image.bytes, size);
++	}
++	else data = (BYTE *)ClipboardGetData(afc->clipboard, formatId, &size);
++	ClipboardUnlock(afc->clipboard);
+ 	response.common.msgFlags = CB_RESPONSE_OK;
+ 	response.common.dataLen = size;
+ 	response.requestedFormatData = data;
+@@ -350,6 +418,9 @@ ios_cliprdr_server_format_data_request(CliprdrClientContext *cliprdr,
+ 	}
+ 
+ 	rc = cliprdr->ClientFormatDataResponse(cliprdr, &response);
++	if (rc == CHANNEL_RC_OK && data)
++		[afc->mfi->session recordClipboardFeature:image ? OrbisSessionFeatureClipboardImage : OrbisSessionFeatureClipboardText
++		    direction:OrbisCapabilityDirectionToRemote generation:afc->clipboardSessionGeneration];
+ 	free(data);
+ 	return rc;
+ }
+@@ -363,67 +434,47 @@ static UINT
+ ios_cliprdr_server_format_data_response(CliprdrClientContext *cliprdr,
+                                         const CLIPRDR_FORMAT_DATA_RESPONSE *formatDataResponse)
+ {
+-	BYTE *data;
+-	UINT32 size;
+-	UINT32 formatId;
+-	CLIPRDR_FORMAT *format = nullptr;
+-	mfContext *afc;
+-	freerdp *instance;
+-
+-	if (!cliprdr || !formatDataResponse)
+-		return ERROR_INVALID_PARAMETER;
+-
+-	afc = (mfContext *)cliprdr->custom;
+-
+-	if (!afc)
+-		return ERROR_INVALID_PARAMETER;
+-
+-	instance = ((rdpContext *)afc)->instance;
+-
+-	if (!instance)
+-		return ERROR_INVALID_PARAMETER;
+-
+-	for (UINT32 index = 0; index < afc->numServerFormats; index++)
+-	{
+-		if (afc->requestedFormatId == afc->serverFormats[index].formatId)
+-			format = &(afc->serverFormats[index]);
+-	}
+-
+-	if (!format)
+-	{
+-		(void)SetEvent(afc->clipboardRequestEvent);
+-		return ERROR_INTERNAL_ERROR;
+-	}
+-
+-	if (format->formatName)
+-		formatId = ClipboardRegisterFormat(afc->clipboard, format->formatName);
+-	else
+-		formatId = format->formatId;
+-
+-	size = formatDataResponse->common.dataLen;
+-
+-	ClipboardLock(afc->clipboard);
+-	if (!ClipboardSetData(afc->clipboard, formatId, formatDataResponse->requestedFormatData, size))
+-		return ERROR_INTERNAL_ERROR;
+-
++	mfContext *afc = cliprdr ? (mfContext *)cliprdr->custom : NULL;
++	if (!afc || !formatDataResponse) return ERROR_INVALID_PARAMETER;
++	// CLIPRDR responses carry no request ID. Consume an old response before requesting the latest offer.
++	if (!afc->clipboardRequestPending) return CHANNEL_RC_OK;
++	afc->clipboardRequestPending = FALSE;
+ 	(void)SetEvent(afc->clipboardRequestEvent);
+-
+-	if ((formatId == CF_TEXT) || (formatId == CF_UNICODETEXT))
++	if (afc->clipboardRequestedGeneration != afc->clipboardOfferGeneration)
++		return ios_cliprdr_request_latest(cliprdr);
++	CLIPRDR_FORMAT *format = NULL;
++	for (UINT32 i = 0; i < afc->numServerFormats; i++)
++		if (afc->serverFormats[i].formatId == afc->requestedFormatId) format = &afc->serverFormats[i];
++	if (!format || (formatDataResponse->common.msgFlags & CB_RESPONSE_FAIL)) return CHANNEL_RC_OK;
++	UINT32 size = formatDataResponse->common.dataLen;
++	if (size > OrbisClipboardMaximumPNGBytes || (size && !formatDataResponse->requestedFormatData)) return CHANNEL_RC_OK;
++	BOOL png = format->formatName && (!strcmp(format->formatName, "PNG") || !strcmp(format->formatName, "image/png"));
++	BOOL dib = format->formatId == CF_DIB || format->formatId == CF_DIBV5;
++	if (png || dib)
+ 	{
+-		formatId = ClipboardRegisterFormat(afc->clipboard, "UTF8_STRING");
+-		data = (BYTE *)ClipboardGetData(afc->clipboard, formatId, &size);
+-		size = (UINT32)strnlen((const char *)data, size);
+-		if (afc->ServerCutText != nullptr)
++		NSData *bytes = [NSData dataWithBytes:formatDataResponse->requestedFormatData length:size];
++		// Validate the PNG signature before ImageIO; a declared PNG cannot smuggle another codec.
++		OrbisClipboardContent *value = png ? [[[OrbisClipboardContent alloc] initWithText:nil pngData:bytes] autorelease] : nil;
++		NSData *normalized = png ? (value ? [OrbisClipboardImageCodec normalizedPNGData:value.pngData] : nil) :
++		    [OrbisClipboardImageCodec PNGDataFromDIBData:bytes];
++		if (normalized)
+ 		{
+-			if (!afc->ServerCutText((rdpContext *)afc, (uint8_t *)data, size))
+-			{
+-				ClipboardUnlock(afc->clipboard);
+-				return ERROR_INTERNAL_ERROR;
+-			}
++			[afc->mfi->session recordClipboardFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionFromRemote generation:afc->clipboardSessionGeneration];
++			ios_cliprdr_publish(afc, nil, normalized);
+ 		}
++		return CHANNEL_RC_OK;
++	}
++	if (size > OrbisClipboardMaximumTextBytes || (format->formatId != CF_UNICODETEXT && format->formatId != CF_TEXT)) return CHANNEL_RC_OK;
++	ClipboardLock(afc->clipboard);
++	if (ClipboardSetData(afc->clipboard, format->formatId, formatDataResponse->requestedFormatData, size))
++	{
++		UINT32 textID = ClipboardRegisterFormat(afc->clipboard, "text/plain");
++		BYTE *data = ClipboardGetData(afc->clipboard, textID, &size);
++		if (data && afc->ServerCutText) [afc->mfi->session recordClipboardFeature:OrbisSessionFeatureClipboardText direction:OrbisCapabilityDirectionFromRemote generation:afc->clipboardSessionGeneration];
++		if (data && afc->ServerCutText) (void)afc->ServerCutText((rdpContext *)afc, data, (UINT32)strnlen((const char *)data, size));
++		free(data);
+ 	}
+ 	ClipboardUnlock(afc->clipboard);
+-
+ 	return CHANNEL_RC_OK;
+ }
+ 
+@@ -473,6 +524,11 @@ BOOL ios_cliprdr_init(mfContext *afc, CliprdrClientContext *cliprdr)
+ 		return FALSE;
+ 	}
+ 
++	afc->clipboardSessionGeneration = [afc->mfi->session capabilityGeneration];
++	afc->clipboardOfferGeneration++;
++	[afc->mfi->session setClipboardOfferGeneration:afc->clipboardOfferGeneration forSession:afc->clipboardSessionGeneration];
++	afc->clipboardRequestPending = FALSE;
++	afc->ServerCutText = ios_cliprdr_publish_text;
+ 	afc->cliprdr = cliprdr;
+ 	afc->clipboard = clipboard;
+ 	afc->clipboardRequestEvent = hevent;
+@@ -495,9 +551,26 @@ BOOL ios_cliprdr_uninit(mfContext *afc, CliprdrClientContext *cliprdr)
+ 	if (!afc || !cliprdr)
+ 		return FALSE;
+ 
++	[afc->mfi->session updateClipboardCapabilityReady:NO generation:afc->clipboardSessionGeneration];
++	afc->clipboardOfferGeneration++;
++	[afc->mfi->session setClipboardOfferGeneration:afc->clipboardOfferGeneration forSession:afc->clipboardSessionGeneration];
++	afc->clipboardRequestPending = FALSE;
++	[afc->clipboardPNG release]; afc->clipboardPNG = nil;
++	[afc->clipboardDIB release]; afc->clipboardDIB = nil;
+ 	cliprdr->custom = nullptr;
+ 	afc->cliprdr = nullptr;
++	afc->ServerCutText = nullptr;
++	afc->clipboardSync = FALSE;
++	[afc->clipboardInput release]; afc->clipboardInput = nil;
++	[afc->clipboardInputText release]; afc->clipboardInputText = nil;
++	[afc->clipboardInputPNG release]; afc->clipboardInputPNG = nil;
++	[afc->clipboardTransaction release]; afc->clipboardTransaction = nil;
++	afc->clipboardHasText = FALSE;
++	for (UINT32 index = 0; index < afc->numServerFormats; index++) free(afc->serverFormats[index].formatName);
++	free(afc->serverFormats); afc->serverFormats = nullptr; afc->numServerFormats = 0;
+ 	ClipboardDestroy(afc->clipboard);
+ 	(void)CloseHandle(afc->clipboardRequestEvent);
++	afc->clipboard = nullptr;
++	afc->clipboardRequestEvent = nullptr;
+ 	return TRUE;
+ }
 diff --git a/client/iOS/FreeRDP/ios_freerdp.h b/client/iOS/FreeRDP/ios_freerdp.h
-index 1d454f6..0040b49 100644
+index 1d454f6..4bba876 100644
 --- a/client/iOS/FreeRDP/ios_freerdp.h
 +++ b/client/iOS/FreeRDP/ios_freerdp.h
 @@ -10,12 +10,14 @@
@@ -2780,11 +3944,19 @@ index 1d454f6..0040b49 100644
  
  @class RDPSession, RDPSessionView;
  
-@@ -33,11 +35,17 @@ typedef struct mf_context
+@@ -33,11 +35,26 @@ typedef struct mf_context
  
  	BOOL clipboardSync;
  	wClipboard *clipboard;
 +	NSMutableData *clipboardInput;
++	NSMutableData *clipboardInputText, *clipboardInputPNG;
++	NSString *clipboardTransaction;
++	BOOL clipboardImageChunkSeen;
++	NSData *clipboardPNG, *clipboardDIB;
++	BOOL clipboardHasText;
++	BOOL clipboardRequestPending;
++	UINT64 clipboardOfferGeneration, clipboardRequestedGeneration;
++	UINT64 clipboardSessionGeneration;
  	UINT32 numServerFormats;
  	UINT32 requestedFormatId;
  	HANDLE clipboardRequestEvent;
@@ -2793,16 +3965,40 @@ index 1d454f6..0040b49 100644
 +	DispClientContext *disp;
 +	// Display requests share a session lock across RDP and dynamic-channel workers.
 +	BOOL displayControlReady;
++	UINT32 displayMaxMonitors, displayAreaFactorA, displayAreaFactorB;
 +	UINT32 desiredDisplayWidth, desiredDisplayHeight;
 +	UINT32 sentDisplayWidth, sentDisplayHeight;
  	UINT32 clipboardCapabilities;
  	WINPR_ATTR_NODISCARD pServerCutText ServerCutText;
  } mfContext;
+@@ -58,6 +75,7 @@ struct mf_info
+ 	// Events
+ 	int event_pipe_producer;
+ 	int event_pipe_consumer;
++	NSLock *event_pipe_writer_lock;
+ 	HANDLE handle;
+ 
+ 	// Tracking connection state
+@@ -85,3 +103,5 @@ freerdp *ios_freerdp_new(void);
+ int ios_run_freerdp(freerdp *instance);
+ void ios_freerdp_free(freerdp *instance);
+ void ios_send_clipboard_data(void *context, const void *data, UINT32 size);
++void ios_send_clipboard_image(void *context, NSData *png);
++void ios_send_clipboard_content(void *context, NSString *text, NSData *png);
 diff --git a/client/iOS/FreeRDP/ios_freerdp.m b/client/iOS/FreeRDP/ios_freerdp.m
-index 75b790b..6b8b341 100644
+index 75b790b..61cb401 100644
 --- a/client/iOS/FreeRDP/ios_freerdp.m
 +++ b/client/iOS/FreeRDP/ios_freerdp.m
-@@ -19,6 +19,8 @@
+@@ -10,6 +10,8 @@
+ 
+ #include <winpr/assert.h>
+ #import <winpr/clipboard.h>
++#import "OrbisClipboardImage.h"
++#import "OrbisClipboardPort.h"
+ 
+ #import <freerdp/gdi/gdi.h>
+ #import <freerdp/codec/color.h>
+@@ -19,6 +21,8 @@
  #import <freerdp/freerdp.h>
  #import <freerdp/gdi/gfx.h>
  #import <freerdp/client/cliprdr.h>
@@ -2811,7 +4007,7 @@ index 75b790b..6b8b341 100644
  
  #import "ios_freerdp.h"
  #import "ios_freerdp_ui.h"
-@@ -41,6 +43,24 @@ typedef struct
+@@ -41,6 +45,21 @@ typedef struct
  
  #pragma mark Connection helpers
  
@@ -2819,9 +4015,6 @@ index 75b790b..6b8b341 100644
 +                                   UINT32 maxMonitorAreaFactorA,
 +                                   UINT32 maxMonitorAreaFactorB)
 +{
-+	WINPR_UNUSED(maxNumMonitors);
-+	WINPR_UNUSED(maxMonitorAreaFactorA);
-+	WINPR_UNUSED(maxMonitorAreaFactorB);
 +	if (!disp || !disp->custom)
 +		return CHANNEL_RC_BAD_CHANNEL_HANDLE;
 +
@@ -2829,14 +4022,14 @@ index 75b790b..6b8b341 100644
 +	@synchronized (afc->mfi->session)
 +	{
 +		if (disp != afc->disp) return CHANNEL_RC_BAD_CHANNEL_HANDLE;
-+		return ios_events_display_control_ready(afc->mfi);
++		return ios_events_display_control_capabilities(afc->mfi, maxNumMonitors, maxMonitorAreaFactorA, maxMonitorAreaFactorB);
 +	}
 +}
 +
  static void ios_OnChannelConnectedEventHandler(void *context, const ChannelConnectedEventArgs *e)
  {
  	WLog_INFO(TAG, "ios_OnChannelConnectedEventHandler, channel %s", e->name);
-@@ -72,6 +92,16 @@ static void ios_OnChannelConnectedEventHandler(void *context, const ChannelConne
+@@ -72,6 +91,16 @@ static void ios_OnChannelConnectedEventHandler(void *context, const ChannelConne
  	{
  		ios_cliprdr_init(afc, (CliprdrClientContext *)e->pInterface);
  	}
@@ -2853,7 +4046,7 @@ index 75b790b..6b8b341 100644
  }
  
  static void ios_OnChannelDisconnectedEventHandler(void *context,
-@@ -106,6 +136,14 @@ static void ios_OnChannelDisconnectedEventHandler(void *context,
+@@ -106,6 +135,14 @@ static void ios_OnChannelDisconnectedEventHandler(void *context,
  	{
  		ios_cliprdr_uninit(afc, (CliprdrClientContext *)e->pInterface);
  	}
@@ -2868,7 +4061,7 @@ index 75b790b..6b8b341 100644
  }
  
  static BOOL ios_pre_connect(freerdp *instance)
-@@ -338,16 +376,22 @@ int ios_run_freerdp(freerdp *instance)
+@@ -338,16 +375,22 @@ int ios_run_freerdp(freerdp *instance)
  
  	if (!freerdp_connect(instance))
  	{
@@ -2892,7 +4085,7 @@ index 75b790b..6b8b341 100644
  
  	while (!freerdp_shall_disconnect_context(instance->context))
  	{
-@@ -359,6 +403,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -359,6 +402,7 @@ int ios_run_freerdp(freerdp *instance)
  		nCount = freerdp_get_event_handles(instance->context, handles, ARRAYSIZE(handles));
  		if (nCount == 0)
  		{
@@ -2900,7 +4093,7 @@ index 75b790b..6b8b341 100644
  			NSLog(@"%s: freerdp_get_event_handles failed", __func__);
  			break;
  		}
-@@ -369,6 +414,8 @@ int ios_run_freerdp(freerdp *instance)
+@@ -369,6 +413,8 @@ int ios_run_freerdp(freerdp *instance)
  
  		if (WAIT_FAILED == status)
  		{
@@ -2909,7 +4102,7 @@ index 75b790b..6b8b341 100644
  			NSLog(@"%s: WaitForMultipleObjects failed!", __func__);
  			break;
  		}
-@@ -376,6 +423,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -376,6 +422,7 @@ int ios_run_freerdp(freerdp *instance)
  		// Check the libfreerdp fds
  		if (!freerdp_check_event_handles(instance->context))
  		{
@@ -2917,7 +4110,7 @@ index 75b790b..6b8b341 100644
  			NSLog(@"%s: freerdp_check_event_handles failed.", __func__);
  			break;
  		}
-@@ -383,6 +431,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -383,6 +430,7 @@ int ios_run_freerdp(freerdp *instance)
  		// Check input event fds
  		if (ios_events_check_handle(mfi) != TRUE)
  		{
@@ -2925,7 +4118,7 @@ index 75b790b..6b8b341 100644
  			// This event will fail when the app asks for a disconnect.
  			// NSLog(@"%s: ios_events_check_fds failed: terminating connection.", __func__);
  			break;
-@@ -392,6 +441,7 @@ int ios_run_freerdp(freerdp *instance)
+@@ -392,6 +440,7 @@ int ios_run_freerdp(freerdp *instance)
  		pool = nil;
  	}
  
@@ -2933,11 +4126,23 @@ index 75b790b..6b8b341 100644
  	CGContextRelease(mfi->bitmap_context);
  	mfi->bitmap_context = nullptr;
  	mfi->connection_state = TSXConnectionDisconnected;
-@@ -505,7 +555,15 @@ void ios_send_clipboard_data(void *context, const void *data, UINT32 size)
+@@ -442,6 +491,7 @@ static void ios_client_free(freerdp *instance, rdpContext *context)
+ 
+ 	mfi = ((mfContext *)context)->mfi;
+ 	ios_events_free_pipe(mfi);
++	[mfi->event_pipe_writer_lock release]; mfi->event_pipe_writer_lock = nil;
+ 	free(mfi);
+ }
+ 
+@@ -505,7 +555,19 @@ void ios_send_clipboard_data(void *context, const void *data, UINT32 size)
  {
  	mfContext *afc = (mfContext *)context;
  	ClipboardLock(afc->clipboard);
 -	UINT32 formatId = ClipboardRegisterFormat(afc->clipboard, "UTF8_STRING");
++	ClipboardEmpty(afc->clipboard);
++	afc->clipboardHasText = TRUE;
++	[afc->clipboardPNG release]; afc->clipboardPNG = nil;
++	[afc->clipboardDIB release]; afc->clipboardDIB = nil;
 +	UINT32 formatId = ClipboardRegisterFormat(afc->clipboard, "text/plain");
 +	const WCHAR emptyText = 0;
 +	if (size == 1 && data && ((const BYTE *)data)[0] == 0)
@@ -2950,41 +4155,141 @@ index 75b790b..6b8b341 100644
  	if (size)
  	{
  		if (!ClipboardSetData(afc->clipboard, formatId, data, size))
+@@ -520,3 +582,38 @@ void ios_send_clipboard_data(void *context, const void *data, UINT32 size)
+ 	ClipboardUnlock(afc->clipboard);
+ 	ios_cliprdr_send_client_format_list(afc->cliprdr);
+ }
++
++void ios_send_clipboard_image(void *context, NSData *png)
++{
++	ios_send_clipboard_content(context, nil, png);
++}
++void ios_send_clipboard_content(void *context, NSString *text, NSData *png)
++{
++	mfContext *afc = (mfContext *)context;
++	if (!afc || !afc->clipboard || !afc->cliprdr) return;
++	OrbisClipboardContent *content = [[[OrbisClipboardContent alloc] initWithText:text pngData:png] autorelease];
++	if (!content) return;
++	NSData *normalized = content.pngData ? [OrbisClipboardImageCodec normalizedPNGData:content.pngData] : nil;
++	if (content.pngData && !normalized) return;
++	NSData *dib = normalized ? [OrbisClipboardImageCodec DIBDataFromPNGData:normalized] : nil;
++	// Prepare the complete offer before replacing any prior native content.
++	wClipboard *candidate = ClipboardCreate();
++	if (!candidate) return;
++	if (content.text)
++	{
++		NSMutableData *utf8 = [NSMutableData dataWithData:[content.text dataUsingEncoding:NSUTF8StringEncoding]];
++		const char terminator = 0; [utf8 appendBytes:&terminator length:1];
++		UINT32 format = ClipboardRegisterFormat(candidate, "text/plain");
++		const WCHAR empty = 0;
++		BOOL stored = content.text.length ? ClipboardSetData(candidate, format, utf8.bytes, (UINT32)utf8.length) :
++		    ClipboardSetData(candidate, CF_UNICODETEXT, &empty, sizeof(empty));
++		if (!stored) { ClipboardDestroy(candidate); return; }
++	}
++	wClipboard *previous = afc->clipboard;
++	afc->clipboard = candidate;
++	[afc->clipboardPNG release]; afc->clipboardPNG = [normalized copy];
++	[afc->clipboardDIB release]; afc->clipboardDIB = [dib copy];
++	afc->clipboardHasText = content.text != nil;
++	ClipboardDestroy(previous);
++	(void)ios_cliprdr_send_client_format_list(afc->cliprdr);
++}
 diff --git a/client/iOS/FreeRDP/ios_freerdp_events.h b/client/iOS/FreeRDP/ios_freerdp_events.h
-index a3c76a0..2982d56 100644
+index a3c76a0..3e7c0b8 100644
 --- a/client/iOS/FreeRDP/ios_freerdp_events.h
 +++ b/client/iOS/FreeRDP/ios_freerdp_events.h
-@@ -16,6 +16,10 @@
+@@ -16,6 +16,13 @@
  
  // For UI: use to send events
  BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description);
 +BOOL ios_events_send_clipboard(mfInfo *mfi, NSString *text);
++BOOL ios_events_send_clipboard_image(mfInfo *mfi, NSData *png);
++BOOL ios_events_send_clipboard_content(mfInfo *mfi, NSString *text, NSData *png);
 +UINT ios_events_send_display_resize(mfInfo *mfi, UINT32 width, UINT32 height);
 +UINT ios_events_display_control_ready(mfInfo *mfi);
++UINT ios_events_display_control_capabilities(mfInfo *mfi, UINT32 monitors, UINT32 factorA, UINT32 factorB);
 +void ios_events_display_control_reset(mfInfo *mfi);
  
  // For connection runloop: use to poll for queued input events
  HANDLE ios_events_get_handle(mfInfo *mfi);
 diff --git a/client/iOS/FreeRDP/ios_freerdp_events.m b/client/iOS/FreeRDP/ios_freerdp_events.m
-index 3abbbd1..404e0c2 100644
+index 3abbbd1..bdba50d 100644
 --- a/client/iOS/FreeRDP/ios_freerdp_events.m
 +++ b/client/iOS/FreeRDP/ios_freerdp_events.m
-@@ -10,7 +10,11 @@
+@@ -9,43 +9,232 @@
+  */
  
  #include <winpr/assert.h>
- 
++#include <errno.h>
++#include <fcntl.h>
++#include <unistd.h>
++
 +#include <freerdp/channels/disp.h>
 +#include <freerdp/client/disp.h>
-+
+ 
  #include "ios_freerdp_events.h"
 +#import "OrbisDiagnostics.h"
++#import "RDPSession.h"
++#import "OrbisClipboardPort.h"
  
  #pragma mark -
  #pragma mark Sending compacted input events (from main thread)
-@@ -46,6 +50,100 @@ BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description)
- 	return TRUE;
- }
  
+-// While this function may be called from any thread that has an autorelease pool allocated, it is
+-// not threadsafe: caller is responsible for synchronization
+-BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description)
++// Dedicated framing lock: never hold the session lock while a producer waits for the pipe.
++static BOOL ios_events_write_exact(int fd, const void *bytes, size_t count)
++{
++	const uint8_t *cursor = bytes;
++	while (count)
++	{
++		ssize_t written = write(fd, cursor, count);
++		if (written < 0 && errno == EINTR) continue;
++		if (written <= 0) return FALSE;
++		cursor += written; count -= (size_t)written;
++	}
++	return TRUE;
++}
++static BOOL ios_events_read_exact(int fd, void *bytes, size_t count)
+ {
+-	NSData *encoded_description = [NSKeyedArchiver archivedDataWithRootObject:event_description];
++	uint8_t *cursor = bytes;
++	while (count)
++	{
++		ssize_t received = read(fd, cursor, count);
++		if (received < 0 && errno == EINTR) continue;
++		if (received <= 0) return FALSE;
++		cursor += received; count -= (size_t)received;
++	}
++	return TRUE;
++}
+ 
++BOOL ios_events_send(mfInfo *mfi, NSDictionary *event_description)
++{
+ 	WINPR_ASSERT(mfi);
++	NSData *encoded = [NSKeyedArchiver archivedDataWithRootObject:event_description];
++	if (!encoded.length || encoded.length > 32000) return FALSE;
++	NSLock *lock = mfi->event_pipe_writer_lock;
++	if (!lock) return FALSE;
++	[lock lock];
++	int fd = mfi->event_pipe_producer;
++	uint32_t length = (uint32_t)encoded.length;
++	BOOL sent = fd >= 0 && ios_events_write_exact(fd, &length, sizeof(length)) &&
++	    ios_events_write_exact(fd, encoded.bytes, encoded.length);
++	if (!sent && fd >= 0)
++	{
++		// Once a frame is incomplete, never append a later event to the broken stream.
++		mfi->event_pipe_producer = -1; close(fd);
++	}
++	[lock unlock];
++	return sent;
++}
+ 
+-	if ([encoded_description length] > 32000 || (mfi->event_pipe_producer == -1))
+-		return FALSE;
+-
+-	uint32_t archived_data_len = (uint32_t)[encoded_description length];
 +UINT ios_events_send_display_resize(mfInfo *mfi, UINT32 width, UINT32 height)
 +{
 +	@synchronized (mfi->session)
@@ -3007,6 +4312,15 @@ index 3abbbd1..404e0c2 100644
 +		context->desiredDisplayHeight = height;
 +		if (!disp || !disp->SendMonitorLayout || !context->displayControlReady)
 +			return CHANNEL_RC_OK; // Keep the latest target until capabilities arrive.
++		UINT64 maximumArea = (UINT64)context->displayAreaFactorA * context->displayAreaFactorB;
++		maximumArea = context->displayMaxMonitors && maximumArea > UINT64_MAX / context->displayMaxMonitors ?
++		    UINT64_MAX : maximumArea * context->displayMaxMonitors;
++		if (!context->displayMaxMonitors || (UINT64)width * height > maximumArea)
++		{
++			[[OrbisDiagnostics sharedDiagnostics] recordEvent:@"display.request_rejected"
++			    values:@{ @"width": @(width), @"height": @(height), @"code": @(ERROR_INVALID_PARAMETER) }];
++			return CHANNEL_RC_OK; // A rejected layout must not close the channel or discard a later valid request.
++		}
 +		if (context->sentDisplayWidth == width && context->sentDisplayHeight == height)
 +			return CHANNEL_RC_OK;
 +
@@ -3034,37 +4348,61 @@ index 3abbbd1..404e0c2 100644
 +		return rc;
 +	}
 +}
-+
-+UINT ios_events_display_control_ready(mfInfo *mfi)
+ 
+-	// NSLog(@"writing %d bytes to input event pipe", archived_data_len);
++UINT ios_events_display_control_capabilities(mfInfo *mfi, UINT32 monitors, UINT32 factorA, UINT32 factorB)
 +{
-+	@synchronized (mfi->session)
++	@synchronized(mfi->session)
 +	{
 +		mfContext *context = mfi->context;
 +		if (!context || !context->disp) return CHANNEL_RC_BAD_CHANNEL_HANDLE;
-+		context->displayControlReady = YES;
++		context->displayMaxMonitors = monitors;
++		context->displayAreaFactorA = factorA;
++		context->displayAreaFactorB = factorB;
++		return ios_events_display_control_ready(mfi);
++	}
++}
+ 
+-	if (write(mfi->event_pipe_producer, &archived_data_len, 4) == -1)
++UINT ios_events_display_control_ready(mfInfo *mfi)
++{
++	@synchronized (mfi->session)
+ 	{
+-		NSLog(@"%s: Failed to write length descriptor to pipe.", __func__);
+-		return FALSE;
++		mfContext *context = mfi->context;
++		if (!context || !context->disp) return CHANNEL_RC_BAD_CHANNEL_HANDLE;
++		context->displayControlReady = context->displayMaxMonitors && context->displayAreaFactorA && context->displayAreaFactorB;
++		[mfi->session updateDisplayCapabilityReady:context->displayControlReady];
++		if (!context->displayControlReady) return CHANNEL_RC_OK;
 +		// A viewport request received before capabilities takes precedence over negotiated settings.
 +		rdpSettings *settings = mfi->instance->context->settings;
 +		UINT32 width = context->desiredDisplayWidth ?: freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
 +		UINT32 height = context->desiredDisplayHeight ?: freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
 +		return ios_events_send_display_resize(mfi, width, height);
-+	}
+ 	}
 +}
-+
+ 
+-	if (write(mfi->event_pipe_producer, [encoded_description bytes], archived_data_len) == -1)
 +void ios_events_display_control_reset(mfInfo *mfi)
 +{
 +	@synchronized (mfi->session)
-+	{
+ 	{
+-		NSLog(@"%s: Failed to write %d bytes into the event queue (event type: %@).", __func__,
+-		      (int)[encoded_description length], [event_description objectForKey:@"type"]);
+-		return FALSE;
 +		mfContext *context = mfi->context;
 +		context->displayControlReady = NO;
++		context->displayMaxMonitors = context->displayAreaFactorA = context->displayAreaFactorB = 0;
++		[mfi->session updateDisplayCapabilityReady:NO];
 +		context->sentDisplayWidth = context->sentDisplayHeight = 0;
-+	}
+ 	}
 +}
 +
 +// Keep each clipboard message below the event pipe's encoded size limit.
-+BOOL ios_events_send_clipboard(mfInfo *mfi, NSString *text)
++static BOOL ios_events_send_clipboard_bytes(mfInfo *mfi, NSData *data)
 +{
-+	NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
-+	if (!data || data.length > 8 * 1024 * 1024) return FALSE;
++	if (!data || data.length > OrbisClipboardMaximumTextBytes) return FALSE;
 +	NSUInteger offset = 0;
 +	do
 +	{
@@ -3078,11 +4416,56 @@ index 3abbbd1..404e0c2 100644
 +	} while (offset < data.length);
 +	return TRUE;
 +}
+ 
++BOOL ios_events_send_clipboard(mfInfo *mfi, NSString *text)
++{
++	return ios_events_send_clipboard_bytes(mfi, [text dataUsingEncoding:NSUTF8StringEncoding]);
++}
++BOOL ios_events_send_clipboard_image(mfInfo *mfi, NSData *png)
++{
++	return ios_events_send_clipboard_content(mfi, nil, png);
++}
++BOOL ios_events_send_clipboard_content(mfInfo *mfi, NSString *text, NSData *png)
++{
++	OrbisClipboardContent *content = [[[OrbisClipboardContent alloc] initWithText:text pngData:png] autorelease];
++	if (!content) return FALSE;
++	NSMutableArray *parts = [NSMutableArray array];
++	if (content.text) [parts addObject:@{ @"kind": @"text", @"data": [content.text dataUsingEncoding:NSUTF8StringEncoding] }];
++	if (content.pngData) [parts addObject:@{ @"kind": @"png", @"data": content.pngData }];
++	NSString *transaction = [[NSUUID UUID] UUIDString];
++	BOOL begin = YES;
++	for (NSUInteger part = 0; part < parts.count; part++)
++	{
++		NSData *data = parts[part][@"data"];
++		NSUInteger offset = 0;
++		do
++		{
++			NSUInteger length = MIN(4096u, data.length - offset);
++			BOOL last = offset + length == data.length;
++			NSDictionary *event = @{ @"type": @"clipboard-content-chunk", @"transaction": transaction,
++			    @"generation": @([mfi->session capabilityGeneration]), @"kind": parts[part][@"kind"],
++			    @"begin": @(begin), @"final": @(last && part + 1 == parts.count),
++			    @"data": [data subdataWithRange:NSMakeRange(offset, length)] };
++			if (!ios_events_send(mfi, event)) return FALSE;
++			begin = NO; offset += length;
++			if (last) break;
++		} while (offset < data.length);
++	}
+ 	return TRUE;
+ }
+ 
++static void ios_events_clear_clipboard_transaction(mfContext *context)
++{
++	[context->clipboardInputText release]; context->clipboardInputText = nil;
++	[context->clipboardInputPNG release]; context->clipboardInputPNG = nil;
++	[context->clipboardTransaction release]; context->clipboardTransaction = nil;
++	context->clipboardImageChunkSeen = NO;
++}
 +
  #pragma mark -
  #pragma mark Processing compacted input events (from connection thread runloop)
  
-@@ -89,6 +187,46 @@ static BOOL ios_events_handle_event(mfInfo *mfi, NSDictionary *event_description
+@@ -89,6 +278,88 @@ static BOOL ios_events_handle_event(mfInfo *mfi, NSDictionary *event_description
  			NSLog(@"%s: doesn't know how to send keyboard input with subtype %@", __func__,
  			      [event_description objectForKey:@"subtype"]);
  	}
@@ -3101,6 +4484,47 @@ index 3abbbd1..404e0c2 100644
 +		if (instance->context->update && instance->context->update->SuppressOutput)
 +			(void)instance->context->update->SuppressOutput(instance->context, visible ? 1 : 0, visible ? &area : NULL);
 +	}
++	else if ([event_type isEqualToString:@"clipboard-content-chunk"])
++	{
++		mfContext *context = mfi->context;
++		if (!context || !context->clipboard || !context->cliprdr) return TRUE;
++		NSData *chunk = event_description[@"data"];
++		NSString *transaction = event_description[@"transaction"];
++		NSString *kind = event_description[@"kind"];
++		BOOL png = [kind isEqual:@"png"];
++		if (![chunk isKindOfClass:[NSData class]] || ![transaction isKindOfClass:[NSString class]] ||
++		    (!png && ![kind isEqual:@"text"]) || [event_description[@"generation"] unsignedLongLongValue] != context->clipboardSessionGeneration)
++		{
++			ios_events_clear_clipboard_transaction(context); return TRUE;
++		}
++		if ([event_description[@"begin"] boolValue])
++		{
++			[context->clipboardInput release]; context->clipboardInput = nil;
++			ios_events_clear_clipboard_transaction(context);
++			context->clipboardTransaction = [transaction copy];
++		}
++		if (![context->clipboardTransaction isEqual:transaction] || (!png && context->clipboardImageChunkSeen))
++		{
++			ios_events_clear_clipboard_transaction(context); return TRUE;
++		}
++		NSMutableData **target = png ? &context->clipboardInputPNG : &context->clipboardInputText;
++		NSUInteger maximum = png ? OrbisClipboardMaximumPNGBytes : OrbisClipboardMaximumTextBytes;
++		if (chunk.length > maximum || (*target).length > maximum - chunk.length)
++		{
++			ios_events_clear_clipboard_transaction(context); return TRUE;
++		}
++		if (!*target) *target = [[NSMutableData alloc] init];
++		[*target appendData:chunk];
++		context->clipboardImageChunkSeen |= png;
++		if ([event_description[@"final"] boolValue])
++		{
++			NSString *text = context->clipboardInputText ? [[[NSString alloc] initWithData:context->clipboardInputText
++			    encoding:NSUTF8StringEncoding] autorelease] : nil;
++			if (!context->clipboardInputText || text)
++				ios_send_clipboard_content(context, text, context->clipboardInputPNG);
++			ios_events_clear_clipboard_transaction(context);
++		}
++	}
 +	else if ([event_type isEqualToString:@"clipboard-chunk"])
 +	{
 +		mfContext *context = mfi->context;
@@ -3108,11 +4532,12 @@ index 3abbbd1..404e0c2 100644
 +		if (!context || !context->clipboard || !context->cliprdr || ![chunk isKindOfClass:[NSData class]]) return TRUE;
 +		if ([event_description[@"first"] boolValue])
 +		{
++			ios_events_clear_clipboard_transaction(context);
 +			[context->clipboardInput release];
 +			context->clipboardInput = [[NSMutableData alloc] init];
 +		}
 +		if (!context->clipboardInput) return TRUE;
-+		if (context->clipboardInput.length + chunk.length > 8 * 1024 * 1024)
++		if (context->clipboardInput.length + chunk.length > OrbisClipboardMaximumTextBytes)
 +		{
 +			[context->clipboardInput release]; context->clipboardInput = nil;
 +			return TRUE;
@@ -3129,8 +4554,129 @@ index 3abbbd1..404e0c2 100644
  	else if ([event_type isEqualToString:@"disconnect"])
  		should_continue = FALSE;
  	else
+@@ -100,45 +371,23 @@ static BOOL ios_events_handle_event(mfInfo *mfi, NSDictionary *event_description
+ BOOL ios_events_check_handle(mfInfo *mfi)
+ {
+ 	WINPR_ASSERT(mfi);
+-
+-	if (WaitForSingleObject(mfi->handle, 0) != WAIT_OBJECT_0)
+-		return TRUE;
+-
+-	if (mfi->event_pipe_consumer == -1)
+-		return TRUE;
+-
+-	uint32_t archived_data_length = 0;
+-	ssize_t bytes_read;
+-
+-	// First, read the length of the blob
+-	bytes_read = read(mfi->event_pipe_consumer, &archived_data_length, 4);
+-
+-	if (bytes_read == -1 || archived_data_length < 1 || archived_data_length > 32000)
++	if (WaitForSingleObject(mfi->handle, 0) != WAIT_OBJECT_0) return TRUE;
++	int fd = mfi->event_pipe_consumer;
++	if (fd < 0) return FALSE;
++	uint32_t length = 0;
++	if (!ios_events_read_exact(fd, &length, sizeof(length)) || !length || length > 32000) return FALSE;
++	NSMutableData *encoded = [NSMutableData dataWithLength:length];
++	if (!ios_events_read_exact(fd, encoded.mutableBytes, length)) return FALSE;
++	@try
+ 	{
+-		NSLog(@"%s: just read length descriptor. bytes_read=%ld, archived_data_length=%u", __func__,
+-		      bytes_read, archived_data_length);
+-		return FALSE;
++		id event = [NSKeyedUnarchiver unarchiveObjectWithData:encoded];
++		return [event isKindOfClass:[NSDictionary class]] ? ios_events_handle_event(mfi, event) : FALSE;
+ 	}
+-
+-	// NSLog(@"reading %d bytes from input event pipe", archived_data_length);
+-
+-	NSMutableData *archived_object_data =
+-	    [[NSMutableData alloc] initWithLength:archived_data_length];
+-	bytes_read =
+-	    read(mfi->event_pipe_consumer, [archived_object_data mutableBytes], archived_data_length);
+-
+-	if (bytes_read != archived_data_length)
++	@catch (NSException *exception)
+ 	{
+-		NSLog(@"%s: attempted to read data; read %ld bytes but wanted %d bytes.", __func__,
+-		      bytes_read, archived_data_length);
+-		[archived_object_data release];
++		(void)exception; // A malformed local frame is fatal to this pipe, never a process crash or content log.
+ 		return FALSE;
+ 	}
+-
+-	id unarchived_object_data = [NSKeyedUnarchiver unarchiveObjectWithData:archived_object_data];
+-	[archived_object_data release];
+-
+-	return ios_events_handle_event(mfi, unarchived_object_data);
+ }
+ 
+ HANDLE ios_events_get_handle(mfInfo *mfi)
+@@ -150,30 +399,46 @@ HANDLE ios_events_get_handle(mfInfo *mfi)
+ // Sets up the event pipe
+ BOOL ios_events_create_pipe(mfInfo *mfi)
+ {
+-	int pipe_fds[2];
+-
+ 	WINPR_ASSERT(mfi);
+-
+-	if (pipe(pipe_fds) == -1)
++	mfi->event_pipe_consumer = mfi->event_pipe_producer = -1;
++	mfi->event_pipe_writer_lock = [[NSLock alloc] init];
++	int descriptors[2];
++	if (pipe(descriptors) != 0)
++	{
++		[mfi->event_pipe_writer_lock release]; mfi->event_pipe_writer_lock = nil; return FALSE;
++	}
++#ifdef F_SETNOSIGPIPE
++	if (fcntl(descriptors[1], F_SETNOSIGPIPE, 1) != 0)
++	{
++		close(descriptors[0]); close(descriptors[1]);
++		[mfi->event_pipe_writer_lock release]; mfi->event_pipe_writer_lock = nil; return FALSE;
++	}
++#endif
++	mfi->event_pipe_consumer = descriptors[0]; mfi->event_pipe_producer = descriptors[1];
++	mfi->handle = CreateFileDescriptorEvent(NULL, FALSE, FALSE, descriptors[0], WINPR_FD_READ | WINPR_FD_WRITE);
++	if (!mfi->handle)
+ 	{
+-		NSLog(@"%s: pipe failed.", __func__);
++		ios_events_free_pipe(mfi);
++		[mfi->event_pipe_writer_lock release]; mfi->event_pipe_writer_lock = nil;
+ 		return FALSE;
+ 	}
+-
+-	mfi->event_pipe_consumer = pipe_fds[0];
+-	mfi->event_pipe_producer = pipe_fds[1];
+-	mfi->handle = CreateFileDescriptorEvent(nullptr, FALSE, FALSE, mfi->event_pipe_consumer,
+-	                                        WINPR_FD_READ | WINPR_FD_WRITE);
+ 	return TRUE;
+ }
+ 
+ void ios_events_free_pipe(mfInfo *mfi)
+ {
+ 	WINPR_ASSERT(mfi);
+-	int consumer_fd = mfi->event_pipe_consumer, producer_fd = mfi->event_pipe_producer;
+-
+-	mfi->event_pipe_consumer = mfi->event_pipe_producer = -1;
+-	close(producer_fd);
+-	close(consumer_fd);
+-	(void)CloseHandle(mfi->handle);
++	// Context ownership guarantees the connection consumer has stopped. Closing its
++	// endpoint first also wakes a blocked producer before waiting for the framing lock.
++	int consumer = mfi->event_pipe_consumer;
++	mfi->event_pipe_consumer = -1;
++	if (consumer >= 0) close(consumer);
++	[mfi->event_pipe_writer_lock lock];
++	int producer = mfi->event_pipe_producer;
++	mfi->event_pipe_producer = -1;
++	if (producer >= 0) close(producer);
++	[mfi->event_pipe_writer_lock unlock];
++	// The lock remains owned until mfInfo destruction; queued senders may still hold its address.
++	if (mfi->handle) (void)CloseHandle(mfi->handle);
++	mfi->handle = NULL;
+ }
 diff --git a/client/iOS/FreeRDP/ios_freerdp_ui.m b/client/iOS/FreeRDP/ios_freerdp_ui.m
-index accafd2e5..154c376a6 100644
+index accafd2..154c376 100644
 --- a/client/iOS/FreeRDP/ios_freerdp_ui.m
 +++ b/client/iOS/FreeRDP/ios_freerdp_ui.m
 @@ -96,18 +96,21 @@ DWORD ios_ui_verify_certificate_ex(freerdp *instance, const char *host, UINT16 p
@@ -3172,19 +4718,21 @@ index accafd2e5..154c376a6 100644
  
  DWORD ios_ui_verify_changed_certificate_ex(freerdp *instance, const char *host, UINT16 port,
 diff --git a/client/iOS/Models/RDPSession.h b/client/iOS/Models/RDPSession.h
-index 131fdc1..a957f71 100644
+index 131fdc1..e02f3c2 100644
 --- a/client/iOS/Models/RDPSession.h
 +++ b/client/iOS/Models/RDPSession.h
-@@ -12,6 +12,8 @@
+@@ -12,6 +12,10 @@
  #import <UIKit/UIKit.h>
  
  #include <freerdp/freerdp.h>
 +#import "OrbisConnectionTransport.h"
 +#import "OrbisRDPTransportRoute.h"
++#import "OrbisSessionCapabilities.h"
++#import "OrbisClipboardPort.h"
  
  // forward declaration
  @class RDPSession;
-@@ -46,6 +48,16 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -46,6 +50,16 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  
  @end
  
@@ -3201,7 +4749,7 @@ index 131fdc1..a957f71 100644
  // rdp session
  @interface RDPSession : NSObject
  {
-@@ -64,11 +76,30 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -64,11 +78,39 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  
  	// flag if the session is suspended
  	BOOL _suspended;
@@ -3218,12 +4766,21 @@ index 131fdc1..a957f71 100644
 +	OrbisRDPStopReason _stopReason;
 +	BOOL _hasRDPStop;
 +	BOOL _wasConnected;
++	OrbisSessionCapabilities *_capabilities;
++	uint64_t _capabilityGeneration;
++	uint64_t _clipboardOfferGeneration;
++	BOOL _clipboardChannelReady;
++	id<OrbisClipboardPort> _clipboardPort;
++	dispatch_queue_t _inputProducerQueue;
  
  	// flag that specifies whether the RDP toolbar is visible
  	BOOL _toolbar_visible;
  }
  
 +@property(nonatomic, retain) id<OrbisConnectionTransport> connectionTransport;
++@property(nonatomic, readonly) OrbisSessionCapabilities *capabilities;
++@property(nonatomic, readonly) uint64_t capabilityGeneration;
++@property(nonatomic, retain) id<OrbisClipboardPort> clipboardPort;
 +@property(nonatomic, readonly) NSString *connectionFailureMessage;
 +@property(nonatomic, readonly) BOOL connectionEndedIntentionally;
 +@property(nonatomic, readonly) BOOL connectionClosedByRemoteComputer;
@@ -3232,7 +4789,7 @@ index 131fdc1..a957f71 100644
  @property(readonly) ConnectionParams *params;
  @property(readonly) ComputerBookmark *bookmark;
  @property(assign) id<RDPSessionDelegate> delegate;
-@@ -87,6 +118,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -87,6 +129,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  // disconnect session
  - (void)disconnect;
  
@@ -3242,11 +4799,17 @@ index 131fdc1..a957f71 100644
  // suspends the session
  - (void)suspend;
  
-@@ -98,6 +132,10 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+@@ -98,6 +143,16 @@ extern NSString *TSXSessionDidFailToConnectNotification;
  
  // send input event to the server
  - (void)sendInputEvent:(NSDictionary *)event;
 +- (void)receiveClipboardText:(NSString *)text;
++- (void)publishLocalClipboardForPaste;
++- (void)receiveClipboardContent:(NSDictionary *)delivery;
++- (void)updateClipboardCapabilityReady:(BOOL)ready generation:(uint64_t)generation;
++- (void)setClipboardOfferGeneration:(uint64_t)offer forSession:(uint64_t)generation;
++- (void)updateDisplayCapabilityReady:(BOOL)ready;
++- (void)recordClipboardFeature:(OrbisSessionFeature)feature direction:(OrbisCapabilityDirection)direction generation:(uint64_t)generation;
 +
 +// request a new single-monitor desktop size through the display-control channel
 +- (void)requestDesktopSize:(CGSize)size;
@@ -3254,9 +4817,10 @@ index 131fdc1..a957f71 100644
  // session needs a refresh of its view
  - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
 diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
+index 0fde5e3..ff9e392 100644
 --- a/client/iOS/Models/RDPSession.m
 +++ b/client/iOS/Models/RDPSession.m
-@@ -12,7 +12,11 @@
+@@ -12,7 +12,12 @@
  #import "ios_freerdp_ui.h"
  #import "ios_freerdp_events.h"
  
@@ -3265,19 +4829,21 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
 +
  #import "RDPSession.h"
 +#import "OrbisDiagnostics.h"
++#import "OrbisIPadClipboard.h"
  #import "RDPCursor.h"
  #import "TSXTypes.h"
  #import "Bookmark.h"
-@@ -23,6 +27,8 @@
+@@ -23,6 +28,9 @@ NSString *TSXSessionDidFailToConnectNotification = @"TSXSessionDidFailToConnect"
  
  @interface RDPSession (Private)
  - (void)runSession;
 +- (void)beginRDPConnection;
 +- (void)closeTransportSession;
++- (void)enqueueInputEvent:(NSDictionary *)event;
  - (void)runSessionFinished:(NSNumber *)result;
  - (mfInfo *)mfi;
  
-@@ -37,6 +43,8 @@
+@@ -37,6 +45,8 @@ NSString *TSXSessionDidFailToConnectNotification = @"TSXSessionDidFailToConnect"
  
  @implementation RDPSession
  
@@ -3286,7 +4852,20 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
  @synthesize delegate = _delegate, params = _params, toolbarVisible = _toolbar_visible,
              uiRequestCompleted = _ui_request_completed, bookmark = _bookmark;
  
-@@ -107,6 +115,9 @@
+@@ -94,6 +104,12 @@ static void freeArguments(int argc, char **argv)
+ 	_params = [[bookmark params] copy];
+ 	_name = [[bookmark label] retain];
+ 	_delegate = nil;
++	_capabilities = [[OrbisSessionCapabilities alloc] init];
++	_capabilityGeneration = [_capabilities beginSession];
++	_clipboardPort = [[OrbisIPadClipboard alloc] init];
++	_inputProducerQueue = dispatch_queue_create("com.dnexus.orbis.input-producer", DISPATCH_QUEUE_SERIAL);
++	[self updateClipboardCapabilityReady:NO generation:_capabilityGeneration];
++	[self updateDisplayCapabilityReady:NO];
+ 	_toolbar_visible = YES;
+ 	_freerdp = ios_freerdp_new();
+ 	_ui_request_completed = [[NSCondition alloc] init];
+@@ -107,6 +123,9 @@ static void freeArguments(int argc, char **argv)
  
  	if (!addArgument(&argc, &argv, "/relax-order-checks"))
  		goto out_free;
@@ -3296,7 +4875,7 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
  	// Screen Size is set on connect (we need a valid delegate in case the user choose an automatic
  	// screen size)
  
-@@ -251,13 +262,28 @@
+@@ -251,7 +270,7 @@ static void freeArguments(int argc, char **argv)
  	}
  
  	// Remote keyboard layout
@@ -3305,11 +4884,10 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
  		goto out_free;
  
  	status =
- 	    freerdp_client_settings_parse_command_line(_freerdp->context->settings, argc, argv, FALSE);
- 
+@@ -260,6 +279,21 @@ static void freeArguments(int argc, char **argv)
  	if (0 != status)
-+		goto out_free;
-+
+ 		goto out_free;
+ 
 +	rdpSettings *settings = _freerdp->context->settings;
 +
 +	// The iOS command-line parser accepts /dynamic-resolution but does not reliably
@@ -3323,10 +4901,12 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
 +		goto out_free;
 +	const char *displayChannel[] = { DISP_CHANNEL_NAME };
 +	if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
- 		goto out_free;
- 
++		goto out_free;
++
  	freeArguments(argc, argv);
-@@ -276,7 +302,11 @@
+ 	[self mfi]->session = self;
+ 	return self;
+@@ -276,7 +310,14 @@ out_free:
  	[_name release];
  	[_params release];
  	[_ui_request_completed release];
@@ -3335,10 +4915,13 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
 +	[_transportSession release];
 +	[_connectionTransport release];
 +	[_connectionFailureMessage release];
++	[_capabilities release];
++	[_clipboardPort release];
++	dispatch_release(_inputProducerQueue);
  	[super dealloc];
  }
  
-@@ -290,6 +320,39 @@
+@@ -290,6 +331,39 @@ out_free:
  
  - (void)connect
  {
@@ -3378,7 +4961,7 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
  	// Set Screen Size to automatic if width or height are still 0
  	rdpSettings *settings = _freerdp->context->settings;
  
-@@ -313,24 +376,38 @@
+@@ -313,24 +387,38 @@ out_free:
  	// TODO: This is a hack to ensure connections to RDVH with 16bpp don't have an odd screen
  	// resolution width
  	//       Otherwise this could result in screen corruption ..
@@ -3410,7 +4993,8 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
 +	}
 +	(void)freerdp_abort_connect_context(_freerdp->context);
  	mfInfo *mfi = [self mfi];
- 	ios_events_send(mfi, [NSDictionary dictionaryWithObject:@"disconnect" forKey:@"type"]);
+-	ios_events_send(mfi, [NSDictionary dictionaryWithObject:@"disconnect" forKey:@"type"]);
++	[self enqueueInputEvent:@{ @"type": @"disconnect" }];
  
  	if (mfi->connection_state == TSXConnectionConnecting)
  	{
@@ -3419,28 +5003,139 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
  		return;
  	}
  }
-@@ -378,8 +455,36 @@
+@@ -376,10 +464,147 @@ out_free:
+ #pragma mark -
+ #pragma mark Input events
  
++- (void)enqueueInputEvent:(NSDictionary *)eventDescriptor
++{
++	NSDictionary *event = [[eventDescriptor copy] autorelease];
++	// One serial producer owns all UI-originated pipe writes. Clipboard chunks and
++	// their following paste keys retain FIFO order without blocking the main thread
++	// that FreeRDP's cursor/bitmap callbacks may need synchronously.
++	dispatch_async(_inputProducerQueue, ^{
++		@autoreleasepool
++		{
++			mfInfo *info = [self mfi]; // The copied block retains the session/context until this write completes.
++			if (info->connection_state != TSXConnectionConnected && ![event[@"type"] isEqual:@"disconnect"]) return;
++			if ([event[@"type"] isEqual:@"clipboard"])
++			{
++				if ([event[@"png"] isKindOfClass:[NSData class]])
++					(void)ios_events_send_clipboard_content(info, event[@"text"], event[@"png"]);
++				else if ([event[@"text"] isKindOfClass:[NSString class]])
++					(void)ios_events_send_clipboard(info, event[@"text"]);
++			}
++			else (void)ios_events_send(info, event);
++		}
++	});
++}
  - (void)sendInputEvent:(NSDictionary *)eventDescriptor
  {
 -	if ([self mfi]->connection_state == TSXConnectionConnected)
 -		ios_events_send([self mfi], eventDescriptor);
 +	if ([self mfi]->connection_state != TSXConnectionConnected) return;
-+	if ([eventDescriptor[@"type"] isEqualToString:@"clipboard"])
++	if ([eventDescriptor[@"type"] isEqual:@"clipboard"])
 +	{
-+		if ([eventDescriptor[@"text"] isKindOfClass:[NSString class]])
-+			(void)ios_events_send_clipboard([self mfi], eventDescriptor[@"text"]);
-+		return;
++		if ((eventDescriptor[@"text"] && ![eventDescriptor[@"text"] isKindOfClass:[NSString class]]) ||
++		    (eventDescriptor[@"png"] && ![eventDescriptor[@"png"] isKindOfClass:[NSData class]])) return;
++		OrbisClipboardContent *content = [[[OrbisClipboardContent alloc] initWithText:eventDescriptor[@"text"]
++		    pngData:eventDescriptor[@"png"]] autorelease];
++		if (!content) return;
++		NSMutableDictionary *event = [NSMutableDictionary dictionaryWithObject:@"clipboard" forKey:@"type"];
++		if (content.text) event[@"text"] = content.text;
++		if (content.pngData) event[@"png"] = content.pngData;
++		[self enqueueInputEvent:event];
 +	}
-+	ios_events_send([self mfi], eventDescriptor);
++	else [self enqueueInputEvent:eventDescriptor];
 +}
 +
++@synthesize clipboardPort = _clipboardPort;
++- (OrbisSessionCapabilities *)capabilities { return _capabilities; }
++- (uint64_t)capabilityGeneration { return _capabilityGeneration; }
++- (void)setClipboardOfferGeneration:(uint64_t)offer forSession:(uint64_t)generation
++{
++	@synchronized(self) { if (generation == _capabilityGeneration) _clipboardOfferGeneration = offer; }
++}
++- (void)updateClipboardCapabilityReady:(BOOL)ready generation:(uint64_t)generation
++{
++	@synchronized(self) { if (generation == _capabilityGeneration) _clipboardChannelReady = ready; }
++	for (NSUInteger feature = OrbisSessionFeatureClipboardText; feature <= OrbisSessionFeatureClipboardImage; feature++)
++	{
++		// UIPasteboard has no durable authorization query. A user paste action lets the OS
++		// mediate access; a nil result is not evidence of permission denial.
++		OrbisSessionCapabilityFacts facts = { YES, YES, OrbisCapabilityPermissionGranted,
++		    ready ? OrbisCapabilityChannelReady : OrbisCapabilityChannelPending,
++		    OrbisCapabilityPeerSupportUnknown, NO };
++		OrbisSessionCapabilityLimits *limits = [[[OrbisSessionCapabilityLimits alloc]
++		    initWithFormats:feature == OrbisSessionFeatureClipboardImage ? @[@"image/png", @"CF_DIB"] : @[@"text/plain"]
++		    maximumBytes:feature == OrbisSessionFeatureClipboardImage ? OrbisClipboardMaximumPNGBytes : OrbisClipboardMaximumTextBytes
++		    maximumMonitors:0 maximumWidth:feature == OrbisSessionFeatureClipboardImage ? OrbisClipboardMaximumImageDimension : 0
++		    maximumHeight:feature == OrbisSessionFeatureClipboardImage ? OrbisClipboardMaximumImageDimension : 0] autorelease];
++		for (NSUInteger direction = 0; direction < 2; direction++)
++			[_capabilities updateFeature:feature direction:direction facts:facts limits:limits forGeneration:generation];
++	}
++}
++- (void)recordClipboardFeature:(OrbisSessionFeature)feature direction:(OrbisCapabilityDirection)direction generation:(uint64_t)generation
++{
++	OrbisSessionCapability *current = [_capabilities.snapshot capabilityForFeature:feature direction:direction];
++	OrbisSessionCapabilityFacts facts = current.facts;
++	facts.peerSupport = OrbisCapabilityPeerSupportSupported;
++	[_capabilities updateFeature:feature direction:direction facts:facts limits:current.limits forGeneration:generation];
++}
++- (void)updateDisplayCapabilityReady:(BOOL)ready
++{
++	OrbisSessionCapabilityFacts facts = { YES, YES, OrbisCapabilityPermissionGranted,
++	    ready ? OrbisCapabilityChannelReady : OrbisCapabilityChannelPending,
++	    ready ? OrbisCapabilityPeerSupportSupported : OrbisCapabilityPeerSupportUnknown, NO };
++	OrbisSessionCapabilityLimits *limits = [[[OrbisSessionCapabilityLimits alloc] initWithFormats:@[]
++	    maximumBytes:0 maximumMonitors:1 maximumWidth:8192 maximumHeight:8192] autorelease];
++	[_capabilities updateFeature:OrbisSessionFeatureDisplayResize direction:OrbisCapabilityDirectionToRemote
++	    facts:facts limits:limits forGeneration:_capabilityGeneration];
++	facts.implemented = NO;
++	[_capabilities updateFeature:OrbisSessionFeatureMultipleMonitors direction:OrbisCapabilityDirectionToRemote
++	    facts:facts limits:limits forGeneration:_capabilityGeneration];
++}
++- (void)publishLocalClipboardForPaste
++{
++	NSAssert([NSThread isMainThread], @"Paste requires the main thread");
++	if ([self mfi]->connection_state != TSXConnectionConnected ||
++	    [UIApplication sharedApplication].applicationState == UIApplicationStateBackground) return;
++	OrbisSessionCapabilitiesSnapshot *snapshot = _capabilities.snapshot;
++	BOOL image = [snapshot capabilityForFeature:OrbisSessionFeatureClipboardImage direction:OrbisCapabilityDirectionToRemote].canAttempt;
++	BOOL text = [snapshot capabilityForFeature:OrbisSessionFeatureClipboardText direction:OrbisCapabilityDirectionToRemote].canAttempt;
++	if (!image && !text) return;
++	OrbisClipboardContent *content = [_clipboardPort readContent];
++	if (image && content.pngData)
++	{
++		NSMutableDictionary *event = [NSMutableDictionary dictionaryWithDictionary:@{ @"type": @"clipboard", @"png": content.pngData }];
++		if (text && content.text) event[@"text"] = content.text;
++		[self sendInputEvent:event];
++	}
++	else if (text && content.text) [self sendInputEvent:@{ @"type": @"clipboard", @"text": content.text }];
++}
 +- (void)receiveClipboardText:(NSString *)text
 +{
++	// Compatibility entry point for native text deliveries and app integrations.
++	if (!text) return;
++	@synchronized(self) {
++		[self receiveClipboardContent:@{ @"text": text, @"session": @(_capabilityGeneration),
++		    @"offer": @(_clipboardOfferGeneration) }];
++	}
++}
++- (void)receiveClipboardContent:(NSDictionary *)delivery
++{
 +	NSAssert([NSThread isMainThread], @"Clipboard updates require the main thread");
-+	if ([self mfi]->connection_state == TSXConnectionConnected &&
-+	    [UIApplication sharedApplication].applicationState != UIApplicationStateBackground)
-+		[UIPasteboard generalPasteboard].string = text;
++	@synchronized(self)
++	{
++		if ([delivery[@"session"] unsignedLongLongValue] != _capabilityGeneration ||
++		    !_clipboardChannelReady || [delivery[@"offer"] unsignedLongLongValue] != _clipboardOfferGeneration ||
++		    [self mfi]->connection_state != TSXConnectionConnected ||
++		    [UIApplication sharedApplication].applicationState == UIApplicationStateBackground) return;
++		OrbisSessionFeature feature = delivery[@"png"] ? OrbisSessionFeatureClipboardImage : OrbisSessionFeatureClipboardText;
++		if (![_capabilities.snapshot capabilityForFeature:feature direction:OrbisCapabilityDirectionFromRemote].canAttempt) return;
++		OrbisClipboardContent *content = [[[OrbisClipboardContent alloc] initWithText:delivery[@"text"] pngData:delivery[@"png"]] autorelease];
++		if (content) (void)[_clipboardPort publishContent:content];
++	}
 +}
 +
 +- (void)requestDesktopSize:(CGSize)size
@@ -3454,11 +5149,21 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
 +	    dictionaryWithObjectsAndKeys:@"display-resize", @"type",
 +	                                 [NSNumber numberWithUnsignedInt:width], @"width",
 +	                                 [NSNumber numberWithUnsignedInt:height], @"height", nil];
-+	ios_events_send([self mfi], event);
++	[self enqueueInputEvent:event];
  }
  
  #pragma mark -
-@@ -504,12 +609,41 @@
+@@ -463,6 +688,9 @@ out_free:
+ 	                       withObject:nil
+ 	                    waitUntilDone:YES];
+ 	int result_code = ios_run_freerdp(_freerdp);
++	// The consumer has stopped. Wake any main-thread clipboard producer before
++	// waiting for a main-thread completion callback; it may be blocked on a full pipe.
++	ios_events_free_pipe([self mfi]);
+ 	[self mfi]->connection_state = TSXConnectionDisconnected;
+ 	[self performSelectorOnMainThread:@selector(runSessionFinished:)
+ 	                       withObject:[NSNumber numberWithInt:result_code]
+@@ -504,12 +732,42 @@ out_free:
  
  - (void)sessionDidConnect
  {
@@ -3482,6 +5187,7 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
 +	[[OrbisDiagnostics sharedDiagnostics] recordError:[_transportSession connectionError] event:@"transport.failed"];
 +	if (_connectionCancelled) return [self sessionDidDisconnect];
 +	_finished = YES;
++	[_capabilities endSessionForGeneration:_capabilityGeneration];
 +	[[OrbisDiagnostics sharedDiagnostics] setActiveSessionState:0];
 +	if (!_connectionFailureMessage)
 +	{
@@ -3500,7 +5206,7 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
  	[[NSNotificationCenter defaultCenter]
  	    postNotificationName:TSXSessionDidFailToConnectNotification
  	                  object:self];
-@@ -518,8 +652,76 @@
+@@ -518,8 +776,77 @@ out_free:
  		[[self delegate] session:self didFailToConnect:reason];
  }
  
@@ -3572,6 +5278,7 @@ diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
 +	[[OrbisDiagnostics sharedDiagnostics] recordError:[_transportSession connectionError]
 +	    event:@"transport.disconnected"];
 +	_finished = YES;
++	[_capabilities endSessionForGeneration:_capabilityGeneration];
 +	[[OrbisDiagnostics sharedDiagnostics] setActiveSessionState:0];
 +	[self closeTransportSession];
  	[[NSNotificationCenter defaultCenter] postNotificationName:TSXSessionDidDisconnectNotification
@@ -3696,7 +5403,7 @@ index 722bccc..41b32e1 100644
  - (void)setRemoteCursorPosition:(CGPoint)position;
  - (void)showRemoteCursor;
 diff --git a/client/iOS/Views/RDPSessionView.m b/client/iOS/Views/RDPSessionView.m
-index c7e2f41..776ff0a 100644
+index c7e2f41..52c3abc 100644
 --- a/client/iOS/Views/RDPSessionView.m
 +++ b/client/iOS/Views/RDPSessionView.m
 @@ -9,6 +9,8 @@
@@ -3816,7 +5523,7 @@ index c7e2f41..776ff0a 100644
  	[commandBuffer commit];
  
  	if (!_hasPendingDirtyRect)
-@@ -454,6 +506,131 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -454,6 +506,130 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	}
  }
  
@@ -3929,8 +5636,7 @@ index c7e2f41..776ff0a 100644
 +
 +- (void)publishClipboardForPaste
 +{
-+	NSString *text = [UIPasteboard generalPasteboard].string;
-+	if (text) [_session sendInputEvent:@{ @"type" : @"clipboard", @"text" : text }];
++	[_session publishLocalClipboardForPaste];
 +}
 +
 +- (void)paste:(id)sender
@@ -3948,7 +5654,7 @@ index c7e2f41..776ff0a 100644
  - (BOOL)canBecomeFirstResponder
  {
  	return _hardwareKeyboardActive;
-@@ -467,7 +644,170 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -467,7 +643,170 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		if (key == nil)
  			continue;
  
@@ -4120,7 +5826,7 @@ index c7e2f41..776ff0a 100644
  		if (vk != 0)
  			[[RDPKeyboard getSharedRDPKeyboard] sendVirtualKey:vk up:up];
  	}
-@@ -481,6 +821,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -481,6 +820,12 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  		[super pressesBegan:presses withEvent:event];
  }
  
@@ -4133,7 +5839,7 @@ index c7e2f41..776ff0a 100644
  - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
  {
  	if (_hardwareKeyboardActive)
-@@ -491,6 +837,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -491,6 +836,7 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  
  - (void)dealloc
  {
@@ -4141,7 +5847,7 @@ index c7e2f41..776ff0a 100644
  	[_displayLinkTarget clearView];
  	[_displayLink invalidate];
  	[_displayLink release];
-@@ -500,6 +847,11 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
+@@ -500,6 +846,11 @@ static int VKFromHIDUsage(UIKeyboardHIDUsage usage)
  	[_commandQueue release];
  	[_metalDevice release];
  	[_cursorImageView release];
@@ -4154,7 +5860,7 @@ index c7e2f41..776ff0a 100644
  }
  
 diff --git a/client/iOS/cmake/ExternalDeps.cmake b/client/iOS/cmake/ExternalDeps.cmake
-index 0cf779931..8da313bc0 100644
+index 0cf7799..8da313b 100644
 --- a/client/iOS/cmake/ExternalDeps.cmake
 +++ b/client/iOS/cmake/ExternalDeps.cmake
 @@ -26,22 +26,25 @@ list(APPEND CMAKE_MODULE_PATH ${DEPS_INSTALL_DIR} ${DEPS_INSTALL_DIR}/${CMAKE_IN
@@ -4188,7 +5894,7 @@ index 0cf779931..8da313bc0 100644
      -DBUILD_SHARED_LIBS:BOOL=ON
      -DCMAKE_INSTALL_PREFIX:PATH=${DEPS_INSTALL_DIR}
 diff --git a/client/iOS/cmake/ExternalFFmpeg.cmake b/client/iOS/cmake/ExternalFFmpeg.cmake
-index b6dd1ead1..bd8d35795 100644
+index b6dd1ea..bd8d357 100644
 --- a/client/iOS/cmake/ExternalFFmpeg.cmake
 +++ b/client/iOS/cmake/ExternalFFmpeg.cmake
 @@ -44,5 +44,20 @@ ExternalProject_Add(
@@ -4214,7 +5920,7 @@ index b6dd1ead1..bd8d35795 100644
 +            ${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libswscale.9.dylib
  )
 diff --git a/client/iOS/cmake/ExternalFreeRDP.cmake b/client/iOS/cmake/ExternalFreeRDP.cmake
-index 5691e12f3..f00ef1305 100644
+index 5691e12..f00ef13 100644
 --- a/client/iOS/cmake/ExternalFreeRDP.cmake
 +++ b/client/iOS/cmake/ExternalFreeRDP.cmake
 @@ -1,6 +1,12 @@
@@ -4231,7 +5937,7 @@ index 5691e12f3..f00ef1305 100644
      list(APPEND SSL_ARGS -DOPENSSL_USE_STATIC_LIBS=OFF)
    else()
 diff --git a/client/iOS/cmake/ExternalOpenH264.cmake b/client/iOS/cmake/ExternalOpenH264.cmake
-index 972d71c0a..ccbd01cdf 100644
+index 972d71c..ccbd01c 100644
 --- a/client/iOS/cmake/ExternalOpenH264.cmake
 +++ b/client/iOS/cmake/ExternalOpenH264.cmake
 @@ -1,12 +1,29 @@
@@ -4270,7 +5976,7 @@ index 972d71c0a..ccbd01cdf 100644
 +            ${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libopenh264.8.dylib
  )
 diff --git a/client/iOS/cmake/ExternalOpenSSL.cmake b/client/iOS/cmake/ExternalOpenSSL.cmake
-index 4970407fa..26271510e 100644
+index 4970407..2627151 100644
 --- a/client/iOS/cmake/ExternalOpenSSL.cmake
 +++ b/client/iOS/cmake/ExternalOpenSSL.cmake
 @@ -46,5 +46,12 @@ ExternalProject_Add(
@@ -4288,7 +5994,7 @@ index 4970407fa..26271510e 100644
 +            ${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libssl.4.dylib
  )
 diff --git a/client/iOS/cmake/ExternalWebP.cmake b/client/iOS/cmake/ExternalWebP.cmake
-index 82de79c7d..7310a0d6f 100644
+index 82de79c..7310a0d 100644
 --- a/client/iOS/cmake/ExternalWebP.cmake
 +++ b/client/iOS/cmake/ExternalWebP.cmake
 @@ -11,6 +11,8 @@ ExternalProject_Add(
@@ -4302,7 +6008,7 @@ index 82de79c7d..7310a0d6f 100644
               -DWEBP_BUILD_VWEBP:BOOL=OFF
 diff --git a/client/iOS/iFreeRDP.plist b/client/iOS/iFreeRDP.plist
 deleted file mode 100644
-index dc2e883ee..000000000
+index dc2e883..0000000
 --- a/client/iOS/iFreeRDP.plist
 +++ /dev/null
 @@ -1,73 +0,0 @@
@@ -4379,711 +6085,15 @@ index dc2e883ee..000000000
 -	</array>
 -</dict>
 -</plist>
-diff --git a/client/iOS/FreeRDP/ios_cliprdr.m b/client/iOS/FreeRDP/ios_cliprdr.m
-index 6fec27f..f5f4ca4 100644
---- a/client/iOS/FreeRDP/ios_cliprdr.m
-+++ b/client/iOS/FreeRDP/ios_cliprdr.m
-@@ -30,6 +30,19 @@
- #include <freerdp/client/cliprdr.h>
- 
- #include "ios_cliprdr.h"
-+#import "RDPSession.h"
-+
-+static BOOL ios_cliprdr_publish_text(rdpContext *context, UINT8 *data, UINT32 size)
-+{
-+	mfContext *afc = (mfContext *)context;
-+	if (!afc || !afc->mfi || !afc->mfi->session || size > 8 * 1024 * 1024)
-+		return TRUE;
-+	NSString *text = [[[NSString alloc] initWithBytes:data length:size encoding:NSUTF8StringEncoding] autorelease];
-+	if (text)
-+		[afc->mfi->session performSelectorOnMainThread:@selector(receiveClipboardText:)
-+		    withObject:text waitUntilDone:NO];
-+	return TRUE;
-+}
- 
- UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
- {
-@@ -51,7 +64,7 @@ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
- 
- 	pFormatIds = nullptr;
- 	numFormats = ClipboardGetFormatIds(afc->clipboard, &pFormatIds);
--	formats = (CLIPRDR_FORMAT *)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
-+	formats = (CLIPRDR_FORMAT *)calloc(MAX(numFormats, 1), sizeof(CLIPRDR_FORMAT));
- 
- 	if (!formats)
- 		goto fail;
-@@ -83,6 +96,8 @@ UINT ios_cliprdr_send_client_format_list(CliprdrClientContext *cliprdr)
- 	rc = afc->cliprdr->ClientFormatList(afc->cliprdr, &formatList);
- fail:
- 	free(pFormatIds);
-+	if (formats)
-+		for (UINT32 index = 0; index < numFormats; index++) free(formats[index].formatName);
- 	free(formats);
- 	return rc;
- }
-@@ -114,8 +129,8 @@ fail:
- 
- static UINT ios_cliprdr_send_client_capabilities(CliprdrClientContext *cliprdr)
- {
--	CLIPRDR_CAPABILITIES capabilities;
--	CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet;
-+	CLIPRDR_CAPABILITIES capabilities = WINPR_C_ARRAY_INIT;
-+	CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet = WINPR_C_ARRAY_INIT;
- 
- 	if (!cliprdr || !cliprdr->ClientCapabilities)
- 		return ERROR_INVALID_PARAMETER;
-@@ -224,6 +239,14 @@ static UINT ios_cliprdr_server_format_list(CliprdrClientContext *cliprdr,
- 		afc->numServerFormats = 0;
- 	}
- 
-+	CLIPRDR_FORMAT_LIST_RESPONSE acknowledgment = WINPR_C_ARRAY_INIT;
-+	acknowledgment.common.msgType = CB_FORMAT_LIST_RESPONSE;
-+	acknowledgment.common.msgFlags = CB_RESPONSE_OK;
-+	if (cliprdr->ClientFormatListResponse)
-+	{
-+		rc = cliprdr->ClientFormatListResponse(cliprdr, &acknowledgment);
-+		if (rc != CHANNEL_RC_OK) return rc;
-+	}
- 	if (formatList->numFormats < 1)
- 		return CHANNEL_RC_OK;
- 
-@@ -392,7 +415,7 @@ ios_cliprdr_server_format_data_response(CliprdrClientContext *cliprdr,
- 	if (!format)
+diff --git a/winpr/libwinpr/synch/event.c b/winpr/libwinpr/synch/event.c
+index a5f0422..10f1b29 100644
+--- a/winpr/libwinpr/synch/event.c
++++ b/winpr/libwinpr/synch/event.c
+@@ -200,6 +200,7 @@ static BOOL EventCloseHandle_(WINPR_EVENT* event)
  	{
- 		(void)SetEvent(afc->clipboardRequestEvent);
--		return ERROR_INTERNAL_ERROR;
-+		return CHANNEL_RC_OK;
+ 		// don't close attached file descriptor
+ 		event->impl.fds[0] = -1; // mark as invalid
++		event->impl.fds[1] = -1; // pipe-backed events can alias the borrowed descriptor
  	}
  
- 	if (format->formatName)
-@@ -400,27 +423,28 @@ ios_cliprdr_server_format_data_response(CliprdrClientContext *cliprdr,
- 	else
- 		formatId = format->formatId;
- 
-+	// Clipboard ownership can change between the request and response.
-+	if (formatDataResponse->common.msgFlags & CB_RESPONSE_FAIL)
-+	{
-+		(void)SetEvent(afc->clipboardRequestEvent);
-+		return CHANNEL_RC_OK;
-+	}
- 	size = formatDataResponse->common.dataLen;
--
-+	if (size > 8 * 1024 * 1024 || (size && !formatDataResponse->requestedFormatData))
-+	{
-+		(void)SetEvent(afc->clipboardRequestEvent);
-+		return CHANNEL_RC_OK;
-+	}
- 	ClipboardLock(afc->clipboard);
--	if (!ClipboardSetData(afc->clipboard, formatId, formatDataResponse->requestedFormatData, size))
--		return ERROR_INTERNAL_ERROR;
--
-+	BOOL stored = ClipboardSetData(afc->clipboard, formatId, formatDataResponse->requestedFormatData, size);
- 	(void)SetEvent(afc->clipboardRequestEvent);
--
--	if ((formatId == CF_TEXT) || (formatId == CF_UNICODETEXT))
-+	if (stored && ((formatId == CF_TEXT) || (formatId == CF_UNICODETEXT)))
- 	{
--		formatId = ClipboardRegisterFormat(afc->clipboard, "UTF8_STRING");
-+		formatId = ClipboardRegisterFormat(afc->clipboard, "text/plain");
- 		data = (BYTE *)ClipboardGetData(afc->clipboard, formatId, &size);
--		size = (UINT32)strnlen((const char *)data, size);
--		if (afc->ServerCutText != nullptr)
--		{
--			if (!afc->ServerCutText((rdpContext *)afc, (uint8_t *)data, size))
--			{
--				ClipboardUnlock(afc->clipboard);
--				return ERROR_INTERNAL_ERROR;
--			}
--		}
-+		if (data && afc->ServerCutText)
-+			(void)afc->ServerCutText((rdpContext *)afc, data, (UINT32)strnlen((const char *)data, size));
-+		free(data);
- 	}
- 	ClipboardUnlock(afc->clipboard);
- 
-@@ -473,6 +497,7 @@ BOOL ios_cliprdr_init(mfContext *afc, CliprdrClientContext *cliprdr)
- 		return FALSE;
- 	}
- 
-+	afc->ServerCutText = ios_cliprdr_publish_text;
- 	afc->cliprdr = cliprdr;
- 	afc->clipboard = clipboard;
- 	afc->clipboardRequestEvent = hevent;
-@@ -497,7 +522,14 @@ BOOL ios_cliprdr_uninit(mfContext *afc, CliprdrClientContext *cliprdr)
- 
- 	cliprdr->custom = nullptr;
- 	afc->cliprdr = nullptr;
-+	afc->ServerCutText = nullptr;
-+	afc->clipboardSync = FALSE;
-+	[afc->clipboardInput release]; afc->clipboardInput = nil;
-+	for (UINT32 index = 0; index < afc->numServerFormats; index++) free(afc->serverFormats[index].formatName);
-+	free(afc->serverFormats); afc->serverFormats = nullptr; afc->numServerFormats = 0;
- 	ClipboardDestroy(afc->clipboard);
- 	(void)CloseHandle(afc->clipboardRequestEvent);
-+	afc->clipboard = nullptr;
-+	afc->clipboardRequestEvent = nullptr;
- 	return TRUE;
- }
-diff --git a/channels/audin/client/mac/audin_mac.m b/channels/audin/client/mac/audin_mac.m
---- a/channels/audin/client/mac/audin_mac.m
-+++ b/channels/audin/client/mac/audin_mac.m
-@@ -23,6 +23,7 @@
- #include <stdio.h>
- #include <stdlib.h>
- #include <string.h>
-+#include <pthread.h>
- 
- #include <winpr/crt.h>
- #include <winpr/synch.h>
-@@ -63,7 +64,8 @@
- typedef UInt32 AudioFormatFlags;
- #endif
- 
--typedef struct
-+typedef struct AudinMacDevice AudinMacDevice;
-+struct AudinMacDevice
- {
- 	IAudinDevice iface;
- 
-@@ -76,12 +78,118 @@
- 
- 	rdpContext *rdpcontext;
- 
--	bool isAuthorized;
-+	pthread_mutex_t captureLock;
-+	pthread_mutex_t forwardingLock;
-+	size_t controlRefs;
-+	BOOL enabled;
-+	BOOL forwarding;
-+	BOOL negotiated;
- 	bool isOpen;
- 	AudioQueueRef audioQueue;
- 	AudioStreamBasicDescription audioFormat;
- 	AudioQueueBufferRef audioBuffers[MAC_AUDIO_QUEUE_NUM_BUFFERS];
--} AudinMacDevice;
-+};
-+
-+typedef struct AudinMacControl AudinMacControl;
-+struct AudinMacControl
-+{
-+	rdpContext *context;
-+	BOOL enabled;
-+	AudinMacDevice *device;
-+	AudinMacControl *next;
-+};
-+
-+static pthread_mutex_t audinControlLock = PTHREAD_MUTEX_INITIALIZER;
-+static pthread_cond_t audinControlCondition = PTHREAD_COND_INITIALIZER;
-+static AudinMacControl *audinControls;
-+
-+static UINT audin_mac_start_capture(AudinMacDevice *mac);
-+static UINT audin_mac_stop_capture(AudinMacDevice *mac);
-+
-+/* Caller holds audinControlLock; new sessions always start with capture disabled. */
-+static AudinMacControl *audin_mac_control(rdpContext *context, BOOL create)
-+{
-+	for (AudinMacControl *item = audinControls; item; item = item->next)
-+		if (item->context == context)
-+			return item;
-+	if (!create)
-+		return nullptr;
-+	AudinMacControl *item = calloc(1, sizeof(*item));
-+	if (!item)
-+		return nullptr;
-+	item->context = context;
-+	item->next = audinControls;
-+	audinControls = item;
-+	return item;
-+}
-+
-+/* Hold a device lease while manipulating capture outside the registry lock. */
-+FREERDP_ENTRY_POINT(FREERDP_API UINT orbis_audin_set_enabled(rdpContext *context, BOOL enabled))
-+{
-+	if (!context)
-+		return ERROR_INVALID_PARAMETER;
-+	pthread_mutex_lock(&audinControlLock);
-+	AudinMacControl *control = audin_mac_control(context, TRUE);
-+	if (!control)
-+	{
-+		pthread_mutex_unlock(&audinControlLock);
-+		return CHANNEL_RC_NO_MEMORY;
-+	}
-+	control->enabled = enabled;
-+	AudinMacDevice *mac = control->device;
-+	if (mac)
-+		mac->controlRefs++;
-+	pthread_mutex_unlock(&audinControlLock);
-+	if (!mac)
-+		return CHANNEL_RC_OK;
-+
-+	pthread_mutex_lock(&mac->captureLock);
-+	pthread_mutex_lock(&audinControlLock);
-+	control = audin_mac_control(context, FALSE);
-+	mac->enabled = control ? control->enabled : FALSE;
-+	pthread_mutex_unlock(&audinControlLock);
-+	UINT error = mac->enabled ? audin_mac_start_capture(mac) : audin_mac_stop_capture(mac);
-+	if (error)
-+		mac->enabled = FALSE;
-+	pthread_mutex_unlock(&mac->captureLock);
-+
-+	pthread_mutex_lock(&audinControlLock);
-+	mac->controlRefs--;
-+	pthread_cond_broadcast(&audinControlCondition);
-+	pthread_mutex_unlock(&audinControlLock);
-+	return error;
-+}
-+
-+/* Call after stopping the FreeRDP client, before freeing its context. */
-+FREERDP_ENTRY_POINT(FREERDP_API void orbis_audin_remove_context(rdpContext *context))
-+{
-+	pthread_mutex_lock(&audinControlLock);
-+	AudinMacControl **link = &audinControls;
-+	while (*link && (*link)->context != context)
-+		link = &(*link)->next;
-+	AudinMacDevice *mac = nullptr;
-+	if (*link)
-+	{
-+		AudinMacControl *item = *link;
-+		mac = item->device;
-+		if (mac)
-+			mac->controlRefs++;
-+		*link = item->next;
-+		free(item);
-+	}
-+	pthread_mutex_unlock(&audinControlLock);
-+	if (mac)
-+	{
-+		pthread_mutex_lock(&mac->captureLock);
-+		mac->enabled = FALSE;
-+		(void)audin_mac_stop_capture(mac);
-+		pthread_mutex_unlock(&mac->captureLock);
-+		pthread_mutex_lock(&audinControlLock);
-+		mac->controlRefs--;
-+		pthread_cond_broadcast(&audinControlCondition);
-+		pthread_mutex_unlock(&audinControlLock);
-+	}
-+}
- 
- static AudioFormatID audin_mac_get_format(const AUDIO_FORMAT *format)
- {
-@@ -109,16 +217,13 @@
- 
- static BOOL audin_mac_format_supported(IAudinDevice *device, const AUDIO_FORMAT *format)
- {
--	AudinMacDevice *mac = (AudinMacDevice *)device;
- 	AudioFormatID req_fmt = 0;
--
--	if (!mac->isAuthorized)
--		return FALSE;
- 
- 	if (device == nullptr || format == nullptr)
- 		return FALSE;
- 
--	if (format->nChannels != 2)
-+	if ((format->nChannels != 1 && format->nChannels != 2) ||
-+	    format->wBitsPerSample != 16 || format->nSamplesPerSec == 0)
- 		return FALSE;
- 
- 	req_fmt = audin_mac_get_format(format);
-@@ -139,12 +244,15 @@
- {
- 	AudinMacDevice *mac = (AudinMacDevice *)device;
- 
--	if (!mac->isAuthorized)
--		return ERROR_INTERNAL_ERROR;
--
--	if (device == nullptr || format == nullptr)
--		return ERROR_INVALID_PARAMETER;
--
-+	if (device == nullptr || format == nullptr || FramesPerPacket == 0 ||
-+	    FramesPerPacket > UINT32_MAX / 4)
-+		return ERROR_INVALID_PARAMETER;
-+
-+	if (!audin_mac_format_supported(device, format))
-+		return ERROR_INVALID_PARAMETER;
-+
-+	pthread_mutex_lock(&mac->captureLock);
-+	(void)audin_mac_stop_capture(mac);
- 	mac->FramesPerPacket = FramesPerPacket;
- 	mac->format = *format;
- 	WLog_INFO(TAG, "Audio Format %s [channels=%d, samples=%d, bits=%d]",
-@@ -167,6 +275,7 @@
- 	mac->audioFormat.mFormatID = audin_mac_get_format(format);
- 	mac->audioFormat.mReserved = 0;
- 	mac->audioFormat.mSampleRate = mac->format.nSamplesPerSec;
-+	pthread_mutex_unlock(&mac->captureLock);
- 	return CHANNEL_RC_OK;
- }
- 
-@@ -183,8 +292,11 @@
- 	(void)inNumPackets;
- 	(void)inPacketDesc;
- 
--	if (buffer_size > 0)
-+	/* Turning capture off waits for this forwarding section before returning. */
-+	pthread_mutex_lock(&mac->forwardingLock);
-+	if (mac->forwarding && mac->receive && buffer_size > 0)
- 		error = mac->receive(&mac->format, buffer, buffer_size, mac->user_data);
-+	pthread_mutex_unlock(&mac->forwardingLock);
- 
- 	AudioQueueEnqueueBuffer(inAQ, inBuffer, 0, nullptr);
- 
-@@ -195,134 +307,116 @@
- 	}
- }
- 
-+/* captureLock serializes lifecycle calls; the audio callback never takes it. */
-+static UINT audin_mac_stop_capture(AudinMacDevice *mac)
-+{
-+	pthread_mutex_lock(&mac->forwardingLock);
-+	mac->forwarding = FALSE;
-+	pthread_mutex_unlock(&mac->forwardingLock);
-+	OSStatus status = noErr;
-+	if (mac->audioQueue)
-+	{
-+		/* Neither the registry nor forwarding lock is held during callback drain. */
-+		if (mac->isOpen)
-+			status = AudioQueueStop(mac->audioQueue, true);
-+		OSStatus disposed = AudioQueueDispose(mac->audioQueue, true);
-+		if (status == noErr)
-+			status = disposed;
-+		mac->audioQueue = nullptr;
-+	}
-+	mac->isOpen = false;
-+	return status == noErr ? CHANNEL_RC_OK : CHANNEL_RC_INITIALIZATION_ERROR;
-+}
-+
- static UINT audin_mac_close(IAudinDevice *device)
- {
--	UINT errCode = CHANNEL_RC_OK;
-+	if (!device)
-+		return ERROR_INVALID_PARAMETER;
- 	AudinMacDevice *mac = (AudinMacDevice *)device;
--
--	WINPR_ASSERT(mac);
--	if (!mac->isAuthorized)
--	{
--		WLog_ERR(TAG, "not authorized");
--		return ERROR_INTERNAL_ERROR;
--	}
--
--	if (device == nullptr)
--	{
--		WLog_ERR(TAG, "device == nullptr");
--		return ERROR_INVALID_PARAMETER;
--	}
--
--	if (mac->isOpen)
--	{
--		const OSStatus devStat = AudioQueueStop(mac->audioQueue, true);
--
--		if (devStat != 0)
--		{
--			errCode = GetLastError();
--			char errString[1024] = WINPR_C_ARRAY_INIT;
--			WLog_ERR(TAG, "AudioQueueStop failed with %s [%" PRIu32 "]",
--			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
--		}
--
--		mac->isOpen = false;
--	}
--
--	if (mac->audioQueue)
--	{
--		const OSStatus devStat = AudioQueueDispose(mac->audioQueue, true);
--
--		if (devStat != 0)
--		{
--			errCode = GetLastError();
--			char errString[1024] = WINPR_C_ARRAY_INIT;
--			WLog_ERR(TAG, "AudioQueueDispose failed with %s [%" PRIu32 "]",
--			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
--		}
--
--		mac->audioQueue = nullptr;
--	}
--
-+	pthread_mutex_lock(&mac->captureLock);
-+	UINT error = audin_mac_stop_capture(mac);
-+	mac->negotiated = FALSE;
- 	mac->receive = nullptr;
- 	mac->user_data = nullptr;
--	return errCode;
-+	pthread_mutex_unlock(&mac->captureLock);
-+	return error;
-+}
-+
-+static UINT audin_mac_start_capture(AudinMacDevice *mac)
-+{
-+	if (mac->isOpen || !mac->negotiated)
-+		return CHANNEL_RC_OK;
-+	@autoreleasepool
-+	{
-+		if ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] !=
-+		    AVAuthorizationStatusAuthorized)
-+			return ERROR_ACCESS_DENIED;
-+	}
-+
-+	OSStatus status = AudioQueueNewInput(&mac->audioFormat, mac_audio_queue_input_cb, mac,
-+	    nullptr, kCFRunLoopCommonModes, 0, &mac->audioQueue);
-+	if (status != noErr)
-+		goto failed;
-+	for (size_t index = 0; index < MAC_AUDIO_QUEUE_NUM_BUFFERS; index++)
-+	{
-+		status = AudioQueueAllocateBuffer(mac->audioQueue,
-+		    mac->FramesPerPacket * mac->audioFormat.mBytesPerFrame, &mac->audioBuffers[index]);
-+		if (status != noErr)
-+			goto failed;
-+		status = AudioQueueEnqueueBuffer(mac->audioQueue, mac->audioBuffers[index], 0, nullptr);
-+		if (status != noErr)
-+			goto failed;
-+	}
-+	status = AudioQueueStart(mac->audioQueue, nullptr);
-+	if (status != noErr)
-+		goto failed;
-+	mac->isOpen = true;
-+	pthread_mutex_lock(&mac->forwardingLock);
-+	mac->forwarding = TRUE;
-+	pthread_mutex_unlock(&mac->forwardingLock);
-+	return CHANNEL_RC_OK;
-+failed:
-+	WLog_ERR(TAG, "Starting microphone capture failed with OSStatus %d", (int)status);
-+	(void)audin_mac_stop_capture(mac);
-+	return CHANNEL_RC_INITIALIZATION_ERROR;
- }
- 
- static UINT audin_mac_open(IAudinDevice *device, AudinReceive receive, void *user_data)
- {
-+	if (!device || !receive)
-+		return ERROR_INVALID_PARAMETER;
- 	AudinMacDevice *mac = (AudinMacDevice *)device;
--	DWORD errCode;
--	char errString[1024];
--	OSStatus devStat;
--
--	if (!mac->isAuthorized)
--		return ERROR_INTERNAL_ERROR;
--
-+	pthread_mutex_lock(&mac->captureLock);
-+	(void)audin_mac_stop_capture(mac);
- 	mac->receive = receive;
- 	mac->user_data = user_data;
--	devStat = AudioQueueNewInput(&(mac->audioFormat), mac_audio_queue_input_cb, mac, nullptr,
--	                             kCFRunLoopCommonModes, 0, &(mac->audioQueue));
--
--	if (devStat != 0)
--	{
--		errCode = GetLastError();
--		WLog_ERR(TAG, "AudioQueueNewInput failed with %s [%" PRIu32 "]",
--		         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
--		goto err_out;
--	}
--
--	for (size_t index = 0; index < MAC_AUDIO_QUEUE_NUM_BUFFERS; index++)
--	{
--		devStat = AudioQueueAllocateBuffer(mac->audioQueue,
--		                                   mac->FramesPerPacket * 2 * mac->format.nChannels,
--		                                   &mac->audioBuffers[index]);
--
--		if (devStat != 0)
--		{
--			errCode = GetLastError();
--			WLog_ERR(TAG, "AudioQueueAllocateBuffer failed with %s [%" PRIu32 "]",
--			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
--			goto err_out;
--		}
--
--		devStat = AudioQueueEnqueueBuffer(mac->audioQueue, mac->audioBuffers[index], 0, nullptr);
--
--		if (devStat != 0)
--		{
--			errCode = GetLastError();
--			WLog_ERR(TAG, "AudioQueueEnqueueBuffer failed with %s [%" PRIu32 "]",
--			         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
--			goto err_out;
--		}
--	}
--
--	devStat = AudioQueueStart(mac->audioQueue, nullptr);
--
--	if (devStat != 0)
--	{
--		errCode = GetLastError();
--		WLog_ERR(TAG, "AudioQueueStart failed with %s [%" PRIu32 "]",
--		         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
--		goto err_out;
--	}
--
--	mac->isOpen = true;
--	return CHANNEL_RC_OK;
--err_out:
-+	mac->negotiated = TRUE;
-+	UINT error = mac->enabled ? audin_mac_start_capture(mac) : CHANNEL_RC_OK;
-+	if (error == ERROR_ACCESS_DENIED)
-+	{
-+		/* Permission changes must not close an otherwise working remote session. */
-+		mac->enabled = FALSE;
-+		error = CHANNEL_RC_OK;
-+	}
-+	pthread_mutex_unlock(&mac->captureLock);
-+	return error;
-+}
-+
-+static UINT audin_mac_free(IAudinDevice *device)
-+{
-+	if (!device)
-+		return ERROR_INVALID_PARAMETER;
-+	AudinMacDevice *mac = (AudinMacDevice *)device;
-+	pthread_mutex_lock(&audinControlLock);
-+	AudinMacControl *control = audin_mac_control(mac->rdpcontext, FALSE);
-+	if (control && control->device == mac)
-+		control->device = nullptr;
-+	while (mac->controlRefs)
-+		pthread_cond_wait(&audinControlCondition, &audinControlLock);
-+	pthread_mutex_unlock(&audinControlLock);
- 	(void)audin_mac_close(device);
--	return CHANNEL_RC_INITIALIZATION_ERROR;
--}
--
--static UINT audin_mac_free(IAudinDevice *device)
--{
--	AudinMacDevice *mac = (AudinMacDevice *)device;
--	int error;
--
--	if (device == nullptr)
--		return ERROR_INVALID_PARAMETER;
--
--	(void)audin_mac_close(device);
--
-+	pthread_mutex_destroy(&mac->forwardingLock);
-+	pthread_mutex_destroy(&mac->captureLock);
- 	free(mac);
- 	return CHANNEL_RC_OK;
- }
-@@ -389,21 +483,23 @@
- FREERDP_ENTRY_POINT(UINT VCAPITYPE mac_freerdp_audin_client_subsystem_entry(
-     PFREERDP_AUDIN_DEVICE_ENTRY_POINTS pEntryPoints))
- {
--	DWORD errCode;
--	char errString[1024];
--	const ADDIN_ARGV *args;
--	AudinMacDevice *mac;
--	UINT error;
--	mac = (AudinMacDevice *)calloc(1, sizeof(AudinMacDevice));
--
-+	if (!pEntryPoints || !pEntryPoints->rdpcontext || !pEntryPoints->args ||
-+	    !pEntryPoints->pRegisterAudinDevice)
-+		return ERROR_INVALID_PARAMETER;
-+	AudinMacDevice *mac = calloc(1, sizeof(*mac));
- 	if (!mac)
--	{
--		errCode = GetLastError();
--		WLog_ERR(TAG, "calloc failed with %s [%" PRIu32 "]",
--		         winpr_strerror(errCode, errString, sizeof(errString)), errCode);
- 		return CHANNEL_RC_NO_MEMORY;
--	}
--
-+	if (pthread_mutex_init(&mac->captureLock, nullptr) != 0)
-+	{
-+		free(mac);
-+		return CHANNEL_RC_INITIALIZATION_ERROR;
-+	}
-+	if (pthread_mutex_init(&mac->forwardingLock, nullptr) != 0)
-+	{
-+		pthread_mutex_destroy(&mac->captureLock);
-+		free(mac);
-+		return CHANNEL_RC_INITIALIZATION_ERROR;
-+	}
- 	mac->iface.Open = audin_mac_open;
- 	mac->iface.FormatSupported = audin_mac_format_supported;
- 	mac->iface.SetFormat = audin_mac_set_format;
-@@ -411,59 +507,24 @@
- 	mac->iface.Free = audin_mac_free;
- 	mac->rdpcontext = pEntryPoints->rdpcontext;
- 	mac->dev_unit = -1;
--	args = pEntryPoints->args;
--
--	if ((error = audin_mac_parse_addin_args(mac, args)))
--	{
--		WLog_ERR(TAG, "audin_mac_parse_addin_args failed with %" PRIu32 "!", error);
--		goto error_out;
--	}
--
--	if ((error = pEntryPoints->pRegisterAudinDevice(pEntryPoints->plugin, (IAudinDevice *)mac)))
--	{
--		WLog_ERR(TAG, "RegisterAudinDevice failed with error %" PRIu32 "!", error);
--		goto error_out;
--	}
--
--#if defined(MAC_OS_X_VERSION_10_14)
--	if (@available(macOS 10.14, *))
--	{
--		@autoreleasepool
--		{
--			AVAuthorizationStatus status =
--			    [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
--			switch (status)
--			{
--				case AVAuthorizationStatusAuthorized:
--					mac->isAuthorized = TRUE;
--					break;
--				case AVAuthorizationStatusNotDetermined:
--					[AVCaptureDevice
--					    requestAccessForMediaType:AVMediaTypeAudio
--					            completionHandler:^(BOOL granted) {
--						            if (granted == YES)
--						            {
--							            mac->isAuthorized = TRUE;
--						            }
--						            else
--							            WLog_WARN(TAG, "Microphone access denied by user");
--					            }];
--					break;
--				case AVAuthorizationStatusRestricted:
--					WLog_WARN(TAG, "Microphone access restricted by policy");
--					break;
--				case AVAuthorizationStatusDenied:
--					WLog_WARN(TAG, "Microphone access denied by policy");
--					break;
--				default:
--					break;
--			}
--		}
--	}
--#endif
--
--	return CHANNEL_RC_OK;
--error_out:
--	free(mac);
-+	UINT error = audin_mac_parse_addin_args(mac, pEntryPoints->args);
-+	if (error)
-+		goto failed;
-+	pthread_mutex_lock(&audinControlLock);
-+	AudinMacControl *control = audin_mac_control(mac->rdpcontext, TRUE);
-+	if (!control || control->device)
-+	{
-+		pthread_mutex_unlock(&audinControlLock);
-+		error = control ? CHANNEL_RC_INITIALIZATION_ERROR : CHANNEL_RC_NO_MEMORY;
-+		goto failed;
-+	}
-+	mac->enabled = control->enabled;
-+	control->device = mac;
-+	pthread_mutex_unlock(&audinControlLock);
-+	error = pEntryPoints->pRegisterAudinDevice(pEntryPoints->plugin, &mac->iface);
-+	if (!error)
-+		return CHANNEL_RC_OK;
-+failed:
-+	(void)audin_mac_free(&mac->iface);
- 	return error;
- }
-diff --git a/client/Mac/mfreerdp.h b/client/Mac/mfreerdp.h
---- a/client/Mac/mfreerdp.h
-+++ b/client/Mac/mfreerdp.h
-@@ -57,6 +57,7 @@
- 	wClipboard* clipboard;
- 	UINT32 numServerFormats;
- 	UINT32 requestedFormatId;
-+	BOOL clipboardUpdatePending;
- 	HANDLE clipboardRequestEvent;
- 	CLIPRDR_FORMAT* serverFormats;
- 	CliprdrClientContext* cliprdr;
+ 	winpr_event_uninit(&event->impl);
