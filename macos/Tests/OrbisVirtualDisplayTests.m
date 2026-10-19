@@ -32,6 +32,7 @@ static NSWindow *resolutionFixtureWindow;
 - (void)audioSettingsChanged:(NSNotification *)notification;
 - (void)displayChannelConnected:(DispClientContext *)channel;
 - (void)displayControlCaps:(uint32_t)count area:(uint64_t)area;
+- (void)refreshSessionCapabilities;
 - (void)addVirtualDisplay:(id)sender;
 - (void)desktopDidResize:(NSNotification *)notification;
 - (void)displayChangeTimedOut:(NSTimer *)timer;
@@ -281,6 +282,11 @@ static void CheckMicrophonePermissions(void)
 @implementation OrbisDisplayFixtureController
 @synthesize errorCount;
 - (void)showDisplayError:(NSString *)message { (void)message; errorCount++; }
+- (void)displayControlCaps:(uint32_t)count area:(uint64_t)area
+{
+    [super displayControlCaps:count area:area];
+    [self refreshSessionCapabilities];
+}
 - (void)prepareFixture
 {
     _window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 600)
@@ -294,6 +300,7 @@ static void CheckMicrophonePermissions(void)
     [[_window contentView] addSubview:_remoteView];
     [_window setReleasedWhenClosed:NO];
     _wasConnected = YES;
+    _capabilityGeneration = [_capabilities beginSession];
     OrbisDisplayLayoutMake(1280, 800, 0, 0, [_displaySettings arrangement], false, &_displayLayout);
 }
 - (NSWindow *)secondWindow { return _secondaryWindow; }

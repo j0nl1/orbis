@@ -107,7 +107,17 @@
 
 - (void)testServiceAuthAndBinaryByteOrderAcrossDifferentFrameBoundaries
 {
-	int socketFD = [self connectToPath:@"/echo" failure:nil];
+	[self assertLargeBinaryRoundTripAtPath:@"/echo"];
+}
+
+- (void)testLargeTransfersRespectTCPConnectorReadBudget
+{
+	[self assertLargeBinaryRoundTripAtPath:@"/bounded-echo"];
+}
+
+- (void)assertLargeBinaryRoundTripAtPath:(NSString *)path
+{
+	int socketFD = [self connectToPath:path failure:nil];
 	NSMutableData *payload = [NSMutableData dataWithLength:2 * 1024 * 1024 + 37];
 	for (NSUInteger index = 0; index < payload.length; index++)
 		((uint8_t *)payload.mutableBytes)[index] = (uint8_t)((index * 73) % 251);

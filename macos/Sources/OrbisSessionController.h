@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import "OrbisDisplayLayout.h"
 #import "OrbisInputCapture.h"
+#import "OrbisSessionCapabilities.h"
 
 @class OrbisProfile;
 @class OrbisDisplaySettings;
@@ -20,6 +21,8 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 
 @interface OrbisSessionController : NSObject <NSWindowDelegate, OrbisInputCaptureDelegate>
 {
+	OrbisSessionCapabilities *_capabilities;
+	uint64_t _capabilityGeneration;
 	id<OrbisSessionControllerDelegate> _delegate;
 	OrbisProfile *_profile;
 	OrbisDisplaySettings *_displaySettings;
@@ -65,6 +68,7 @@ typedef struct OrbisRDPTransportRoute OrbisRDPTransportRoute;
 }
 
 @property(nonatomic, assign) id<OrbisSessionControllerDelegate> delegate;
+@property(nonatomic, readonly) OrbisSessionCapabilitiesSnapshot *capabilities;
 
 - (id)initWithProfile:(OrbisProfile *)profile password:(NSString *)password
              transport:(id<OrbisConnectionTransport>)transport;

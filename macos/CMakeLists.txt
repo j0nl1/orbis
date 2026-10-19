@@ -118,6 +118,8 @@ target_include_directories(
     ${ORBIS_SHARED_DIR}/Sources/Security
 	${ORBIS_SHARED_DIR}/Sources/About
     ${ORBIS_SHARED_DIR}/Sources/Transport
+    ${ORBIS_SHARED_DIR}/Sources/Capabilities
+    ${ORBIS_SHARED_DIR}/Sources/Clipboard
     ${PROJECT_SOURCE_DIR}/client/Mac
 )
 

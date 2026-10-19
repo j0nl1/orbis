@@ -9,6 +9,33 @@ find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(SECURITY_FRAMEWORK Security REQUIRED)
 find_package(XCTest REQUIRED)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# Shared policy and native clipboard adapters use the same contracts in tests
+# and in the application; no RDP runtime is needed for their direct tests.
+add_library(orbis_session_support STATIC
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Capabilities/OrbisSessionCapabilities.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Clipboard/OrbisClipboardPort.m
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Clipboard/OrbisClipboardImage.m
+  ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisMacClipboard.m)
+target_include_directories(orbis_session_support PUBLIC
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Capabilities
+  ${PROJECT_SOURCE_DIR}/shared/Sources/Clipboard
+  ${PROJECT_SOURCE_DIR}/macos/Sources)
+target_compile_options(orbis_session_support PRIVATE -fno-objc-arc -fblocks -Wall -Wextra)
+target_link_libraries(orbis_session_support PUBLIC ${FOUNDATION_FRAMEWORK}
+  ${APPKIT_FRAMEWORK} "-framework ImageIO" "-framework CoreGraphics")
+xctest_add_bundle(OrbisSessionCapabilitiesTests orbis_session_support
+  ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisSessionCapabilitiesTests.m)
+target_compile_options(OrbisSessionCapabilitiesTests PRIVATE -fobjc-arc -fblocks)
+xctest_add_test(unit.session-capabilities OrbisSessionCapabilitiesTests)
+set_tests_properties(unit.session-capabilities PROPERTIES LABELS "unit;xctest;shared")
+add_executable(orbis_clipboard_image_tests
+  ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisClipboardImageTests.m)
+target_compile_options(orbis_clipboard_image_tests PRIVATE -fno-objc-arc -fblocks)
+target_link_libraries(orbis_clipboard_image_tests PRIVATE orbis_session_support)
+add_test(NAME integration.clipboard-images COMMAND orbis_clipboard_image_tests)
+set_tests_properties(integration.clipboard-images PROPERTIES
+  LABELS "integration;appkit;clipboard" RUN_SERIAL TRUE TIMEOUT 30)
 add_test(NAME unit.release-version
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_release_version.py)
 set_tests_properties(unit.release-version PROPERTIES LABELS "unit;release")
@@ -22,6 +49,16 @@ set(ORBIS_TEST_FREERDP_BUILD_DIR "" CACHE PATH "Built FreeRDP runtime for native
 if(ORBIS_TEST_FREERDP_BUILD_DIR)
   set(keyboard_source ${PROJECT_SOURCE_DIR}/.build/vendor/freerdp)
   set(keyboard_runtime ${ORBIS_TEST_FREERDP_BUILD_DIR}/macos/Orbis.app/Contents/Frameworks)
+  add_executable(orbis_file_descriptor_event_tests
+    ${PROJECT_SOURCE_DIR}/shared/Tests/OrbisFileDescriptorEventTests.c)
+  target_include_directories(orbis_file_descriptor_event_tests PRIVATE
+    ${keyboard_source}/winpr/include ${ORBIS_TEST_FREERDP_BUILD_DIR}/winpr/include)
+  target_compile_options(orbis_file_descriptor_event_tests PRIVATE -Wall -Wextra -Werror)
+  target_link_libraries(orbis_file_descriptor_event_tests PRIVATE
+    "${keyboard_runtime}/libwinpr3.3.dylib")
+  target_link_options(orbis_file_descriptor_event_tests PRIVATE "LINKER:-rpath,${keyboard_runtime}")
+  add_test(NAME integration.file-descriptor-event COMMAND orbis_file_descriptor_event_tests)
+  set_tests_properties(integration.file-descriptor-event PROPERTIES LABELS "integration;freerdp;clipboard")
   add_executable(orbis_keyboard_input_tests
     ${PROJECT_SOURCE_DIR}/macos/Tests/OrbisKeyboardInputTests.m
     ${PROJECT_SOURCE_DIR}/macos/Sources/OrbisInputEventTap.m
@@ -164,6 +201,10 @@ if(ORBIS_TEST_FREERDP_BUILD_DIR)
   add_test(NAME integration.macos-session-diagnostics COMMAND orbis_session_diagnostics_tests)
   set_tests_properties(integration.macos-session-diagnostics PROPERTIES
     LABELS "integration;appkit;freerdp;diagnostics" RUN_SERIAL TRUE)
+  foreach(adapter_target orbis_keyboard_input_tests orbis_virtual_display_tests
+      orbis_clipboard_tests orbis_clipboard_boundary_tests orbis_session_diagnostics_tests)
+    target_link_libraries(${adapter_target} PRIVATE orbis_session_support)
+  endforeach()
 endif()
 find_library(NETWORK_FRAMEWORK Network REQUIRED)
 find_library(METRICKIT_FRAMEWORK MetricKit REQUIRED)
@@ -253,6 +294,7 @@ target_link_libraries(
     orbis_shared
     orbis_tunnel
     orbis_diagnostics
+    orbis_session_support
     ${APPKIT_FRAMEWORK}
     "-framework ApplicationServices"
     "-framework CoreGraphics"

@@ -7,7 +7,8 @@
 #include <stdatomic.h>
 
 static NSString *const OrbisTunnelErrorDomain = @"com.dnexus.orbis.tunnel";
-static const size_t OrbisTunnelChunkSize = 64 * 1024;
+// Keep outgoing messages within TCP-over-WebSocket connectors' copy-buffer budget.
+static const size_t OrbisTunnelChunkSize = 16 * 1024;
 static const size_t OrbisTunnelMaximumMessageSize = 4 * 1024 * 1024;
 static atomic_uint_fast64_t OrbisNextTransportID;
 

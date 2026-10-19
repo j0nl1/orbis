@@ -16,6 +16,8 @@
 #import "OrbisDirectTransport.h"
 #import "RDPSession.h"
 #import "OrbisDiagnostics.h"
+#import "OrbisIPadClipboard.h"
+#import "OrbisClipboardImage.h"
 #import "ios_freerdp.h"
 #import "ios_cliprdr.h"
 #import "ios_freerdp_events.h"
@@ -185,7 +187,40 @@
 - (void)savePressed:(id)sender;
 @end
 
+@interface OrbisTestPasteboard : NSObject <OrbisIPadPasteboard>
+@property(nonatomic, copy) NSString *string;
+@property(nonatomic, retain) UIImage *image;
+@property(nonatomic, copy) NSArray *items;
+@property(nonatomic, retain) NSData *png;
+@property(nonatomic) NSUInteger reads;
+@end
+@implementation OrbisTestPasteboard
+- (NSData *)dataForPasteboardType:(NSString *)type { (void)type; self.reads++; return self.png; }
+- (void)dealloc { [_string release]; [_image release]; [_items release]; [_png release]; [super dealloc]; }
+@end
+
+static NSData *OrbisSyntheticPNG(void)
+{
+	const size_t width = 512, height = 512;
+	NSMutableData *pixels = [NSMutableData dataWithLength:width * height * 4];
+	uint8_t *bytes = pixels.mutableBytes;
+	uint32_t seed = 7;
+	for (NSUInteger i = 0; i < pixels.length; i += 4)
+	{
+		seed = seed * 1664525u + 1013904223u;
+		bytes[i] = seed >> 24; bytes[i + 1] = seed >> 16; bytes[i + 2] = seed >> 8; bytes[i + 3] = 255;
+	}
+	bytes[0] = bytes[1] = bytes[2] = bytes[3] = 0;
+	CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+	CGContextRef context = CGBitmapContextCreate(bytes, width, height, 8, width * 4, space, kCGImageAlphaPremultipliedLast);
+	CGImageRef image = CGBitmapContextCreateImage(context);
+	NSData *png = UIImagePNGRepresentation([UIImage imageWithCGImage:image]);
+	CGImageRelease(image); CGContextRelease(context); CGColorSpaceRelease(space);
+	return png;
+}
+
 @interface OrbisInputRecorder : NSObject
+@property(nonatomic, retain) OrbisClipboardContent *clipboardContent;
 @property(nonatomic, retain) NSMutableArray *events;
 @property(nonatomic, retain) ConnectionParams *params;
 @property(nonatomic, assign) id delegate;
@@ -194,9 +229,14 @@
 @end
 @implementation OrbisInputRecorder
 - (void)sendInputEvent:(NSDictionary *)event { [self.events addObject:event]; }
+- (void)publishLocalClipboardForPaste
+{
+	if (self.clipboardContent.pngData) [self sendInputEvent:@{ @"type": @"clipboard", @"png": self.clipboardContent.pngData }];
+	else if (self.clipboardContent.text) [self sendInputEvent:@{ @"type": @"clipboard", @"text": self.clipboardContent.text }];
+}
 - (CGContextRef)bitmapContext { return nil; }
 - (rdpSettings *)getSessionParams { return NULL; }
-- (void)dealloc { [_events release]; [_params release]; [super dealloc]; }
+- (void)dealloc { [_events release]; [_params release]; [_clipboardContent release]; [super dealloc]; }
 @end
 
 @interface OrbisTestScroll : UIPanGestureRecognizer
@@ -393,10 +433,35 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	// Exercise the viewport-before-capabilities order through both production paths.
 	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
 	XCTAssertEqual(sent.count, 0u);
-	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 1, 8192, 8192), CHANNEL_RC_OK);
 	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
-	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 1, 8192, 8192), CHANNEL_RC_OK);
 	XCTAssertEqual(sent.count, 1u);
+	info->context->disp = NULL;
+}
+
+- (void)testDisplayRequestsRespectNegotiatedPeerAreaAndReset
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *info = [session mfi];
+	NSMutableArray *sent = [NSMutableArray array];
+	DispClientContext disp = { 0 }; disp.handle = sent; disp.SendMonitorLayout = OrbisCaptureDisplayLayout;
+	info->context->disp = &disp;
+	XCTAssertEqual(ios_events_send_display_resize(info, 1920, 1080), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 2, 1000, 1000), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 0u); // 2,073,600 pixels exceed the peer's 2,000,000-pixel layout budget.
+	XCTAssertEqual(ios_events_send_display_resize(info, 1000, 1000), CHANNEL_RC_OK);
+	XCTAssertEqual(sent.count, 1u);
+	ios_events_display_control_reset(info);
+	XCTAssertFalse([session.capabilities.snapshot capabilityForFeature:OrbisSessionFeatureDisplayResize
+	    direction:OrbisCapabilityDirectionToRemote].canAttempt);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 0, 8192, 8192), CHANNEL_RC_OK);
+	XCTAssertFalse(info->context->displayControlReady);
+	XCTAssertEqual(sent.count, 1u);
+	// The protocol product has three UINT32 factors: saturate without arithmetic wraparound.
+	XCTAssertEqual(ios_events_display_control_capabilities(info, UINT32_MAX, UINT32_MAX, UINT32_MAX), CHANNEL_RC_OK);
+	XCTAssertTrue(info->context->displayControlReady);
+	XCTAssertEqual(sent.count, 2u);
 	info->context->disp = NULL;
 }
 
@@ -410,7 +475,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	info->context->disp = &disp;
 	freerdp_settings_set_uint32(info->_context->settings, FreeRDP_DesktopWidth, 2050);
 	freerdp_settings_set_uint32(info->_context->settings, FreeRDP_DesktopHeight, 1536);
-	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 1, 8192, 8192), CHANNEL_RC_OK);
 	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
 	XCTAssertEqual(sent.count, 1u);
 	XCTAssertEqual(ios_events_send_display_resize(info, 1920, 1080), CHANNEL_RC_OK);
@@ -419,12 +484,12 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	info->context->disp = NULL;
 	XCTAssertEqual(ios_events_send_display_resize(info, 2560, 1600), CHANNEL_RC_OK);
 	info->context->disp = &disp;
-	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 1, 8192, 8192), CHANNEL_RC_OK);
 	XCTAssertEqual(sent.count, 3u);
 	XCTAssertEqualObjects(sent.lastObject[@"width"], @2560);
 	XCTAssertNotEqual(ios_events_send_display_resize(info, 1, 1600), CHANNEL_RC_OK);
 	ios_events_display_control_reset(info);
-	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_OK);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 1, 8192, 8192), CHANNEL_RC_OK);
 	XCTAssertEqualObjects(sent.lastObject[@"width"], @2560);
 	info->context->disp = NULL;
 }
@@ -648,7 +713,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	disp.handle = sent; disp.SendMonitorLayout = OrbisCaptureDisplayFailureOnce;
 	info->context->disp = &disp;
 	ios_events_send_display_resize(info, 2050, 1536);
-	XCTAssertEqual(ios_events_display_control_ready(info), CHANNEL_RC_BAD_CHANNEL);
+	XCTAssertEqual(ios_events_display_control_capabilities(info, 1, 8192, 8192), CHANNEL_RC_BAD_CHANNEL);
 	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
 	XCTAssertEqual(ios_events_send_display_resize(info, 2050, 1536), CHANNEL_RC_OK);
 	XCTAssertEqual(sent.count, 2u);
@@ -657,7 +722,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	disp.SendMonitorLayout = OrbisCaptureDisplayLayout;
 	dispatch_apply(40, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t index) {
 		@autoreleasepool {
-			if (index % 2) ios_events_display_control_ready(info);
+			if (index % 2) ios_events_display_control_capabilities(info, 1, 8192, 8192);
 			else ios_events_send_display_resize(info, 2050, 1536);
 		}
 	});
@@ -665,17 +730,411 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	info->context->disp = NULL;
 }
 
+- (void)testClipboardAdapterReadsOnlyOnExplicitPasteAndRejectsMalformedImages
+{
+	OrbisTestPasteboard *board = [[[OrbisTestPasteboard alloc] init] autorelease];
+	board.png = OrbisSyntheticPNG(); board.string = @"Synthetic";
+	OrbisIPadClipboard *port = [[[OrbisIPadClipboard alloc] initWithPasteboard:board] autorelease];
+	XCTAssertEqual(board.reads, 0u);
+	OrbisClipboardContent *content = [port readContent];
+	XCTAssertEqual(board.reads, 1u);
+	XCTAssertNotNil(content.pngData);
+	XCTAssertTrue([port publishContent:content]);
+	NSArray *previous = board.items;
+	const uint8_t signature[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+	OrbisClipboardContent *bad = [[[OrbisClipboardContent alloc] initWithText:nil
+	    pngData:[NSData dataWithBytes:signature length:8]] autorelease];
+	XCTAssertFalse([port publishContent:bad]);
+	XCTAssertEqualObjects(board.items, previous);
+	board.png = nil; board.image = nil; board.string = nil;
+	XCTAssertNil([port readContent]); // Unavailable data does not manufacture a permission verdict.
+}
+
+- (void)testPasteCapabilityGatesSystemReadsAndDoesNotInferPermissionDenial
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	OrbisTestPasteboard *board = [[[OrbisTestPasteboard alloc] init] autorelease];
+	session.clipboardPort = [[[OrbisIPadClipboard alloc] initWithPasteboard:board] autorelease];
+	[session mfi]->connection_state = TSXConnectionConnected;
+	[session publishLocalClipboardForPaste];
+	XCTAssertEqual(board.reads, 0u);
+	[session updateClipboardCapabilityReady:YES generation:session.capabilityGeneration];
+	[session publishLocalClipboardForPaste];
+	XCTAssertEqual(board.reads, 1u);
+	OrbisSessionCapability *capability = [session.capabilities.snapshot capabilityForFeature:OrbisSessionFeatureClipboardImage
+	    direction:OrbisCapabilityDirectionToRemote];
+	XCTAssertTrue(capability.canAttempt);
+	XCTAssertEqual(capability.facts.peerSupport, OrbisCapabilityPeerSupportUnknown);
+	XCTAssertNotEqual(capability.reason, OrbisCapabilityReasonPermissionDenied);
+	[session.capabilities endSessionForGeneration:session.capabilityGeneration];
+	[session publishLocalClipboardForPaste];
+	XCTAssertEqual(board.reads, 1u);
+	[session mfi]->connection_state = TSXConnectionDisconnected;
+}
+
+- (void)testImageAndTextClipboardChunkQueueAndDIBFallback
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	__block CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionary];
+	cliprdr.handle = record; cliprdr.ClientFormatList = OrbisCaptureClipboardList;
+	cliprdr.ClientFormatDataResponse = OrbisCaptureClipboardResponse;
+	XCTAssertTrue(ios_cliprdr_init(mfi->context, &cliprdr));
+	mfi->connection_state = TSXConnectionConnected;
+	NSData *png = OrbisSyntheticPNG();
+	XCTAssertGreaterThan(png.length, 65535u);
+	XCTestExpectation *drained = [self expectationWithDescription:@"Image chunks consumed"];
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+		@autoreleasepool
+		{
+			NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+			while (![record[@"lists"] unsignedIntegerValue] && deadline.timeIntervalSinceNow > 0)
+			{
+				(void)WaitForSingleObject(mfi->handle, 20); (void)ios_events_check_handle(mfi);
+			}
+			CLIPRDR_FORMAT_DATA_REQUEST request = { .requestedFormatId = ClipboardRegisterFormat(mfi->context->clipboard, "PNG") };
+			XCTAssertEqual(cliprdr.ServerFormatDataRequest(&cliprdr, &request), CHANNEL_RC_OK);
+			XCTAssertEqualObjects(record[@"flags"], @(CB_RESPONSE_OK));
+			XCTAssertNotNil([OrbisClipboardImageCodec normalizedPNGData:record[@"payload"]]);
+			UIImage *decoded = [UIImage imageWithData:record[@"payload"]];
+			XCTAssertEqual(CGImageGetWidth(decoded.CGImage), 512u);
+			XCTAssertTrue(CGImageGetAlphaInfo(decoded.CGImage) != kCGImageAlphaNone);
+			request.requestedFormatId = CF_DIB;
+			XCTAssertEqual(cliprdr.ServerFormatDataRequest(&cliprdr, &request), CHANNEL_RC_OK);
+			XCTAssertNotNil([OrbisClipboardImageCodec PNGDataFromDIBData:record[@"payload"]]);
+			request.requestedFormatId = CF_UNICODETEXT;
+			XCTAssertEqual(cliprdr.ServerFormatDataRequest(&cliprdr, &request), CHANNEL_RC_OK);
+			NSData *textBytes = record[@"payload"];
+			XCTAssertGreaterThanOrEqual(textBytes.length, 2u);
+			NSString *text = textBytes.length >= 2 ? [[[NSString alloc] initWithBytes:textBytes.bytes length:textBytes.length - 2
+			    encoding:NSUTF16LittleEndianStringEncoding] autorelease] : nil;
+			XCTAssertEqualObjects(text, @"Image caption 🐺");
+			[drained fulfill];
+		}
+	});
+	[session sendInputEvent:@{ @"type": @"clipboard", @"png": png, @"text": @"Image caption 🐺" }];
+	[self waitForExpectations:@[drained] timeout:6];
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	XCTAssertEqualObjects(record[@"formats"], @5);
+	XCTAssertEqual([session.capabilities.snapshot capabilityForFeature:OrbisSessionFeatureClipboardImage
+	    direction:OrbisCapabilityDirectionToRemote].facts.peerSupport, OrbisCapabilityPeerSupportSupported);
+	mfi->connection_state = TSXConnectionDisconnected;
+	XCTAssertTrue(ios_cliprdr_uninit(mfi->context, &cliprdr));
+}
+
+- (void)testEventPipeConsumesFragmentedFramesAndRejectsPrematureEOF
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	__block CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionary];
+	cliprdr.handle = record; cliprdr.ClientFormatList = OrbisCaptureClipboardList;
+	cliprdr.ClientFormatDataResponse = OrbisCaptureClipboardResponse;
+	XCTAssertTrue(ios_cliprdr_init(mfi->context, &cliprdr));
+	NSDictionary *event = @{ @"type": @"clipboard-chunk", @"first": @YES, @"final": @YES,
+	    @"data": [@"Fragmented frame" dataUsingEncoding:NSUTF8StringEncoding] };
+	NSData *encoded = [NSKeyedArchiver archivedDataWithRootObject:event];
+	uint32_t length = (uint32_t)encoded.length;
+	NSMutableData *wire = [NSMutableData dataWithBytes:&length length:sizeof(length)]; [wire appendData:encoded];
+	XCTestExpectation *written = [self expectationWithDescription:@"Fragmented producer finished"];
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+		@autoreleasepool
+		{
+			const uint8_t *bytes = wire.bytes;
+			for (NSUInteger offset = 0; offset < wire.length; offset++)
+			{
+				XCTAssertEqual(write(mfi->event_pipe_producer, bytes + offset, 1), (ssize_t)1);
+				usleep(1000);
+			}
+			[written fulfill];
+		}
+	});
+	XCTAssertEqual(WaitForSingleObject(mfi->handle, 1000), WAIT_OBJECT_0);
+	XCTAssertTrue(ios_events_check_handle(mfi));
+	[self waitForExpectations:@[written] timeout:3];
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	CLIPRDR_FORMAT_DATA_REQUEST request = { .requestedFormatId = CF_UNICODETEXT };
+	XCTAssertEqual(cliprdr.ServerFormatDataRequest(&cliprdr, &request), CHANNEL_RC_OK);
+	NSData *bytes = record[@"payload"];
+	XCTAssertGreaterThanOrEqual(bytes.length, 2u);
+	NSString *text = bytes.length >= 2 ? [[[NSString alloc] initWithBytes:bytes.bytes length:bytes.length - 2 encoding:NSUTF16LittleEndianStringEncoding] autorelease] : nil;
+	XCTAssertEqualObjects(text, @"Fragmented frame");
+	XCTAssertEqual(write(mfi->event_pipe_producer, &length, 2), (ssize_t)2);
+	close(mfi->event_pipe_producer); mfi->event_pipe_producer = -1;
+	XCTAssertFalse(ios_events_check_handle(mfi));
+	XCTAssertFalse(ios_events_send(mfi, event));
+	XCTAssertTrue(ios_cliprdr_uninit(mfi->context, &cliprdr));
+}
+
+- (void)testEventPipeSerializesConcurrentWritersAndClosedReaderDoesNotSignal
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	__block CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionary];
+	cliprdr.handle = record; cliprdr.ClientFormatList = OrbisCaptureClipboardList;
+	XCTAssertTrue(ios_cliprdr_init(mfi->context, &cliprdr));
+	XCTestExpectation *written = [self expectationWithDescription:@"Concurrent producers finished"];
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+		dispatch_apply(32, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t index) {
+			@autoreleasepool
+			{
+				NSString *text = [NSString stringWithFormat:@"Frame %zu", index];
+				NSDictionary *event = @{ @"type": @"clipboard-content-chunk", @"transaction": text,
+				    @"generation": @(session.capabilityGeneration), @"kind": @"text", @"begin": @YES, @"final": @YES,
+				    @"data": [text dataUsingEncoding:NSUTF8StringEncoding] };
+				XCTAssertTrue(ios_events_send(mfi, event));
+			}
+		});
+		[written fulfill];
+	});
+	for (NSUInteger frame = 0; frame < 32; frame++)
+	{
+		XCTAssertEqual(WaitForSingleObject(mfi->handle, 2000), WAIT_OBJECT_0);
+		XCTAssertTrue(ios_events_check_handle(mfi));
+	}
+	[self waitForExpectations:@[written] timeout:3];
+	XCTAssertEqualObjects(record[@"lists"], @32);
+	// F_SETNOSIGPIPE makes this a failed operation, without terminating the app.
+	close(mfi->event_pipe_consumer); mfi->event_pipe_consumer = -1;
+	XCTAssertFalse(ios_events_send(mfi, @{ @"type": @"disconnect" }));
+	XCTAssertFalse(ios_events_send(mfi, @{ @"type": @"disconnect" }));
+	XCTAssertTrue(ios_cliprdr_uninit(mfi->context, &cliprdr));
+}
+
+- (void)testRetiringStoppedConsumerUnblocksAClipboardProducerBeforeCompletion
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+	__block BOOL failed = NO;
+	NSData *payload = [NSMutableData dataWithLength:24000];
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+		@autoreleasepool
+		{
+			(void)session; // Keep the context and its lifetime-owned framing lock alive until the producer exits.
+			for (NSUInteger frame = 0; frame < 1024; frame++)
+			{
+				if (!ios_events_send(mfi, @{ @"type": @"clipboard-chunk", @"data": payload,
+				    @"first": @(frame == 0), @"final": @NO })) { failed = YES; break; }
+			}
+			dispatch_semaphore_signal(finished);
+		}
+	});
+	XCTAssertEqual(WaitForSingleObject(mfi->handle, 1000), WAIT_OBJECT_0);
+	usleep(50000); // The consumer intentionally never drains; the bounded pipe forces backpressure.
+	XCTAssertNotEqual(dispatch_semaphore_wait(finished, DISPATCH_TIME_NOW), 0L);
+	ios_events_free_pipe(mfi); // Same retirement seam used before runSession's main-thread completion wait.
+	XCTAssertEqual(dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)), 0L);
+	XCTAssertTrue(failed);
+	XCTAssertEqual(mfi->event_pipe_producer, -1);
+	XCTAssertEqual(mfi->event_pipe_consumer, -1);
+	XCTAssertFalse(ios_events_send(mfi, @{ @"type": @"disconnect" }));
+	ios_events_free_pipe(mfi); // Repeated retirement/final context destruction are safe.
+#if !OS_OBJECT_USE_OBJC
+	dispatch_release(finished);
+#endif
+}
+
+- (void)testSessionProducerKeepsMainCallbacksResponsiveAndOrdersPasteKeysAfterImageOffer
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	__block CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionary];
+	cliprdr.handle = record; cliprdr.ClientFormatList = OrbisCaptureClipboardList;
+	XCTAssertTrue(ios_cliprdr_init(mfi->context, &cliprdr));
+	mfi->connection_state = TSXConnectionConnected;
+	NSData *png = OrbisSyntheticPNG();
+	XCTestExpectation *drained = [self expectationWithDescription:@"Responsive main callback and ordered paste"];
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+		@autoreleasepool
+		{
+			XCTAssertEqual(WaitForSingleObject(mfi->handle, 1000), WAIT_OBJECT_0);
+			usleep(50000); // A real image producer fills the pipe while this fake connection consumer is paused.
+			dispatch_semaphore_t callback = dispatch_semaphore_create(0);
+			dispatch_async(dispatch_get_main_queue(), ^{ dispatch_semaphore_signal(callback); });
+			BOOL responsive = dispatch_semaphore_wait(callback, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) == 0;
+			XCTAssertTrue(responsive); // Models FreeRDP's synchronous cursor/bitmap main-thread callback.
+			if (!responsive)
+			{
+				ios_events_free_pipe(mfi); [drained fulfill]; return; // Release an old synchronous implementation instead of hanging the suite.
+			}
+			NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:4];
+			while (![record[@"lists"] unsignedIntegerValue] && deadline.timeIntervalSinceNow > 0)
+			{
+				(void)WaitForSingleObject(mfi->handle, 20); XCTAssertTrue(ios_events_check_handle(mfi));
+			}
+			XCTAssertEqualObjects(record[@"lists"], @1);
+			// The very next four serialized frames must be Ctrl-down, V-down, V-up, Ctrl-up.
+			for (NSDictionary *expected in @[
+			    @{ @"scancode": @29, @"flags": @0 }, @{ @"scancode": @47, @"flags": @0 },
+			    @{ @"scancode": @47, @"flags": @(KBD_FLAGS_RELEASE) }, @{ @"scancode": @29, @"flags": @(KBD_FLAGS_RELEASE) }])
+			{
+				DWORD ready = WaitForSingleObject(mfi->handle, 1000);
+				XCTAssertEqual(ready, WAIT_OBJECT_0);
+				if (ready != WAIT_OBJECT_0) break;
+				uint32_t length = 0; NSUInteger offset = 0;
+				while (offset < sizeof(length))
+				{
+					ssize_t count = read(mfi->event_pipe_consumer, (uint8_t *)&length + offset, sizeof(length) - offset);
+					if (count <= 0) break; offset += count;
+				}
+				XCTAssertEqual(offset, sizeof(length));
+				if (offset != sizeof(length)) break;
+				XCTAssertTrue(length > 0 && length <= 32000);
+				if (!length || length > 32000) break;
+				NSMutableData *encoded = [NSMutableData dataWithLength:length]; offset = 0;
+				while (offset < length)
+				{
+					ssize_t count = read(mfi->event_pipe_consumer, (uint8_t *)encoded.mutableBytes + offset, length - offset);
+					if (count <= 0) break; offset += count;
+				}
+				XCTAssertEqual(offset, (NSUInteger)length);
+				if (offset != length) break;
+				NSDictionary *event = [NSKeyedUnarchiver unarchiveObjectWithData:encoded];
+				XCTAssertEqualObjects(event[@"type"], @"keyboard");
+				XCTAssertEqualObjects(event[@"scancode"], expected[@"scancode"]);
+				XCTAssertEqualObjects(event[@"flags"], expected[@"flags"]);
+			}
+			XCTAssertEqual(WaitForSingleObject(mfi->handle, 1000), WAIT_OBJECT_0);
+			XCTAssertTrue(ios_events_check_handle(mfi));
+			XCTAssertEqual(mfi->context->desiredDisplayWidth, 1800u);
+#if !OS_OBJECT_USE_OBJC
+			dispatch_release(callback);
+#endif
+			[drained fulfill];
+		}
+	});
+	[session sendInputEvent:@{ @"type": @"clipboard", @"png": png }];
+	for (NSDictionary *key in @[
+	    @{ @"scancode": @29, @"flags": @0 }, @{ @"scancode": @47, @"flags": @0 },
+	    @{ @"scancode": @47, @"flags": @(KBD_FLAGS_RELEASE) }, @{ @"scancode": @29, @"flags": @(KBD_FLAGS_RELEASE) }])
+	{
+		NSMutableDictionary *event = [[key mutableCopy] autorelease]; event[@"type"] = @"keyboard"; event[@"subtype"] = @"scancode";
+		[session sendInputEvent:event];
+	}
+	[session sendInputEvent:@{ @"type": @"display-resize", @"width": @1800, @"height": @1000 }];
+	[self waitForExpectations:@[drained] timeout:8];
+	mfi->connection_state = TSXConnectionDisconnected;
+	XCTAssertTrue(ios_cliprdr_uninit(mfi->context, &cliprdr));
+}
+
+- (void)testClipboardContentTransactionsRejectPartialAndInvalidOffers
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	__block CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionary];
+	cliprdr.handle = record; cliprdr.ClientFormatList = OrbisCaptureClipboardList;
+	cliprdr.ClientFormatDataResponse = OrbisCaptureClipboardResponse;
+	XCTAssertTrue(ios_cliprdr_init(mfi->context, &cliprdr));
+	mfi->connection_state = TSXConnectionConnected;
+	ios_send_clipboard_data(mfi->context, "previous", 9);
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	NSNumber *generation = @(session.capabilityGeneration);
+	NSDictionary *(^chunk)(NSString *, NSString *, NSData *, BOOL, BOOL) =
+	    ^NSDictionary *(NSString *transaction, NSString *kind, NSData *data, BOOL begin, BOOL final) {
+		return @{ @"type": @"clipboard-content-chunk", @"transaction": transaction,
+		    @"generation": generation, @"kind": kind, @"data": data, @"begin": @(begin), @"final": @(final) };
+	};
+	NSData *text = [@"discard this partial" dataUsingEncoding:NSUTF8StringEncoding];
+	XCTAssertTrue(ios_events_send(mfi, chunk(@"old", @"text", text, YES, NO)));
+	XCTAssertTrue(ios_events_check_handle(mfi));
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	// A mismatched transaction discards the partial data and cannot append to it.
+	XCTAssertTrue(ios_events_send(mfi, chunk(@"other", @"text", text, NO, YES)));
+	XCTAssertTrue(ios_events_check_handle(mfi));
+	XCTAssertNil(mfi->context->clipboardInputText);
+	const uint8_t signature[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+	XCTAssertTrue(ios_events_send(mfi, chunk(@"bad", @"png", [NSData dataWithBytes:signature length:8], YES, YES)));
+	XCTAssertTrue(ios_events_check_handle(mfi));
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	// Model an already assembled maximum-size text part, then overflow through the real event consumer.
+	mfi->context->clipboardTransaction = [@"limit" copy];
+	mfi->context->clipboardInputText = [[NSMutableData alloc] initWithLength:OrbisClipboardMaximumTextBytes];
+	XCTAssertTrue(ios_events_send(mfi, chunk(@"limit", @"text", [NSData dataWithBytes:"x" length:1], NO, YES)));
+	XCTAssertTrue(ios_events_check_handle(mfi));
+	XCTAssertNil(mfi->context->clipboardInputText);
+	XCTAssertNil(mfi->context->clipboardTransaction);
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	NSMutableDictionary *stale = [[chunk(@"stale", @"text", text, YES, YES) mutableCopy] autorelease];
+	stale[@"generation"] = @(session.capabilityGeneration + 1);
+	XCTAssertTrue(ios_events_send(mfi, stale));
+	XCTAssertTrue(ios_events_check_handle(mfi));
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	NSMutableData *oversized = [NSMutableData dataWithLength:OrbisClipboardMaximumPNGBytes + 1];
+	memcpy(oversized.mutableBytes, signature, 8);
+	XCTAssertFalse(ios_events_send_clipboard_content(mfi, nil, oversized));
+	XCTAssertEqualObjects(record[@"lists"], @1);
+	CLIPRDR_FORMAT_DATA_REQUEST request = { .requestedFormatId = CF_UNICODETEXT };
+	XCTAssertEqual(cliprdr.ServerFormatDataRequest(&cliprdr, &request), CHANNEL_RC_OK);
+	NSData *bytes = record[@"payload"];
+	XCTAssertGreaterThanOrEqual(bytes.length, 2u);
+	NSString *preserved = bytes.length >= 2 ? [[[NSString alloc] initWithBytes:bytes.bytes length:bytes.length - 2
+	    encoding:NSUTF16LittleEndianStringEncoding] autorelease] : nil;
+	XCTAssertEqualObjects(preserved, @"previous");
+	mfi->connection_state = TSXConnectionDisconnected;
+	XCTAssertTrue(ios_cliprdr_uninit(mfi->context, &cliprdr));
+}
+
+- (void)testRemoteImageRequestsSerializeAndRejectStaleDeliveries
+{
+	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
+	mfInfo *mfi = [session mfi];
+	__block CliprdrClientContext cliprdr = { 0 };
+	NSMutableDictionary *record = [NSMutableDictionary dictionaryWithObject:[NSMutableArray array] forKey:@"sequence"];
+	cliprdr.handle = record; cliprdr.ClientFormatListResponse = OrbisCaptureClipboardAcknowledgment;
+	cliprdr.ClientFormatDataRequest = OrbisCaptureClipboardRequest;
+	XCTAssertTrue(ios_cliprdr_init(mfi->context, &cliprdr));
+	[session updateClipboardCapabilityReady:YES generation:session.capabilityGeneration];
+	OrbisTestPasteboard *board = [[[OrbisTestPasteboard alloc] init] autorelease];
+	session.clipboardPort = [[[OrbisIPadClipboard alloc] initWithPasteboard:board] autorelease];
+	mfi->connection_state = TSXConnectionConnected;
+	CLIPRDR_FORMAT format = { .formatId = 49179, .formatName = "PNG" };
+	CLIPRDR_FORMAT_LIST list = { .numFormats = 1, .formats = &format };
+	XCTAssertEqual(cliprdr.ServerFormatList(&cliprdr, &list), CHANNEL_RC_OK);
+	uint64_t firstOffer = mfi->context->clipboardOfferGeneration;
+	XCTAssertEqual(cliprdr.ServerFormatList(&cliprdr, &list), CHANNEL_RC_OK);
+	XCTAssertEqualObjects(record[@"sequence"], (@[@"ack", @"request", @"ack"]));
+	NSData *png = OrbisSyntheticPNG();
+	CLIPRDR_FORMAT_DATA_RESPONSE response = { 0 };
+	response.common.msgFlags = CB_RESPONSE_OK; response.common.dataLen = (UINT32)png.length;
+	response.requestedFormatData = png.bytes;
+	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
+	XCTAssertNil(board.items);
+	XCTAssertEqualObjects([record[@"sequence"] lastObject], @"request");
+	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
+	XCTestExpectation *published = [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(id obj, NSDictionary *bindings) {
+		(void)obj; (void)bindings; return board.items.firstObject[@"public.png"] != nil;
+	}] evaluatedWithObject:nil handler:nil];
+	[self waitForExpectations:@[published] timeout:2];
+	XCTAssertEqual(board.reads, 0u);
+	NSArray *previous = board.items;
+	[session receiveClipboardContent:@{ @"png": png, @"session": @(session.capabilityGeneration), @"offer": @(firstOffer) }];
+	XCTAssertEqualObjects(board.items, previous);
+	CLIPRDR_FORMAT unsupported = { .formatId = 49180, .formatName = "Unsupported" };
+	list.formats = &unsupported;
+	XCTAssertEqual(cliprdr.ServerFormatList(&cliprdr, &list), CHANNEL_RC_OK);
+	XCTAssertFalse(mfi->context->clipboardRequestPending);
+	XCTAssertTrue(ios_cliprdr_uninit(mfi->context, &cliprdr));
+	XCTAssertFalse([session.capabilities.snapshot capabilityForFeature:OrbisSessionFeatureClipboardImage
+	    direction:OrbisCapabilityDirectionFromRemote].canAttempt);
+}
+
 - (void)testRemoteClipboardTextReachesTheIPadPasteboard
 {
 	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
 	mfInfo *mfi = [session mfi];
 	mfContext *context = mfi->context;
-	CliprdrClientContext cliprdr = { 0 };
+	__block CliprdrClientContext cliprdr = { 0 };
 	NSMutableDictionary *record = [NSMutableDictionary dictionaryWithObject:[NSMutableArray array] forKey:@"sequence"];
 	cliprdr.handle = record;
 	cliprdr.ClientFormatListResponse = OrbisCaptureClipboardAcknowledgment;
 	cliprdr.ClientFormatDataRequest = OrbisCaptureClipboardRequest;
 	XCTAssertTrue(ios_cliprdr_init(context, &cliprdr));
+	[session updateClipboardCapabilityReady:YES generation:session.capabilityGeneration];
 	mfi->connection_state = TSXConnectionConnected;
 	CLIPRDR_FORMAT format = { .formatId = CF_UNICODETEXT };
 	CLIPRDR_FORMAT_LIST list = { .numFormats = 1, .formats = &format };
@@ -695,6 +1154,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	CLIPRDR_FORMAT_DATA_RESPONSE unavailable = { 0 };
 	unavailable.common.msgFlags = CB_RESPONSE_FAIL;
 	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &unavailable), CHANNEL_RC_OK);
+	XCTAssertEqual(cliprdr.ServerFormatList(&cliprdr, &list), CHANNEL_RC_OK);
 	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
 	// Native delivery uses performSelectorOnMainThread, not the dispatch queue's FIFO order.
 	XCTestExpectation *delivered = [self expectationForPredicate:[NSPredicate predicateWithBlock:
@@ -703,6 +1163,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 		return [[UIPasteboard generalPasteboard].string isEqual:expected];
 	}] evaluatedWithObject:nil handler:nil];
 	[self waitForExpectations:@[delivered] timeout:2];
+	XCTAssertEqual(cliprdr.ServerFormatList(&cliprdr, &list), CHANNEL_RC_OK);
 	response.common.dataLen = sizeof(terminator);
 	response.requestedFormatData = (const BYTE *)&terminator;
 	XCTAssertEqual(cliprdr.ServerFormatDataResponse(&cliprdr, &response), CHANNEL_RC_OK);
@@ -722,7 +1183,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 	OrbisInputRecorder *recorder = [self recorder];
 	RDPSessionView *view = [self inputViewWithRecorder:recorder];
 	NSString *expected = @"Clipboard café 🐺\nSecond line";
-	[UIPasteboard generalPasteboard].string = expected;
+	recorder.clipboardContent = [[[OrbisClipboardContent alloc] initWithText:expected pngData:nil] autorelease];
 	[self sendUsage:UIKeyboardHIDUsageKeyboardV flags:UIKeyModifierCommand text:@"v" up:NO view:view];
 	[self sendUsage:UIKeyboardHIDUsageKeyboardV flags:0 text:@"v" up:YES view:view];
 	XCTAssertEqualObjects(recorder.events.firstObject[@"type"], @"clipboard");
@@ -735,7 +1196,7 @@ static UINT OrbisCaptureDisplayFailureOnce(DispClientContext *disp, UINT32 count
 {
 	OrbisTestRDPSession *session = [self sessionWithTransport:nil];
 	mfInfo *mfi = [session mfi];
-	CliprdrClientContext cliprdr = { 0 };
+	__block CliprdrClientContext cliprdr = { 0 };
 	NSMutableDictionary *record = [NSMutableDictionary dictionary];
 	cliprdr.handle = record;
 	cliprdr.ClientFormatList = OrbisCaptureClipboardList;
